@@ -1,16 +1,28 @@
 defmodule BeamWeaver.Cache.Ecto do
   @moduledoc """
   Ecto/Postgres cache adapter implementing `BeamWeaver.Cache`.
+
+  ## Options
+
+    * `:repo` - the Ecto repo (required)
+    * `:table` - the table name, as given to the migration
+    * `:prefix` - the Postgres schema that holds the table, as given to the
+      migration's `prefix:`
+    * `:serialization` - a `BeamWeaver.Serialization.Config` or its options,
+      such as `codec: BeamWeaver.Serialization.Encrypted` with an
+      `:encryption_key`
   """
 
   @behaviour BeamWeaver.Cache
 
   alias BeamWeaver.Adapter.Error, as: AdapterError
-  alias BeamWeaver.Core.Error
+  alias BeamWeaver.Migrations.Postgres.Util
+  alias BeamWeaver.Serialization
 
   defstruct repo: nil,
             query_module: Ecto.Adapters.SQL,
             table: "beam_weaver_cache_entries",
+            prefix: nil,
             serialization: %BeamWeaver.Serialization.Config{}
 
   def new(opts) do
@@ -18,6 +30,7 @@ defmodule BeamWeaver.Cache.Ecto do
       repo: Keyword.fetch!(opts, :repo),
       query_module: Keyword.get(opts, :query_module, Ecto.Adapters.SQL),
       table: Keyword.get(opts, :table, "beam_weaver_cache_entries"),
+      prefix: Keyword.get(opts, :prefix),
       serialization: BeamWeaver.Serialization.Config.new(Keyword.get(opts, :serialization))
     }
   end
@@ -26,34 +39,32 @@ defmodule BeamWeaver.Cache.Ecto do
   def lookup(%__MODULE__{} = cache, namespace, key, _opts) do
     sql = """
     SELECT value, metadata, expires_at
-    FROM #{cache.table}
+    FROM #{table(cache)}
     WHERE namespace = $1 AND key = $2
     """
 
     case query(cache, sql, [BeamWeaver.Cache.stable_key(namespace), BeamWeaver.Cache.stable_key(key)]) do
       {:ok, %{rows: [[value, metadata, expires_at]]}} ->
         if expired?(expires_at) do
-          delete(cache, namespace, key, [])
+          delete_expired(cache, namespace, key)
           :miss
         else
-          case decode_value(cache, value) do
-            {:ok, decoded} -> {:hit, decoded, metadata || %{}}
-            {:error, %Error{} = error} -> {:error, error}
-          end
+          with {:ok, decoded} <- Serialization.load(value, serialization: cache.serialization),
+               do: {:hit, decoded, metadata || %{}}
         end
 
       {:ok, %{rows: []}} ->
         :miss
 
-      {:error, error} ->
-        {:error, normalize_error(error)}
+      {:error, _error} = error ->
+        error
     end
   end
 
   @impl true
   def put(%__MODULE__{} = cache, namespace, key, value, opts) do
     sql = """
-    INSERT INTO #{cache.table} (namespace, key, value, metadata, expires_at)
+    INSERT INTO #{table(cache)} (namespace, key, value, metadata, expires_at)
     VALUES ($1, $2, $3, $4, $5)
     ON CONFLICT (namespace, key)
     DO UPDATE SET value = EXCLUDED.value,
@@ -62,7 +73,7 @@ defmodule BeamWeaver.Cache.Ecto do
                   inserted_at = now()
     """
 
-    with {:ok, encoded} <- encode_value(cache, value) do
+    with {:ok, encoded} <- Serialization.dump(value, serialization: cache.serialization) do
       params = [
         BeamWeaver.Cache.stable_key(namespace),
         BeamWeaver.Cache.stable_key(key),
@@ -71,80 +82,47 @@ defmodule BeamWeaver.Cache.Ecto do
         expires_at(Keyword.get(opts, :ttl))
       ]
 
-      case query(cache, sql, params) do
-        {:ok, _result} -> :ok
-        {:error, error} -> {:error, normalize_error(error)}
-      end
+      with {:ok, _result} <- query(cache, sql, params), do: :ok
     end
   end
 
   @impl true
   def delete(%__MODULE__{} = cache, namespace, key, _opts) do
-    case query(cache, "DELETE FROM #{cache.table} WHERE namespace = $1 AND key = $2", [
-           BeamWeaver.Cache.stable_key(namespace),
-           BeamWeaver.Cache.stable_key(key)
-         ]) do
-      {:ok, _result} -> :ok
-      {:error, error} -> {:error, normalize_error(error)}
-    end
+    params = [BeamWeaver.Cache.stable_key(namespace), BeamWeaver.Cache.stable_key(key)]
+
+    with {:ok, _result} <- query(cache, "DELETE FROM #{table(cache)} WHERE namespace = $1 AND key = $2", params),
+         do: :ok
   end
 
   @impl true
   def clear(%__MODULE__{} = cache, nil, _opts) do
-    case query(cache, "DELETE FROM #{cache.table}", []) do
-      {:ok, _result} -> :ok
-      {:error, error} -> {:error, normalize_error(error)}
-    end
+    with {:ok, _result} <- query(cache, "DELETE FROM #{table(cache)}", []), do: :ok
   end
 
   def clear(%__MODULE__{} = cache, namespace, _opts) do
-    case query(cache, "DELETE FROM #{cache.table} WHERE namespace = $1", [
-           BeamWeaver.Cache.stable_key(namespace)
-         ]) do
-      {:ok, _result} -> :ok
-      {:error, error} -> {:error, normalize_error(error)}
-    end
+    params = [BeamWeaver.Cache.stable_key(namespace)]
+    with {:ok, _result} <- query(cache, "DELETE FROM #{table(cache)} WHERE namespace = $1", params), do: :ok
   end
 
   def sweep_expired(%__MODULE__{} = cache, _opts \\ []) do
-    case query(
-           cache,
-           "DELETE FROM #{cache.table} WHERE expires_at IS NOT NULL AND expires_at <= now()",
-           []
-         ) do
-      {:ok, result} -> {:ok, Map.get(result, :num_rows, 0)}
-      {:error, error} -> {:error, normalize_error(error)}
-    end
+    sql = "DELETE FROM #{table(cache)} WHERE expires_at IS NOT NULL AND expires_at <= now()"
+    with {:ok, result} <- query(cache, sql, []), do: {:ok, Map.get(result, :num_rows, 0)}
   end
 
-  defp query(%__MODULE__{} = cache, sql, params) do
-    AdapterError.query(cache, sql, params,
-      type: :cache_error,
-      message: "cache adapter error"
-    )
+  # An entry put again since it was read is no longer expired, and stays.
+  defp delete_expired(cache, namespace, key) do
+    sql = "DELETE FROM #{table(cache)} WHERE namespace = $1 AND key = $2 AND expires_at <= now()"
+    query(cache, sql, [BeamWeaver.Cache.stable_key(namespace), BeamWeaver.Cache.stable_key(key)])
   end
 
-  defp encode_value(%__MODULE__{} = cache, value) do
-    BeamWeaver.Adapter.ValueCodec.dump(value, serialization: cache.serialization)
-  end
+  defp table(%__MODULE__{} = cache), do: Util.qualify(cache.prefix, cache.table)
 
-  defp decode_value(%__MODULE__{} = cache, binary) do
-    BeamWeaver.Adapter.ValueCodec.load(binary, serialization: cache.serialization)
-  end
+  defp query(%__MODULE__{} = cache, sql, params),
+    do: AdapterError.query(cache, sql, params, :cache_error, "cache adapter error")
 
-  defp expires_at(nil), do: nil
-
-  defp expires_at(ttl) when is_integer(ttl) and ttl > 0,
-    do: DateTime.add(DateTime.utc_now(), ttl, :millisecond)
-
+  defp expires_at(ttl) when is_integer(ttl) and ttl > 0, do: DateTime.add(DateTime.utc_now(), ttl, :millisecond)
   defp expires_at(_ttl), do: nil
 
   defp expired?(nil), do: false
-
-  defp expired?(%DateTime{} = expires_at),
-    do: DateTime.compare(DateTime.utc_now(), expires_at) != :lt
-
-  defp expired?(_expires_at), do: false
-
-  defp normalize_error(%Error{} = error), do: error
+  defp expired?(%DateTime{} = expires_at), do: DateTime.compare(DateTime.utc_now(), expires_at) != :lt
 end

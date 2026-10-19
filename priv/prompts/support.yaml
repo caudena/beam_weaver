@@ -1,0 +1,18 @@
+messages:
+  -
+    kind: "message_template"
+    partials: {}
+    role: "system"
+    template: "Use {style} answers."
+    template_format: "simple"
+  -
+    kind: "message_template"
+    partials: {}
+    role: "user"
+    template: "{input}"
+    template_format: "simple"
+partials:
+  style: "short"
+template_format: "simple"
+type: "prompt_chat"
+

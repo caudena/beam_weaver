@@ -1,16 +1,24 @@
 defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
   @moduledoc false
 
-  alias BeamWeaver.Core.Error
   alias BeamWeaver.Models.Profile
+  alias BeamWeaver.Models.ProfileRegistry
   alias BeamWeaver.Models.ProfileRegistry.Params
 
   @context_window 262_144
   @k3_context_window 1_048_576
-  @profile_last_updated "2026-07-19"
-  @k3_supported_params [:reasoning_effort | Params.moonshot()] -- [:thinking]
+  @profile_last_updated "2026-10-19"
+  @k3_supported_params [:reasoning_effort, :prompt_cache_options | Params.moonshot()] -- [:thinking]
 
   @moonshot_deprecated_models %{
+    "moonshot-v1-8k" => %{replacement: "kimi-k3", discontinued_at: "2026-08-31"},
+    "moonshot-v1-32k" => %{replacement: "kimi-k3", discontinued_at: "2026-08-31"},
+    "moonshot-v1-128k" => %{replacement: "kimi-k3", discontinued_at: "2026-08-31"},
+    "moonshot-v1-auto" => %{replacement: "kimi-k3", discontinued_at: "2026-08-31"},
+    "moonshot-v1-8k-vision-preview" => %{replacement: "kimi-k3", discontinued_at: "2026-08-31"},
+    "moonshot-v1-32k-vision-preview" => %{replacement: "kimi-k3", discontinued_at: "2026-08-31"},
+    "moonshot-v1-128k-vision-preview" => %{replacement: "kimi-k3", discontinued_at: "2026-08-31"},
+    "kimi-k2.5" => %{replacement: "kimi-k3", discontinued_at: "2026-08-31"},
     "kimi-latest" => %{
       replacement: "kimi-k3",
       discontinued_at: "2026-01-28"
@@ -73,7 +81,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
     api_family: :chat_completions,
     openai_compatible: true,
     automatic_context_caching: true,
-    pricing_last_checked: "2026-08-27",
+    pricing_last_checked: "2026-10-19",
     partial_mode: true,
     unsupported_api_families: [:responses, :embeddings, :batch, :files],
     sampling_controls: :fixed
@@ -93,8 +101,6 @@ defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
   }
 
   @k3_extra %{
-    reasoning_efforts: [:max],
-    default_reasoning_effort: :max,
     thinking_always_enabled: true,
     dynamic_tool_loading: true,
     tool_choice_when_thinking: ["auto", "none", "required"],
@@ -113,6 +119,8 @@ defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
                  supported_params_by_api: %{
                    chat_completions: @k3_supported_params
                  },
+                 reasoning_effort_levels: [:low, :high, :max],
+                 reasoning_effort_default: :max,
                  extra:
                    Map.merge(@base_extra, @k3_extra)
                    |> Map.merge(%{
@@ -169,6 +177,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
                  extra:
                    Map.merge(@base_extra, @thinking_toggle_extra)
                    |> Map.merge(%{
+                     json_mode_only: true,
                      pricing_source_url: "https://platform.kimi.ai/docs/pricing/chat-k26",
                      input_cache_hit_price_per_mtok: 0.16,
                      input_cache_miss_price_per_mtok: 0.95,
@@ -177,57 +186,33 @@ defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
                      batch_input_cache_miss_price_per_mtok: 0.57,
                      batch_output_price_per_mtok: 2.40
                    })
-               }},
-              {"kimi-k2.5",
-               %{
-                 id: "kimi-k2.5",
-                 name: "Kimi K2.5",
-                 status: :deprecated,
-                 extra:
-                   Map.merge(@base_extra, @thinking_toggle_extra)
-                   |> Map.merge(%{
-                     pricing_source_url: "https://platform.kimi.ai/docs/pricing/chat-k25",
-                     unavailable_to_new_users: true,
-                     sunset_at: "2026-08-31",
-                     input_cache_hit_price_per_mtok: 0.10,
-                     input_cache_miss_price_per_mtok: 0.60,
-                     output_price_per_mtok: 3.00
-                   })
                }}
             ]
             |> Map.new(fn {id, profile} ->
               {{:moonshot, id}, Profile.new(Map.merge(@base_profile, profile))}
             end)
 
-  def profiles_map, do: @profiles
+  @profiles Map.new(@profiles, fn {key, profile} ->
+              extra =
+                profile.extra
+                |> Map.put(:input_price_per_mtok, profile.extra.input_cache_miss_price_per_mtok)
+                |> Map.put(:cached_input_price_per_mtok, profile.extra.input_cache_hit_price_per_mtok)
+                |> Map.put(:pricing_source_url, "https://platform.kimi.ai/docs/pricing/chat")
+                |> Map.put(:standalone_tool_pricing, %{
+                  search: %{price_per_1000_requests: 2.0, billing: :successful_nonempty_response},
+                  search_pro: %{price_per_1000_requests: 3.0, billing: :successful_nonempty_response},
+                  fetch: %{price_per_1000_requests: 2.0, billing: :successful_nonempty_response}
+                })
+                |> Map.put(:tool_pricing_source_url, "https://platform.kimi.ai/docs/pricing/websearch")
+
+              {key, %{profile | extra: extra}}
+            end)
   def profiles, do: Map.values(@profiles)
 
   def resolve(model) do
-    if Map.has_key?(@moonshot_deprecated_models, model) do
-      deprecated_model_error(model)
-    else
-      fetch_or_fallback(@profiles, :moonshot, model)
-    end
-  end
-
-  defp deprecated_model_error(model) do
-    metadata = Map.fetch!(@moonshot_deprecated_models, model)
-    replacement = metadata.replacement
-
-    {:error,
-     Error.new(:deprecated_model, "Moonshot/Kimi model is discontinued", %{
-       provider: :moonshot,
-       model: model,
-       replacement: replacement,
-       expected: "moonshot:#{replacement}",
-       discontinued_at: metadata.discontinued_at
-     })}
-  end
-
-  defp fetch_or_fallback(profiles, provider, model) do
-    case Map.fetch(profiles, {provider, model}) do
-      {:ok, profile} -> {:ok, profile}
-      :error -> {:fallback, provider, model}
+    case @moonshot_deprecated_models[model] do
+      nil -> ProfileRegistry.fetch_or_fallback(@profiles, :moonshot, model)
+      metadata -> ProfileRegistry.deprecated_error(:moonshot, model, "Moonshot/Kimi model is discontinued", metadata)
     end
   end
 end

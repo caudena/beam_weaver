@@ -5,24 +5,57 @@ defmodule BeamWeaver.Agent.Middleware.RetryRunner do
   alias BeamWeaver.RetryPolicy
 
   @spec run(RetryPolicy.t(), (-> term()), keyword()) :: term()
-  def run(%RetryPolicy{} = policy, fun, opts \\ []) when is_function(fun, 0) do
-    retry(policy, Keyword.get(opts, :attempt, 1), fun, Keyword.get(opts, :telemetry_prefix))
+  def run(%RetryPolicy{} = policy, fun, opts) when is_function(fun, 0) do
+    prefix = Keyword.get(opts, :telemetry_prefix)
+
+    on_retry = fn attempt, error ->
+      if prefix, do: :telemetry.execute(prefix ++ [:retry], %{attempt: attempt}, %{error: error})
+    end
+
+    RetryPolicy.run(policy, fn -> normalize_result(fun.()) end,
+      attempt: Keyword.get(opts, :attempt, 1),
+      on_retry: on_retry
+    )
   end
 
-  @spec normalize_error(term()) :: Error.t()
-  def normalize_error(%Error{} = error), do: error
+  # Like `run/3`, but an error the policy retries comes back, once the
+  # retries run out, as `{:exhausted, error, attempts}`. An error it doesn't
+  # retry comes back as it is.
+  @spec run_counting(RetryPolicy.t(), (-> term()), keyword()) :: term() | {:exhausted, Error.t(), pos_integer()}
+  def run_counting(%RetryPolicy{} = policy, fun, opts) when is_function(fun, 0) do
+    attempts = :counters.new(1, [])
 
-  def normalize_error(%{type: type, message: message, details: details})
-      when is_atom(type) and is_binary(message) and is_map(details) do
+    counted = fn ->
+      :counters.add(attempts, 1, 1)
+      fun.()
+    end
+
+    case run(policy, counted, opts) do
+      {:error, error} = result ->
+        if RetryPolicy.retry?(policy, error), do: {:exhausted, error, :counters.get(attempts, 1)}, else: result
+
+      result ->
+        result
+    end
+  end
+
+  defp normalize_result({:error, error}), do: {:error, normalize_error(error)}
+  defp normalize_result(result), do: result
+
+  @spec normalize_error(term()) :: Error.t()
+  defp normalize_error(%Error{} = error), do: error
+
+  defp normalize_error(%{type: type, message: message, details: details})
+       when is_atom(type) and is_binary(message) and is_map(details) do
     Error.new(type, message, details)
   end
 
-  def normalize_error(%{type: type, message: message})
-      when is_atom(type) and is_binary(message) do
+  defp normalize_error(%{type: type, message: message})
+       when is_atom(type) and is_binary(message) do
     Error.new(type, message, %{})
   end
 
-  def normalize_error(error) do
+  defp normalize_error(error) do
     Error.new(:middleware_error, "middleware target returned an error", %{error: inspect(error)})
   end
 
@@ -66,33 +99,4 @@ defmodule BeamWeaver.Agent.Middleware.RetryRunner do
   defp normalize_retry_on({m, f, a}) when is_atom(m) and is_atom(f) and is_list(a), do: {m, f, a}
   defp normalize_retry_on(value) when is_tuple(value), do: Tuple.to_list(value)
   defp normalize_retry_on(value), do: value
-
-  defp retry(%RetryPolicy{} = policy, attempt, fun, telemetry_prefix) do
-    case fun.() do
-      {:error, error} ->
-        normalized = normalize_error(error)
-
-        if attempt < policy.max_attempts and RetryPolicy.retry?(policy, normalized) do
-          emit_retry(telemetry_prefix, attempt, normalized)
-          sleep(policy, attempt)
-          retry(policy, attempt + 1, fun, telemetry_prefix)
-        else
-          {:error, normalized}
-        end
-
-      other ->
-        other
-    end
-  end
-
-  defp emit_retry(nil, _attempt, _error), do: :ok
-
-  defp emit_retry(prefix, attempt, error) do
-    :telemetry.execute(prefix ++ [:retry], %{attempt: attempt}, %{error: error})
-  end
-
-  defp sleep(%RetryPolicy{} = policy, attempt) do
-    delay = RetryPolicy.delay(policy, attempt)
-    if delay > 0, do: Process.sleep(delay)
-  end
 end

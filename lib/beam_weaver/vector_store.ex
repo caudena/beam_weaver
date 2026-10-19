@@ -1,35 +1,70 @@
 defmodule BeamWeaver.VectorStore do
-  @moduledoc """
-  Vector store behaviour and facade.
+  @moduledoc ~S"""
+  Embed, store and retrieve source documents through explicit vector-store adapters.
+
+  Text search methods use the store's embedding model; vector-input methods
+  accept an already-computed query vector. Keep model/dimensions consistent
+  between ingestion and search. Returned documents retain IDs/source metadata;
+  scored variants return document/score pairs. Scores are not universal
+  confidence values and need application-specific calibration.
+
+  Filters and namespaces must enforce the intended tenant/data boundary.
+  `as_retriever/2` packages search defaults into the retriever contract.
+  [Retrieval](retrieval.md) demonstrates relevant-source assertions with real
+  embeddings; [Storage](storage.md) covers PostgreSQL/pgvector setup.
   """
 
   alias BeamWeaver.Adapter.Dispatch
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.Document
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Core.EmbeddingModel
   alias BeamWeaver.RetrievalPolicy
   alias BeamWeaver.Telemetry.AdapterEvent
   alias BeamWeaver.Telemetry.AdapterHelpers
 
+  @doc """
+  Embeds and persists documents, returning their stored IDs or an error.
+  """
   @callback add_documents(term(), [Document.t()], keyword()) ::
               {:ok, [String.t()]} | {:error, Error.t()}
+  @doc """
+  Removes the supplied document IDs from the store namespace.
+  """
   @callback delete(term(), [String.t()], keyword()) :: :ok | {:error, Error.t()}
+  @doc """
+  Embeds the query and returns the nearest matching documents, subject to k and filters.
+  """
   @callback similarity_search(term(), String.t(), keyword()) ::
               {:ok, [Document.t()]} | {:error, Error.t()}
+  @doc """
+  Returns nearest documents with adapter similarity scores.
+  """
   @callback similarity_search_with_score(term(), String.t(), keyword()) ::
               {:ok, [{Document.t(), number()}]} | {:error, Error.t()}
+  @doc """
+  Searches using a precomputed query vector without embedding the query again.
+  """
   @callback similarity_search_by_vector(term(), [number()], keyword()) ::
               {:ok, [Document.t()]} | {:error, Error.t()}
+  @doc """
+  Selects query-relevant documents while balancing diversity through fetch_k/lambda options.
+  """
   @callback max_marginal_relevance_search(term(), String.t(), keyword()) ::
               {:ok, [Document.t()]} | {:error, Error.t()}
 
-  def from_documents(store_or_module, documents, opts \\ []) when is_list(documents) do
+  @doc """
+  Builds or uses a store, inserts the supplied documents and returns {:ok, store}.
+  """
+  def from_documents(store_or_module, documents, opts \\ []) do
     with {:ok, store} <- build_store(store_or_module, opts),
          {:ok, _ids} <- add_documents(store, documents, opts) do
       {:ok, store}
     end
   end
 
+  @doc """
+  Builds or uses a store and inserts text with optional metadata/IDs.
+  """
   def from_texts(store_or_module, texts, opts \\ []) do
     with {:ok, store} <- build_store(store_or_module, opts),
          {:ok, _ids} <- add_texts(store, texts, opts) do
@@ -37,91 +72,51 @@ defmodule BeamWeaver.VectorStore do
     end
   end
 
-  def async_from_documents(store_or_module, documents, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-
-    case build_store(store_or_module, call_opts) do
-      {:ok, store} ->
-        Async.run(
-          fn ->
-            with {:ok, _ids} <- add_documents(store, documents, call_opts) do
-              {:ok, store}
-            end
-          end,
-          async_opts
-        )
-
-      {:error, %Error{} = error} ->
-        Async.run(fn -> {:error, error} end, async_opts)
-    end
-  end
-
-  def async_from_texts(store_or_module, texts, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-
-    case build_store(store_or_module, call_opts) do
-      {:ok, store} ->
-        Async.run(
-          fn ->
-            with {:ok, _ids} <- add_texts(store, texts, call_opts) do
-              {:ok, store}
-            end
-          end,
-          async_opts
-        )
-
-      {:error, %Error{} = error} ->
-        Async.run(fn -> {:error, error} end, async_opts)
-    end
-  end
-
+  @doc """
+  Returns the configured embedding dependency, or nil when the store exposes none.
+  """
   def embedding(%{embedding: embedding}), do: {:ok, embedding}
   def embedding(_store), do: {:ok, nil}
 
+  @doc """
+  Embeds and stores documents and returns their ids.
+
+  `documents` is any enumerable of documents, such as the stream that
+  `BeamWeaver.TextSplitter.split_documents/2` returns. Adding a document whose
+  id is already stored replaces it.
+  """
+  @spec add_documents(term(), Enumerable.t(), keyword()) :: {:ok, [String.t()]} | {:error, Error.t()}
   def add_documents(store, documents, opts \\ []) do
-    result = store_call(store, :add_documents, [documents, opts])
+    with {:ok, documents} <- document_list(documents) do
+      result = store_call(store, :add_documents, [documents, opts])
 
-    emit(store, :add_documents, %{count: AdapterHelpers.result_count(result)}, %{
-      result: result,
-      metadata: %{input_count: length(documents)}
-    })
+      emit(store, :add_documents, %{count: AdapterHelpers.result_count(result)}, %{
+        result: result,
+        metadata: %{input_count: length(documents)}
+      })
 
-    result
+      result
+    end
   end
 
+  @doc """
+  Constructs documents from texts, metadata/metadatas and optional IDs, then embeds and stores them.
+  """
   def add_texts(store, texts, opts \\ []) do
     texts = List.wrap(texts)
     metadata = Keyword.get(opts, :metadatas, Keyword.get(opts, :metadata))
     ids = Keyword.get(opts, :ids, [])
 
     documents =
-      texts
-      |> Enum.with_index()
-      |> Enum.map(fn {text, index} ->
-        Document.new!(text,
-          id: Enum.at(ids, index),
-          metadata: metadata_for_index(metadata, index)
-        )
-      end)
+      for {text, index} <- Enum.with_index(texts),
+          do: Document.new!(text, id: Enum.at(ids, index), metadata: metadata_for_index(metadata, index))
 
     add_documents(store, documents, opts)
   end
 
-  def async_add_documents(store, documents, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> add_documents(store, documents, call_opts) end, async_opts)
-  end
-
-  def async_add_texts(store, texts, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> add_texts(store, texts, call_opts) end, async_opts)
-  end
-
-  def async_delete(store, ids, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> delete(store, ids, call_opts) end, async_opts)
-  end
-
+  @doc """
+  Removes the supplied document IDs from the store namespace.
+  """
   def delete(store, ids, opts \\ []) do
     ids = List.wrap(ids)
     result = store_call(store, :delete, [ids, opts])
@@ -129,39 +124,22 @@ defmodule BeamWeaver.VectorStore do
     result
   end
 
-  def get_by_ids(store, ids, opts \\ []) do
-    case optional_store_call(
-           store,
-           :get_by_ids,
-           [List.wrap(ids), opts],
-           "vector store cannot fetch by ids"
-         ) do
-      {:called, result} -> result
-      {:missing, {:error, _error} = error} -> error
-    end
-  end
+  @doc """
+  Fetches stored documents by ID when supported; unsupported adapters return an error.
+  """
+  def get_by_ids(store, ids, opts \\ []),
+    do: Dispatch.call(store, :get_by_ids, [List.wrap(ids), opts], dispatch_opts("vector store cannot fetch by ids"))
 
-  def async_get_by_ids(store, ids, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> get_by_ids(store, ids, call_opts) end, async_opts)
-  end
-
+  @doc """
+  Dispatches similarity, score-threshold or MMR retrieval using a validated search type.
+  """
   def search(store, query, search_type, opts \\ []) do
     case normalize_search_type(search_type) do
       {:ok, :similarity} ->
         similarity_search(store, query, opts)
 
       {:ok, :similarity_score} ->
-        with {:ok, scored} <- similarity_search_with_score(store, query, opts) do
-          threshold = Keyword.get(opts, :score_threshold)
-
-          docs =
-            scored
-            |> Enum.filter(fn {_doc, score} -> is_nil(threshold) or score >= threshold end)
-            |> Enum.map(&elem(&1, 0))
-
-          {:ok, docs}
-        end
+        store |> similarity_search_with_relevance_scores(query, opts) |> drop_scores()
 
       {:ok, :mmr} ->
         max_marginal_relevance_search(store, query, opts)
@@ -171,127 +149,68 @@ defmodule BeamWeaver.VectorStore do
     end
   end
 
-  def async_search(store, query, search_type, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> search(store, query, search_type, call_opts) end, async_opts)
-  end
+  @doc """
+  Embeds the query and returns the nearest matching documents, subject to k and filters.
+  """
+  def similarity_search(store, query, opts \\ []), do: run_search(store, :similarity_search, query, query, opts)
 
-  def similarity_search(store, query, opts \\ []) do
-    result = store_call(store, :similarity_search, [query, opts])
-    emit_search(store, :similarity_search, query, opts, result)
-    result
-  end
+  @doc """
+  Returns nearest documents with adapter similarity scores.
+  """
+  def similarity_search_with_score(store, query, opts \\ []),
+    do: run_search(store, :similarity_search_with_score, query, query, opts)
 
-  def async_similarity_search(store, query, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> similarity_search(store, query, call_opts) end, async_opts)
-  end
-
-  def similarity_search_with_score(store, query, opts \\ []) do
-    result = store_call(store, :similarity_search_with_score, [query, opts])
-    emit_search(store, :similarity_search_with_score, query, opts, result)
-    result
-  end
-
+  @doc """
+  Filters scored results by score_threshold when supplied; it does not recalibrate scores.
+  """
   def similarity_search_with_relevance_scores(store, query, opts \\ []) do
-    with {:ok, scored} <- similarity_search_with_score(store, query, opts) do
-      threshold = Keyword.get(opts, :score_threshold)
+    threshold = Keyword.get(opts, :score_threshold)
 
-      scored =
-        Enum.filter(scored, fn {_doc, score} ->
-          is_nil(threshold) or score >= threshold
-        end)
-
-      {:ok, scored}
-    end
+    with {:ok, scored} <- similarity_search_with_score(store, query, opts),
+         do: {:ok, Enum.filter(scored, fn {_doc, score} -> is_nil(threshold) or score >= threshold end)}
   end
 
-  def async_similarity_search_with_relevance_scores(store, query, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
+  @doc """
+  Searches using a precomputed query vector without embedding the query again.
+  """
+  def similarity_search_by_vector(store, vector, opts \\ []),
+    do: run_search(store, :similarity_search_by_vector, vector, nil, opts)
 
-    Async.run(
-      fn -> similarity_search_with_relevance_scores(store, query, call_opts) end,
-      async_opts
-    )
-  end
-
-  def async_similarity_search_with_score(store, query, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> similarity_search_with_score(store, query, call_opts) end, async_opts)
-  end
-
-  def similarity_search_by_vector(store, vector, opts \\ []) do
-    result = store_call(store, :similarity_search_by_vector, [vector, opts])
-    emit_search(store, :similarity_search_by_vector, nil, opts, result)
-    result
-  end
-
+  @doc """
+  Returns scored precomputed-vector results where the adapter supports this operation.
+  """
   def similarity_search_with_score_by_vector(store, vector, opts \\ []) do
-    case optional_store_call(
-           store,
-           :similarity_search_with_score_by_vector,
-           [vector, opts],
-           "vector store cannot perform scored search by vector"
-         ) do
-      {:called, result} ->
-        emit_search(store, :similarity_search_with_score_by_vector, nil, opts, result)
-        result
-
-      {:missing, {:error, _error} = error} ->
-        error
-    end
-  end
-
-  def async_similarity_search_by_vector(store, vector, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> similarity_search_by_vector(store, vector, call_opts) end, async_opts)
-  end
-
-  def async_similarity_search_with_score_by_vector(store, vector, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-
-    Async.run(
-      fn -> similarity_search_with_score_by_vector(store, vector, call_opts) end,
-      async_opts
+    optional_search(
+      store,
+      :similarity_search_with_score_by_vector,
+      vector,
+      opts,
+      "vector store cannot perform scored search by vector"
     )
   end
 
-  def max_marginal_relevance_search(store, query, opts \\ []) do
-    result = store_call(store, :max_marginal_relevance_search, [query, opts])
-    emit_search(store, :max_marginal_relevance_search, query, opts, result)
-    result
-  end
+  @doc """
+  Selects query-relevant documents while balancing diversity through fetch_k/lambda options.
+  """
+  def max_marginal_relevance_search(store, query, opts \\ []),
+    do: run_search(store, :max_marginal_relevance_search, query, query, opts)
 
+  @doc """
+  Runs MMR on a precomputed vector when supported by the adapter.
+  """
   def max_marginal_relevance_search_by_vector(store, vector, opts \\ []) do
-    case optional_store_call(
-           store,
-           :max_marginal_relevance_search_by_vector,
-           [vector, opts],
-           "vector store cannot perform MMR search by vector"
-         ) do
-      {:called, result} ->
-        emit_search(store, :max_marginal_relevance_search_by_vector, nil, opts, result)
-        result
-
-      {:missing, {:error, _error} = error} ->
-        error
-    end
-  end
-
-  def async_max_marginal_relevance_search(store, query, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> max_marginal_relevance_search(store, query, call_opts) end, async_opts)
-  end
-
-  def async_max_marginal_relevance_search_by_vector(store, vector, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-
-    Async.run(
-      fn -> max_marginal_relevance_search_by_vector(store, vector, call_opts) end,
-      async_opts
+    optional_search(
+      store,
+      :max_marginal_relevance_search_by_vector,
+      vector,
+      opts,
+      "vector store cannot perform MMR search by vector"
     )
   end
 
+  @doc """
+  Builds a retriever with validated search policy defaults; later calls can override supported request settings.
+  """
   def as_retriever(store, opts \\ []) do
     struct(BeamWeaver.VectorStore.Retriever,
       store: store,
@@ -299,11 +218,46 @@ defmodule BeamWeaver.VectorStore do
     )
   end
 
-  defp metadata_for_index(nil, _index), do: %{}
+  # Helpers shared by the bundled stores.
 
-  defp metadata_for_index(metadata, index) when is_list(metadata),
-    do: Enum.at(metadata, index, %{})
+  @doc false
+  def validate_documents(documents) do
+    if Enum.all?(documents, &match?(%Document{}, &1)),
+      do: :ok,
+      else: {:error, Error.new(:invalid_documents, "expected BeamWeaver documents")}
+  end
 
+  @doc false
+  def embed_documents(embedding, documents, opts),
+    do: EmbeddingModel.embed_documents(embedding, Enum.map(documents, & &1.content), opts)
+
+  @doc false
+  def drop_scores({:ok, scored}), do: {:ok, Enum.map(scored, &elem(&1, 0))}
+  def drop_scores(error), do: error
+
+  # The explicit id at `index`, else the document's own id, else a content hash.
+  @doc false
+  def id_for(%Document{} = document, explicit_ids, index),
+    do: to_string(Enum.at(explicit_ids, index) || document.id || stable_id(document))
+
+  defp stable_id(%Document{} = document) do
+    :sha256
+    |> :crypto.hash(:erlang.term_to_binary({document.content, document.metadata}))
+    |> Base.encode16(case: :lower)
+  end
+
+  defp document_list(documents) when is_list(documents), do: {:ok, documents}
+
+  defp document_list(documents) do
+    if Enumerable.impl_for(documents),
+      do: {:ok, Enum.to_list(documents)},
+      else: {:error, Error.new(:invalid_documents, "expected an enumerable of BeamWeaver documents")}
+  rescue
+    # A lazy stream, such as a splitter's, raises while it is enumerated.
+    exception -> {:error, Error.new(:invalid_documents, Exception.message(exception))}
+  end
+
+  defp metadata_for_index(metadata, index) when is_list(metadata), do: Enum.at(metadata, index, %{})
   defp metadata_for_index(metadata, _index) when is_map(metadata), do: metadata
   defp metadata_for_index(_metadata, _index), do: %{}
 
@@ -346,6 +300,12 @@ defmodule BeamWeaver.VectorStore do
          search_type: inspect(search_type)
        })}
 
+  defp run_search(store, operation, input, query, opts) do
+    result = store_call(store, operation, [input, opts])
+    emit_search(store, operation, query, opts, result)
+    result
+  end
+
   defp emit_search(store, operation, query, opts, result) do
     emit(store, operation, %{count: AdapterHelpers.result_count(result)}, %{
       query: query,
@@ -375,31 +335,32 @@ defmodule BeamWeaver.VectorStore do
     )
   end
 
-  defp store_metadata(store) do
-    BeamWeaver.Adapter.Introspect.metadata(store)
-  rescue
-    _exception -> %{}
+  defp store_metadata(%{__struct__: module} = store) do
+    store
+    |> Map.from_struct()
+    |> Map.take([:table, :checkpoints_table, :writes_table, :namespace, :dimensions, :index])
+    |> Map.put(:adapter, module)
   end
 
-  defp store_call(store, callback, args) do
-    Dispatch.call(store, callback, args,
-      error_type: :unsupported_vector_store_operation,
-      missing_message: "vector store does not implement required callback",
-      invalid_message: "expected vector store struct"
-    )
+  defp store_metadata(store), do: %{adapter: inspect(store)}
+
+  defp store_call(store, callback, args),
+    do: Dispatch.call(store, callback, args, dispatch_opts("vector store does not implement required callback"))
+
+  defp optional_search(store, callback, vector, opts, missing_message) do
+    with {:ok, module} <- Dispatch.module(store, callback, 3, dispatch_opts(missing_message)) do
+      result = apply(module, callback, [store, vector, opts])
+      emit_search(store, callback, nil, opts, result)
+      result
+    end
   end
 
-  defp optional_store_call(store, callback, args, missing_message) do
-    dispatch_opts = [
+  defp dispatch_opts(missing_message) do
+    [
       error_type: :unsupported_vector_store_operation,
       missing_message: missing_message,
       invalid_message: "expected vector store struct"
     ]
-
-    case Dispatch.module(store, callback, length(args) + 1, dispatch_opts) do
-      {:ok, _module} -> {:called, Dispatch.call(store, callback, args, dispatch_opts)}
-      {:error, _error} = error -> {:missing, error}
-    end
   end
 
   defmodule Retriever do
@@ -409,9 +370,12 @@ defmodule BeamWeaver.VectorStore do
     defstruct [:store, :policy]
 
     def retrieve(%__MODULE__{store: store, policy: policy}, query, opts) do
+      # Stores read the MMR trade-off as `lambda:`.
+      {lambda, opts} = Keyword.pop(opts, :mmr_lambda, policy.mmr_lambda)
+
       opts =
         Keyword.merge(
-          [k: policy.k, filter: policy.filter, score_threshold: policy.score_threshold],
+          [k: policy.k, filter: policy.filter, score_threshold: policy.score_threshold, lambda: lambda],
           opts
         )
 

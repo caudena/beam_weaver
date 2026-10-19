@@ -1,6 +1,11 @@
 defmodule BeamWeaver.Graph.Channels.EphemeralValue do
   @moduledoc """
-  Channel that stores a value for the next step and clears when no update arrives.
+  Channel that keeps a write for one step.
+
+  The nodes of the next step read the value; after that step it is cleared,
+  unless it was written again. Use it for signals meant for the next node
+  only. A step may write it once; pass `guard: false` to keep the last of
+  several writes instead.
   """
 
   use BeamWeaver.Graph.Channel
@@ -29,22 +34,4 @@ defmodule BeamWeaver.Graph.Channels.EphemeralValue do
   end
 
   def update(channel, values), do: {:ok, %{channel | value: List.last(values)}, true}
-
-  @impl true
-  def get(%__MODULE__{value: value, key: key}) do
-    if value == Channel.missing(), do: {:error, Channel.empty_error(key)}, else: {:ok, value}
-  end
-
-  @impl true
-  def checkpoint(%__MODULE__{value: value}), do: value
-
-  @impl true
-  def from_checkpoint(channel, checkpoint) do
-    if checkpoint == Channel.missing(),
-      do: %{channel | value: Channel.missing()},
-      else: %{channel | value: checkpoint}
-  end
-
-  @impl true
-  def available?(%__MODULE__{value: value}), do: value != Channel.missing()
 end

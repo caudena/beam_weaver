@@ -3,34 +3,26 @@ defmodule BeamWeaver.Core.Messages.Usage do
 
   @spec add(map() | nil, map() | nil) :: map()
   def add(nil, nil), do: zero()
-  def add(nil, right), do: normalize(right)
-  def add(left, nil), do: normalize(left)
-
-  def add(left, right) when is_map(left) and is_map(right) do
-    deep_merge(normalize(left), normalize(right), &Kernel.+/2)
-  end
+  def add(nil, right) when is_map(right), do: right
+  def add(left, nil) when is_map(left), do: left
+  def add(left, right) when is_map(left) and is_map(right), do: deep_merge(left, right)
 
   @spec subtract(map() | nil, map() | nil) :: map()
   def subtract(nil, nil), do: zero()
-  def subtract(left, nil), do: normalize(left)
+  def subtract(left, nil) when is_map(left), do: left
   def subtract(nil, right), do: subtract(zero(), right)
-
-  def subtract(left, right) when is_map(left) and is_map(right) do
-    deep_subtract(normalize(left), normalize(right))
-  end
+  def subtract(left, right) when is_map(left) and is_map(right), do: deep_subtract(left, right)
 
   defp zero, do: %{input_tokens: 0, output_tokens: 0, total_tokens: 0}
 
-  defp normalize(usage) when is_map(usage), do: usage
-
-  defp deep_merge(left, right, numeric_fun) do
+  defp deep_merge(left, right) do
     Map.merge(left, right, fn _key, a, b ->
       cond do
         is_number(a) and is_number(b) ->
-          numeric_fun.(a, b)
+          a + b
 
         is_map(a) and is_map(b) ->
-          deep_merge(a, b, numeric_fun)
+          deep_merge(a, b)
 
         is_nil(a) ->
           b
@@ -42,13 +34,8 @@ defmodule BeamWeaver.Core.Messages.Usage do
   end
 
   defp deep_subtract(left, right) do
-    keys = Enum.uniq(Map.keys(left) ++ Map.keys(right))
-
-    Map.new(keys, fn key ->
-      a = Map.get(left, key)
-      b = Map.get(right, key)
-
-      {key, subtract_value(a, b)}
+    Map.new(Enum.uniq(Map.keys(left) ++ Map.keys(right)), fn key ->
+      {key, subtract_value(Map.get(left, key), Map.get(right, key))}
     end)
   end
 

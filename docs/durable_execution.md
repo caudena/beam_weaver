@@ -1,370 +1,333 @@
 # Durable Execution
 
-Durable execution means a graph or agent saves enough progress to pause,
-resume, inspect, fork, or recover without starting the whole workflow again.
-BeamWeaver provides this through checkpoint adapters and stable `thread_id`
-values.
+Durability means recovering recorded progress and safely repeating unfinished
+work. BeamWeaver checkpoints graph steps; your application supplies durable
+storage, identifies unfinished threads and schedules continuation. External
+side effects still need idempotency.
 
-Use durable execution for:
+## Continue after a failed step
 
-- human-in-the-loop workflows that pause for approval
-- long-running graph work that may fail partway through
-- fan-out steps where successful sibling work should not rerun
-- conversation state across turns
-- time travel, state repair, and checkpoint forks
-
-{% hint style="info" %}
-**BeamWeaver Shape**
-
-LangGraph's durable execution guide covers Python `@task` replay, `durability=`
-modes, `RunControl`, and `graph.invoke(None, config)`. BeamWeaver's durable
-surface is different: compile with a checkpointer, invoke with a stable
-`thread_id`, use graph nodes or tools as durable boundaries, resume interrupts
-with `BeamWeaver.Graph.Compiled.resume/3` or `BeamWeaver.Agent.resume/3`, and
-recover failed graph work by continuing the same checkpointed thread.
-{% endhint %}
-
-## Requirements
-
-Durable execution needs three things:
-
-1. Compile the graph or agent with a checkpointer.
-2. Invoke it with a stable `thread_id` in `config`.
-3. Keep side effects and non-deterministic work at explicit graph or tool
-   boundaries, and make them idempotent.
-
-Use `BeamWeaver.Checkpoint.ETS` for local development and tests. Use
-`BeamWeaver.Checkpoint.Ecto` with PostgreSQL or SQLite for durable deployments. ETS
-checkpoints are process-local and do not survive a VM restart.
+This local example makes no payment or email request. It records a sample
+receipt, deliberately fails the notification step, then continues:
 
 ```elixir
-alias BeamWeaver.Checkpoint.ETS, as: CheckpointETS
+defmodule MyApp.RecoverableFlow do
+  use BeamWeaver.Graph
+
+  graph do
+    state do
+      channel :log, merge: :list
+    end
+
+    node :record, fn %{order_id: id} -> %{receipt: "R-#{id}", log: ["recorded"]} end
+    node :notify, &__MODULE__.notify/2
+    edge start(), :record
+    edge :record, :notify
+    edge :notify, finish()
+  end
+
+  def notify(%{receipt: receipt}, runtime) do
+    if runtime.context.mail_available,
+      do: %{log: ["notified #{receipt}"]},
+      else: {:error, BeamWeaver.Core.Error.new(:mail_unavailable, "Notification service is unavailable")}
+  end
+end
+
+saver = BeamWeaver.Checkpoint.ETS.new()
+opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "recover-1"}}]
+{:error, error} = MyApp.RecoverableFlow.invoke(%{order_id: "A-1001"}, [context: %{mail_available: false}] ++ opts)
+:mail_unavailable = error.type
+{:ok, snapshot} = MyApp.RecoverableFlow.get_state(opts)
+["notify"] = snapshot.next
+["recorded"] = snapshot.values.log
+
+{:ok, recovered} = MyApp.RecoverableFlow.invoke(%{}, [context: %{mail_available: true}] ++ opts)
+["recorded", "notified R-A-1001"] = recovered.log
+```
+
+The completed record step did not rerun. ETS demonstrates continuation within
+this process; use [database storage](storage.md) to retain the checkpoint
+across a process/node restart.
+
+## What survives a crash
+
+Persisted state includes completed steps, pending work, saved successful
+sibling updates and interrupts. Unfinished nodes restart from their beginning;
+there is no continuation of arbitrary Elixir stack frames.
+
+Keep thread IDs in your job/application records. After restart, inspect the
+latest snapshot. Nonempty `next` with no interrupts identifies unfinished work
+that can be continued with empty input or `resume(nil, opts)`. A completed
+thread invoked with empty input can start a new run, so inspect first.
+Waiting human input must be resumed through its decision contract.
+
+New input has different routing semantics: a partially failed/interrupted step
+merges it before continuing unfinished tasks; a new input after a breakpoint
+or crash without a partially stopped step starts a new run. Use empty input
+when the intent is continuation, not another turn. See [Checkpoints](checkpoints.md).
+
+## Determinism and side effects
+
+Split independent external effects into separate nodes. Use a stable
+application operation ID for idempotency; do not generate a new one on every
+retry. Persist generated IDs and provider results before later steps need them.
+
+A provider can finish an operation before the caller times out or crashes.
+Checkpointing cannot determine that external outcome. Reconcile using the
+provider's operation/idempotency API before submitting again. The same rule
+applies to replay and to code before a graph interrupt, which runs again.
+
+## Fan-out and pending writes
+
+Successful parallel siblings can finish after another fails. Their updates
+are saved as pending writes and restored on continuation; only unfinished
+nodes or individual sends rerun. Joins retain completed arrivals.
+Step/run timeouts cancel the whole running step, unlike an ordinary single
+node failure. An external action may still have happened before cancellation.
+
+## Retries
+
+A node `retry:` policy repeats that node within the run. This deterministic
+example uses execution metadata to demonstrate three attempts:
+
+```elixir
 alias BeamWeaver.Graph
 alias BeamWeaver.Graph.Compiled
 
-checkpointer = CheckpointETS.new()
+retrying =
+  Graph.new()
+  |> Graph.add_node(
+    :fetch,
+    fn _state, runtime ->
+      attempt = runtime.execution.node_attempt
 
-graph =
-  Graph.new(name: "DurableExample")
-  |> Graph.add_node(:load, fn state ->
-    %{loaded_url: state.url}
-  end)
-  |> Graph.add_node(:summarize, fn state ->
-    %{summary: "Fetched #{state.loaded_url}"}
-  end)
-  |> Graph.add_edge(:load, :summarize)
-  |> Graph.add_edge(Graph.start(), :load)
-  |> Graph.add_edge(:summarize, Graph.end_node())
-  |> Graph.compile!(checkpointer: checkpointer)
-
-config = %{"configurable" => %{"thread_id" => "durable-run-1"}}
-
-{:ok, state} =
-  Compiled.invoke(graph, %{url: "https://example.com"}, config: config)
-```
-
-For production persistence:
-
-```elixir
-checkpointer = BeamWeaver.Checkpoint.Ecto.new(repo: MyApp.Repo)
-graph = Graph.compile!(workflow, checkpointer: checkpointer)
-```
-
-Create the tables with your application migration:
-
-```elixir
-defmodule MyApp.Repo.Migrations.CreateBeamWeaverCheckpoints do
-  use Ecto.Migration
-
-  def up do
-    BeamWeaver.Migrations.up(adapters: [:checkpoint])
-  end
-
-  def down do
-    BeamWeaver.Migrations.down(adapters: [:checkpoint], version: 1)
-  end
-end
-```
-
-## Determinism And Replay
-
-Durable execution does not resume from the exact Elixir line that was running
-when a workflow stopped. It resumes from graph execution metadata: checkpointed
-state, pending writes, next tasks, interrupt records, and node boundaries.
-
-Design for replay:
-
-- Keep nodes deterministic when possible.
-- Split expensive or side-effecting work into separate nodes when each step
-  needs its own checkpoint boundary.
-- Use `retry:` and `timeout:` on external-service nodes.
-- Use idempotency keys for writes to external systems.
-- Persist external IDs in graph state as soon as they are created.
-- Let unexpected errors surface instead of hiding unknown failure modes.
-
-{% hint style="warning" %}
-**Task Deviation**
-
-LangGraph's Python `@task` decorator records task results so a replay can skip
-the same side effect inside one entrypoint or node. BeamWeaver does not expose
-that decorator. BEAM `Task` is used by the runtime to execute graph work, but an
-ordinary `Task.async/1` inside your node is not a separate durable replay
-boundary. If a sub-operation must be independently resumable, model it as a
-graph node, tool call, or application-level idempotent operation.
-{% endhint %}
-
-## Durable Boundaries
-
-The most important durable boundary in BeamWeaver is the graph node. Smaller
-nodes give you more places to checkpoint, inspect, retry, and resume.
-
-Less durable shape:
-
-```elixir
-Graph.add_node(workflow, :process_order, fn state ->
-  invoice = MyApp.Billing.create_invoice!(state.order)
-  receipt = MyApp.Email.send_receipt!(state.customer_email, invoice)
-
-  %{invoice_id: invoice.id, receipt_id: receipt.id}
-end)
-```
-
-If the email send fails after the invoice is created, the whole node may run
-again when the graph continues. The external services must make that safe.
-
-More durable shape:
-
-```elixir
-workflow =
-  Graph.new(name: "OrderProcessing")
-  |> Graph.add_node(:create_invoice, fn state ->
-    invoice =
-      MyApp.Billing.create_invoice!(
-        state.order,
-        idempotency_key: "invoice:#{state.order_id}"
-      )
-
-    %{invoice_id: invoice.id}
-  end,
-    retry: BeamWeaver.RetryPolicy.new!(max_attempts: 3, retry_on: :transient),
-    timeout: 30_000
+      if attempt < 3,
+        do: {:error, BeamWeaver.Core.Error.new(:connection, "Temporary failure")},
+        else: %{attempts: attempt, value: "ready"}
+    end,
+    retry: [max_attempts: 3, initial_delay: 10]
   )
-  |> Graph.add_node(:send_receipt, fn state ->
-    receipt =
-      MyApp.Email.send_receipt!(
-        state.customer_email,
-        state.invoice_id,
-        idempotency_key: "receipt:#{state.order_id}"
-      )
+  |> Graph.add_edge(Graph.start(), :fetch)
+  |> Graph.add_edge(:fetch, Graph.end_node())
+  |> Graph.compile!()
 
-    %{receipt_id: receipt.id}
-  end,
-    retry: BeamWeaver.RetryPolicy.new!(max_attempts: 3, retry_on: :transient),
-    timeout: 30_000
-  )
-  |> Graph.add_edge(:create_invoice, :send_receipt)
-  |> Graph.add_edge(Graph.start(), :create_invoice)
-  |> Graph.add_edge(:send_receipt, Graph.end_node())
+{:ok, %{attempts: 3, value: "ready"}} = Compiled.invoke(retrying, %{})
 ```
 
-Now invoice creation and receipt delivery are separate graph steps with their
-own checkpoint and retry boundaries.
+Without a retry policy, a node runs once. `max_attempts` includes the initial
+attempt; middleware `max_retries` counts additional attempts. Shared options
+include initial delay, backoff, maximum delay, jitter and `retry_on:`.
+Retry predicates can select transient errors, named types or a function.
+Explicit nonretryable errors should fail promptly.
 
-## Fan-Out And Pending Writes
+Agent model retries belong in `ModelRetry` middleware. Avoid multiplying node,
+model and job retries without calculating the total possible external calls.
 
-When a super-step fans out to multiple nodes and one node fails, BeamWeaver can
-persist successful sibling writes as pending writes. When the same thread
-continues, successful sibling work does not need to rerun.
+## Timeouts
+
+| Budget | Scope | Failure |
+| --- | --- | --- |
+| Node `timeout:` | One attempt | `:node_timeout` |
+| `step_timeout:` | All nodes in a step | `:step_timeout` |
+| `run_timeout:` | Whole call | `:run_timeout` |
+| `recursion_limit:` | Number of supersteps | `:recursion_limit` |
+
+Time units are milliseconds. Nodes have no timeout by default. Agent model
+steps use the model timeout; tools have `tool_timeout`. A `TimeoutPolicy`
+uses the smaller configured run/idle bound here; progress does not reset a
+heartbeat timer. Set budgets that account for nested work and retries.
+
+This local stand-in never responds. The node timeout terminates the attempt:
 
 ```elixir
+# The carrier API never answers.
+stuck = fn _state -> Process.sleep(:infinity) end
+
+stuck_carrier =
+  Graph.new()
+  |> Graph.add_node(:check_carrier, stuck, timeout: 10)
+  |> Graph.add_edge(Graph.start(), :check_carrier)
+  |> Graph.add_edge(:check_carrier, Graph.end_node())
+  |> Graph.compile!()
+
+Compiled.invoke(stuck_carrier, %{})
+#=> {:error, %BeamWeaver.Core.Error{type: :node_timeout, details: %{node: "check_carrier", timeout: 10}}}
+```
+
+The whole-run budget also bounds a node without an attempt timeout:
+
+```elixir
+waiting =
+  Graph.new()
+  |> Graph.add_node(:check_carrier, stuck)
+  |> Graph.add_edge(Graph.start(), :check_carrier)
+  |> Graph.add_edge(:check_carrier, Graph.end_node())
+  |> Graph.compile!()
+
+Compiled.invoke(waiting, %{}, run_timeout: 10)
+#=> {:error, %BeamWeaver.Core.Error{type: :run_timeout}}
+```
+
+## Error handlers
+
+After retry exhaustion, a node's `error_handler:` can return an update or
+`Graph.Command` recovery route. It accepts error alone or error/state/runtime.
+Do not silently convert a failed business operation into a success claim.
+Represent an alternative outcome explicitly.
+
+If the handler raises, the run returns `:node_error_handler_failed` with the
+original handled error. With checkpoint storage, continuation retries the
+pending handler rather than the already-failed node. Interrupts bypass both
+ordinary retries and error handlers.
+
+An error handler can select a compensating path. This example records a local credit decision; a real payment action still needs idempotency:
+
+```elixir
+alias BeamWeaver.Graph
+alias BeamWeaver.Graph.Compiled
+
 alias BeamWeaver.Core.Error
-alias BeamWeaver.Graph.Send
+alias BeamWeaver.Graph.Command
 
-graph =
-  Graph.new(name: "RecoverableFanout")
-  |> Graph.add_node(:fanout, fn _state ->
-    [
-      %Send{node: :record_invoice, update: %{invoice_id: "inv_123"}},
-      %Send{node: :notify_customer, update: %{attempt: 1}}
-    ]
-  end)
-  |> Graph.add_node(:record_invoice, fn state ->
-    %{recorded_invoice_id: state.invoice_id}
-  end)
-  |> Graph.add_node(:notify_customer, fn state ->
-    if state[:notification_ready?] do
-      %{notification: "sent on attempt #{state.attempt}"}
-    else
-      {:error, Error.new(:notification_unavailable, "notification service unavailable")}
-    end
-  end)
-  |> Graph.add_edge(Graph.start(), :fanout)
-  |> Graph.add_edge(:record_invoice, Graph.end_node())
-  |> Graph.add_edge(:notify_customer, Graph.end_node())
-  |> Graph.compile!(checkpointer: checkpointer)
+refund_to_card = fn _state -> {:error, Error.new(:card_expired, "the card has expired")} end
 
-config = %{"configurable" => %{"thread_id" => "fanout-1"}}
-
-{:error, _error} =
-  Compiled.invoke(graph, %{}, config: config)
-
-{:ok, snapshot} =
-  Compiled.get_state(graph, config)
-
-snapshot.values.recorded_invoice_id
-snapshot.pending_writes
-
-{:ok, state} =
-  Compiled.invoke(graph, %{notification_ready?: true}, config: config)
-```
-
-`record_invoice` does not rerun in the continuation because its successful
-write was checkpointed as a pending write. The failed `notify_customer` branch
-continues with the merged state and the new input update.
-
-{% hint style="warning" %}
-**External Side Effects**
-
-Pending writes protect BeamWeaver graph state. They do not make an external API,
-database, payment, email, or filesystem write transactional. Use external
-idempotency keys, uniqueness constraints, dedupe records, or compensation logic
-for real side effects.
-{% endhint %}
-
-## Human-In-The-Loop Resume
-
-Interrupts are durable because the interrupt and state are saved in the
-checkpointer. Resume with the same `thread_id`.
-
-```elixir
-review = fn state ->
-  decision =
-    BeamWeaver.Graph.interrupt(%{
-      action: "approve_send",
-      draft: state.draft
-    })
-
-  %{review_decision: decision}
+offer_credit = fn error, _state, _runtime ->
+  %Command{update: %{problem: error.message}, goto: :store_credit}
 end
 
-graph =
-  Graph.new(name: "ReviewFlow")
-  |> Graph.add_node(:review, review)
-  |> Graph.add_edge(Graph.start(), :review)
-  |> Graph.add_edge(:review, Graph.end_node())
-  |> Graph.compile!(checkpointer: checkpointer)
+store_credit = fn state -> %{reply: "Sorry, #{state.problem}. We added store credit."} end
 
-config = %{"configurable" => %{"thread_id" => "review-1"}}
+refund =
+  Graph.new()
+  |> Graph.add_node(:refund_to_card, refund_to_card, error_handler: offer_credit)
+  |> Graph.add_node(:confirm, fn _state -> %{reply: "Your refund is on its way."} end)
+  |> Graph.add_node(:store_credit, store_credit)
+  |> Graph.add_edge(Graph.start(), :refund_to_card)
+  |> Graph.add_edge(:refund_to_card, :confirm)
+  |> Graph.add_edge(:confirm, Graph.end_node())
+  |> Graph.add_edge(:store_credit, Graph.end_node())
+  |> Graph.compile!()
 
-{:interrupted, interrupt} =
-  Compiled.invoke(graph, %{draft: "Send this response?"}, config: config)
-
-{:ok, state} =
-  Compiled.resume(graph, %{interrupt.id => "approved"}, config: config)
+{:ok, state} = Compiled.invoke(refund, %{})
+state.reply
+#=> "Sorry, the card has expired. We added store credit."
 ```
 
-Agents expose the same concept through `BeamWeaver.Agent.resume/3` and
-`BeamWeaver.Agent.resume_review/3` when human-in-the-loop middleware is used.
+## Defaults for many nodes
 
-## Recover After Failure
+`Graph.set_node_defaults/2` applies options to nodes added afterward. Explicit
+node options override them; nested graphs own their own node defaults.
+Use defaults for consistent timeout/retry policy, then specialize mutating or
+long-running steps.
 
-To recover failed graph work, keep the same checkpointer and `thread_id`.
-BeamWeaver decides where to continue from the checkpoint metadata.
-
-Common recovery patterns:
-
-| Situation | BeamWeaver Call |
-| --- | --- |
-| Human interrupt | `BeamWeaver.Graph.Compiled.resume(graph, resume_value, config: config)` |
-| Agent HITL review | Your module-defined agent's `resume/2`, `resume/3`, or `resume_review/3` with the same `config` |
-| Failed fan-out with pending writes | `BeamWeaver.Graph.Compiled.invoke(graph, input_update, config: config)` |
-| Failed error handler or stored resume continuation with no new value | `BeamWeaver.Graph.Compiled.resume(graph, nil, config: config)` |
-| Fork from an older checkpoint | `BeamWeaver.Graph.Compiled.update_state(graph, snapshot.config, values, as_node: node)` then invoke or inspect from the returned config |
-
-{% hint style="info" %}
-**No `invoke(nil)`**
-
-LangGraph Python examples can resume some failures with `graph.invoke(None,
-config)`. BeamWeaver `BeamWeaver.Graph.Compiled.invoke/3` requires a map input or a
-`%BeamWeaver.Graph.Command{}`. Use `%{}` when you are invoking a checkpointed
-thread without new state, or use `BeamWeaver.Graph.Compiled.resume/3` when the
-runtime expects a resume value.
-{% endhint %}
-
-## Starting Points
-
-BeamWeaver continuation starts from graph execution boundaries:
-
-| Graph Shape | Continuation Boundary |
-| --- | --- |
-| Sequential graph | The next checkpointed node or pending task recorded in the thread. |
-| Failed super-step | Successful pending writes are applied; failed or pending tasks continue. |
-| Interrupted node | The node resumes through `BeamWeaver.Graph.interrupt/1` with the provided value. |
-| Subgraph | The parent graph carries checkpoint namespace metadata so the nested graph can resume its own checkpointed task. |
-| Agent | The compiled agent graph resumes through the same graph runtime. |
-
-BeamWeaver does not expose LangGraph's Python Functional API entrypoint
-semantics, so there is no `@entrypoint` replay boundary to document.
-
-## Durability Modes
-
-LangGraph documents per-call durability modes: `"exit"`, `"async"`, and
-`"sync"`. BeamWeaver does not currently expose a `durability:` option on
-`invoke/3` or `stream_events/3`.
-
-Control durability through the pieces BeamWeaver does expose:
-
-| Concern | BeamWeaver Control |
-| --- | --- |
-| Process-local vs restart-durable state | Choose `Checkpoint.ETS` or `Checkpoint.Ecto`. |
-| Checkpoint retention | Use `Checkpoint.Ecto.new(shallow?: true)` or pruning functions when history is not required. |
-| Resume boundaries | Split work into graph nodes or tools. |
-| Failure behavior within a super-step | Use `failure_policy: :panic` or `:proceed`. |
-| Transient failures | Use node `retry:` policies. |
-| Long-running work | Use node `timeout:`, graph `step_timeout:`, `run_timeout:`, and `recursion_limit:`. |
-
-Example:
+Defaults apply to subsequent nodes; a node can override one setting. Both steps below execute:
 
 ```elixir
-graph =
-  workflow
-  |> Graph.add_node(:call_provider, call_provider,
-    retry: BeamWeaver.RetryPolicy.new!(max_attempts: 3, retry_on: :transient),
-    timeout: 30_000
-  )
-  |> Graph.compile!(
-    checkpointer: checkpointer,
-    failure_policy: :proceed,
-    step_timeout: 60_000,
-    run_timeout: 300_000
-  )
+alias BeamWeaver.Graph
+alias BeamWeaver.Graph.Compiled
 
-Compiled.invoke(graph, input,
-  config: config,
-  recursion_limit: 50
-)
+flow =
+  Graph.new()
+  |> Graph.set_node_defaults(retry: [max_attempts: 3, retry_on: :transient], timeout: 30_000)
+  |> Graph.add_node(:lookup, fn _ -> %{status: "shipped"} end)
+  |> Graph.add_node(:carrier, fn _ -> %{delivery: "Thursday"} end, timeout: 10_000)
+  |> Graph.add_edge(Graph.start(), :lookup)
+  |> Graph.add_edge(:lookup, :carrier)
+  |> Graph.add_edge(:carrier, Graph.end_node())
+  |> Graph.compile!()
+
+{:ok, %{status: "shipped", delivery: "Thursday"}} = Compiled.invoke(flow, %{})
 ```
 
-`failure_policy: :proceed` lets a parallel super-step collect successful writes
-and sibling failures before halting. Hard budgets such as `step_timeout` and
-`run_timeout` still stop the run.
+## When checkpoints are written
 
-## Graceful Shutdown
+The runtime saves an input checkpoint and a checkpoint at each completed step,
+waiting for the write before the next step. There is no deferred-write mode.
+Storage latency is part of workflow latency. Larger nodes reduce writes but
+increase the amount of work that may need repetition after failure.
 
-LangGraph documents `RunControl`, `GraphDrained`, `request_drain()`, and
-`runtime.drain_requested` for cooperative drain. BeamWeaver does not currently
-expose an equivalent graph drain API.
+## Graceful shutdown
 
-Operational guidance:
+BeamWeaver is not a job scheduler and has no global drain mode. Your supervisor
+or job queue owns run admission, cancellation and restart scheduling. Record
+in-flight thread IDs, stop accepting new work during shutdown, and continue
+unfinished threads after restart. Keep critical steps short and idempotent.
 
-- Prefer supervised graph/agent processes and durable Ecto checkpoints for
-  production work.
-- Let in-flight calls finish when possible before terminating a service.
-- Use node and graph timeouts to bound work.
-- After restart, continue the same `thread_id` from the latest checkpoint.
-- Treat hard process termination as potentially losing the current in-flight
-  super-step if it has not checkpointed yet.
+## Parallel and subgraph failures
 
-If a product needs cooperative drain semantics, add an application-level
-shutdown flag that nodes check before starting expensive optional work. That is
-not the same as LangGraph's `RunControl`; it is ordinary application logic.
+A child failure becomes a failure of its parent node, so the parent's node
+retry/error policy applies. With checkpoints, nested continuation can retain
+completed child work. Keep child state namespaces distinct and inspect both
+parent and child events when diagnosing retries. See [Subgraphs](subgraphs.md).
+
+A parent can handle a child graph failure:
+
+```elixir
+alias BeamWeaver.Graph
+alias BeamWeaver.Graph.Compiled
+
+billing =
+  Graph.new()
+  |> Graph.add_node(:refund_to_card, refund_to_card)
+  |> Graph.add_edge(Graph.start(), :refund_to_card)
+  |> Graph.add_edge(:refund_to_card, Graph.end_node())
+  |> Graph.compile!()
+
+desk =
+  Graph.new()
+  |> Graph.add_node(:billing, billing, error_handler: fn error -> %{escalated: error.type} end)
+  |> Graph.add_edge(Graph.start(), :billing)
+  |> Graph.add_edge(:billing, Graph.end_node())
+  |> Graph.compile!()
+
+Compiled.invoke(desk, %{})
+#=> {:ok, %{escalated: :card_expired}}
+```
+
+## Telemetry for failures
+
+Graph telemetry includes retry, node failure/timeout/exit, step/run timeout,
+node cancellation and run exception events under `[:beam_weaver, :graph, ...]`.
+Metadata identifies graph/node/step and the error where applicable.
+Attach handlers once at startup and keep them fast; handlers execute in the
+emitting process. [Tracing](tracing.md) covers full-run diagnostics.
+
+Attach an application handler, observe the failed node, then detach it:
+
+```elixir
+alias BeamWeaver.Graph
+alias BeamWeaver.Graph.Compiled
+
+defmodule MyApp.GraphAlerts do
+  def handle_event([:beam_weaver, :graph, :node_failure], _measurements, metadata, pid) do
+    send(pid, {:node_failed, metadata.node, metadata.error.type})
+  end
+end
+
+event = [:beam_weaver, :graph, :node_failure]
+:telemetry.attach("graph-alerts", event, &MyApp.GraphAlerts.handle_event/4, self())
+
+{:error, _error} = Compiled.invoke(billing, %{})
+:telemetry.detach("graph-alerts")
+
+receive do
+  {:node_failed, "refund_to_card", type} -> type
+after
+  1_000 -> :no_event
+end
+
+#=> :card_expired
+```
+
+## Provider-native replay
+
+When your application stores provider turns directly, preserve the full turn
+contract, not just rendered text. `Provider.Response.normalize_execution_result/3`
+returns message, outcome and a JSON-safe replay value bound to provider/model/
+profile. `Provider.Replay` restores it against the expected binding and
+rejects mismatches.
+
+Replay retains provider-native content and tool calls but not your tool
+results or all raw response metadata. Store the rest of the conversation too.
+Use `turn_disposition` to distinguish final output, pending client tools,
+filtering and context limits. This is separate from graph checkpoint replay.

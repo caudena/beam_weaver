@@ -21,15 +21,11 @@ defmodule BeamWeaver.OpenAI.ToolCalling do
   Converts one tool declaration into the OpenAI request shape.
   """
   @spec to_openai_tool(term()) :: map()
-  def to_openai_tool(%Tool{} = tool), do: Messages.tool_to_openai(tool)
-
-  def to_openai_tool(tool) when is_atom(tool), do: Messages.tool_to_openai(tool)
-
-  def to_openai_tool(%{__struct__: _module} = tool), do: Messages.tool_to_openai(tool)
+  def to_openai_tool(tool) when is_atom(tool) or is_struct(tool), do: Messages.tool_to_openai(tool)
 
   def to_openai_tool(tool) when is_map(tool) do
     tool
-    |> stringify_keys()
+    |> BeamWeaver.MapShape.stringify_keys()
     |> normalize_tool_map()
   end
 
@@ -42,7 +38,7 @@ defmodule BeamWeaver.OpenAI.ToolCalling do
       {render_opts, merge_opts} = Keyword.split(opts, [:strict])
 
       tool
-      |> function_tool(render_opts)
+      |> Renderer.openai_tool!(render_opts)
       |> merge_options(merge_opts)
     else
       tool
@@ -56,9 +52,8 @@ defmodule BeamWeaver.OpenAI.ToolCalling do
   """
   @spec web_search(keyword()) :: map()
   def web_search(opts \\ []) do
-    type = Keyword.get(opts, :type, "web_search_preview")
-
-    build(type, Keyword.delete(opts, :type))
+    {type, opts} = Keyword.pop(opts, :type, "web_search_preview")
+    build(type, opts)
   end
 
   @doc """
@@ -102,7 +97,7 @@ defmodule BeamWeaver.OpenAI.ToolCalling do
   end
 
   @doc """
-  Builds a custom tool declaration.
+  Builds a custom client-tool declaration; no action executor is supplied.
   """
   @spec custom(String.t(), keyword()) :: map()
   def custom(name, opts \\ []) when is_binary(name) do
@@ -120,7 +115,7 @@ defmodule BeamWeaver.OpenAI.ToolCalling do
   end
 
   @doc """
-  Builds an OpenAI apply_patch built-in tool declaration.
+  Builds an apply_patch client-tool declaration. The application must execute patches and return results.
   """
   @spec apply_patch(keyword()) :: map()
   def apply_patch(opts \\ []) do
@@ -148,19 +143,9 @@ defmodule BeamWeaver.OpenAI.ToolCalling do
         :error -> List.duplicate("You have correctly called this tool.", length(calls))
       end
 
-    messages = [
-      Message.user(input),
-      Message.assistant("", tool_calls: calls)
-    ]
-
     messages =
-      messages ++
-        Enum.map(Enum.zip(outputs, calls), fn {output, call} ->
-          Message.tool(output,
-            tool_call_id: call.id,
-            name: call.name
-          )
-        end)
+      [Message.user(input), Message.assistant("", tool_calls: calls)] ++
+        for {output, call} <- Enum.zip(outputs, calls), do: Message.tool(output, tool_call_id: call.id, name: call.name)
 
     case Keyword.get(opts, :ai_response) do
       response when is_binary(response) and response != "" ->
@@ -172,12 +157,7 @@ defmodule BeamWeaver.OpenAI.ToolCalling do
   end
 
   @doc false
-  @spec stringify_keys(map()) :: map()
-  def stringify_keys(map) when is_map(map) do
-    BeamWeaver.MapShape.stringify_keys(map)
-  end
-
-  defp build(type, opts) do
+  def build(type, opts) do
     opts
     |> BeamWeaver.MapShape.stringify_entries()
     |> Map.put("type", type)
@@ -187,20 +167,16 @@ defmodule BeamWeaver.OpenAI.ToolCalling do
     Map.merge(tool, BeamWeaver.MapShape.stringify_entries(opts))
   end
 
-  defp function_tool(%Tool{} = tool, render_opts), do: Renderer.openai_tool!(tool, render_opts)
-
-  defp function_tool(%{__struct__: _module} = tool, render_opts),
-    do: Renderer.openai_tool!(tool, render_opts)
-
   defp beamweaver_tool?(%Tool{}), do: true
-  defp beamweaver_tool?(%{__struct__: module}), do: function_exported?(module, :name, 1)
+  defp beamweaver_tool?(%{__struct__: module}), do: Tool.implemented_by?(module)
+  defp beamweaver_tool?(module) when is_atom(module), do: Tool.implemented_by?(module)
   defp beamweaver_tool?(_tool), do: false
 
   defp normalize_tool_map(%{"type" => "function", "function" => function} = tool)
        when is_map(function) do
     tool
     |> Map.delete("function")
-    |> Map.merge(stringify_keys(function))
+    |> Map.merge(BeamWeaver.MapShape.stringify_keys(function))
   end
 
   defp normalize_tool_map(tool), do: tool
@@ -219,17 +195,11 @@ defmodule BeamWeaver.OpenAI.ToolCalling do
     do: {to_string(name), args}
 
   defp example_call_name_and_args(%{__struct__: module} = call) do
-    args =
-      call
-      |> Map.from_struct()
-      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-      |> Map.new()
-
-    {module |> Module.split() |> List.last(), args}
+    {module |> Module.split() |> List.last(), call |> Map.from_struct() |> BeamWeaver.MapShape.reject_nil_values()}
   end
 
   defp example_call_name_and_args(call) when is_map(call) do
-    call = stringify_keys(call)
+    call = BeamWeaver.MapShape.stringify_keys(call)
     name = call["name"] || call["tool"] || call["type"]
     args = call["args"] || call["arguments"] || call["input"] || call["parameters"] || %{}
 

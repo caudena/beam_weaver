@@ -5,7 +5,7 @@ defmodule BeamWeaver.Provider.OpenAICompatibleStreamingTest do
   alias BeamWeaver.Core.Messages.ToolCall
   alias BeamWeaver.Provider.OpenAICompatibleStreaming, as: Streaming
   alias BeamWeaver.Stream.Events
-  alias BeamWeaver.ZAI.Error
+  alias BeamWeaver.Core.Error
 
   test "one reducer reconstructs reasoning, text, tools, finish reason, usage, and unknown deltas" do
     body = """
@@ -35,6 +35,32 @@ defmodule BeamWeaver.Provider.OpenAICompatibleStreamingTest do
     assert Enum.all?(events, &(&1.metadata.provider == :test_provider))
   end
 
+  test "a live stream ends with one Done that carries the usage sent after the finish reason" do
+    usage = %{"prompt_tokens" => 2, "completion_tokens" => 1, "total_tokens" => 3}
+    usage_chunk = %{"id" => "chatcmpl_1", "choices" => [], "usage" => usage}
+
+    batches = [
+      [%{"data" => %{"id" => "chatcmpl_1", "choices" => [%{"index" => 0, "delta" => %{"content" => "Hi"}}]}}],
+      [%{"data" => %{"id" => "chatcmpl_1", "choices" => [%{"index" => 0, "delta" => %{}, "finish_reason" => "stop"}]}}],
+      [%{"data" => usage_chunk}]
+    ]
+
+    {typed, state} = Enum.flat_map_reduce(batches, nil, &Streaming.typed_events(&1, &2, config()))
+    reply = &Streaming.events_to_message(&1, config(), [])
+    assert {:ok, final} = Streaming.finish_typed_events(state, :test_provider, reply)
+
+    assert [%Events.Token{}, %Events.MessageChunk{}, %Events.Message{message: message}, %Events.Done{} = done] =
+             Enum.map(typed ++ final, & &1.event)
+
+    assert message.usage_metadata == %{input_tokens: 2, output_tokens: 1, total_tokens: 3}
+    assert done.usage == usage
+    assert done.result == usage_chunk
+
+    whole = batches |> Enum.concat() |> Streaming.typed_events(config())
+    assert [%Events.Done{usage: ^usage}] = for(%{event: %Events.Done{} = done} <- whole, do: done)
+    assert %{event: %Events.Done{}} = List.last(whole)
+  end
+
   test "invalid collected streams return the configured provider error" do
     assert {:error, %Error{} = error} = Streaming.stream_body_to_message(:not_a_body, config())
     assert error.type == :invalid_response
@@ -45,7 +71,6 @@ defmodule BeamWeaver.Provider.OpenAICompatibleStreamingTest do
     %{
       provider: :test_provider,
       provider_name: "Test provider",
-      error_module: Error,
       usage_metadata: fn %{"usage" => usage} ->
         %{
           input_tokens: usage["prompt_tokens"],

@@ -1,436 +1,385 @@
 # Filesystem
 
-Official Deep Agents calls this layer "backends." BeamWeaver names the public
-surface `BeamWeaver.Filesystem` because the agent-facing capability is a virtual
-filesystem: tools such as `ls`, `read_file`, `write_file`, `edit_file`, `glob`,
-and `grep` operate on absolute POSIX-style paths regardless of where the bytes
-are stored.
+A filesystem gives an agent tools to read, search, create and edit files.
+Choose the backend based on who owns the data and how long it must live.
+Filesystem paths are virtual absolute paths starting with `/`; a local root
+maps them into a specific directory.
 
-Use `filesystem` in the agent DSL or `:filesystem` with
-`BeamWeaver.Agent.build/1`. Runtime `backend:` remains accepted as a
-compatibility alias, but new BeamWeaver documentation should use
-`filesystem:`.
+Complete [Installation](installation.md). This real OpenAI example reads
+supplied source material and writes an observable result in thread state.
 
-{% hint style="info" %}
-**Name Mapping**
-
-Python Deep Agents `StateBackend`, `FilesystemBackend`, `StoreBackend`, and
-`CompositeBackend` map to BeamWeaver `BeamWeaver.Filesystem.State`,
-`BeamWeaver.Filesystem.Local`, `BeamWeaver.Filesystem.Store`, and
-`BeamWeaver.Filesystem.Composite`.
-{% endhint %}
-
-## Quickstart
-
-Thread-scoped scratch files are the default when a harness capability needs a
-filesystem, but you can configure one explicitly:
+## Read a source and create a note
 
 ```elixir
-alias BeamWeaver.Agent
-alias BeamWeaver.Filesystem
-
-{:ok, agent} =
-  Agent.build(
-    model: "openai:gpt-5.4",
-    filesystem: Filesystem.State.new(),
-    tools: []
-  )
-```
-
-Module-defined agents use the same setting:
-
-```elixir
-defmodule MyApp.Agent do
+defmodule MyApp.WorkspaceAgent do
   use BeamWeaver.Agent
 
-  model "openai:gpt-5.4"
+  model "openai:gpt-5.4-mini", max_tokens: 512, timeout: 60_000
+  system_prompt "Read the source file before writing a note. Preserve the exact order ID and delivery day."
   filesystem BeamWeaver.Filesystem.State.new()
+  recursion_limit 20
+end
+
+{:ok, result} =
+  MyApp.WorkspaceAgent.invoke(%{
+    messages: ["Read /orders/A-1001.md and save its facts in /notes/A-1001.md."],
+    files: %{"/orders/A-1001.md" => "Order A-1001 arrives Thursday.\n"}
+  })
+
+true = Enum.any?(result.messages, &(&1.role == :tool and &1.name == "read_file"))
+note = result.files["/notes/A-1001.md"].content
+true = note =~ "A-1001"
+true = note =~ "Thursday"
+```
+
+Input strings seed state files. Agent-written files are `Filesystem.FileData`
+values with `content`. A checkpointer keeps state files between calls on the
+same thread. Without it, carry the files forward explicitly or use another
+backend.
+
+## Where the files live
+
+| Backend | Storage | Command execution |
+| --- | --- | --- |
+| `State` | Thread state; durability follows checkpoints | No |
+| `Local` | A directory shared by callers using that root | No |
+| `LocalShell` | Local directory | On the application host |
+| `Store` | Memory-store records under a namespace | No |
+| `Composite` | Routes by virtual path prefix | Through its default backend only |
+| `Sandbox` | A sandbox's filesystem | Inside that sandbox |
+
+Modules are under `BeamWeaver.Filesystem`. Creating a backend value does not
+make its underlying storage durable. Store-backed files work with the memory
+adapter's persistence, including Ecto; state files remain thread-local.
+
+### A directory
+
+Application code can use the same backend. This creates and removes a unique
+temporary directory:
+
+```elixir
+alias BeamWeaver.Filesystem
+root = Path.join(System.tmp_dir!(), "beam-weaver-files-#{System.unique_integer([:positive])}")
+
+try do
+  backend = Filesystem.Local.new(root: root)
+  [%{error: nil}] = Filesystem.upload_files(backend, [{"/notes/demo.md", "A-1001 arrives Thursday.\n"}])
+  [download] = Filesystem.download_files(backend, ["/notes/demo.md"])
+  "A-1001 arrives Thursday.\n" = download.content
+  true = File.exists?(Path.join(root, "notes/demo.md"))
+after
+  File.rm_rf!(root)
 end
 ```
 
-Built-in filesystems:
+Local creates its root if needed and rejects paths/symlinks escaping it.
+Give an agent a dedicated root or appropriate read/write rules. A temporary
+directory is suitable for experiments, not durable production notes.
 
-| Filesystem | Use |
-| --- | --- |
-| `BeamWeaver.Filesystem.State` | Thread-scoped files stored in graph state. |
-| `BeamWeaver.Filesystem.Local` | Trusted local disk under a configured root. |
-| `BeamWeaver.Filesystem.LocalShell` | Local disk plus host shell execution. Unsafe outside controlled development. |
-| `BeamWeaver.Filesystem.Store` | Durable files in a `BeamWeaver.Memory.Store` namespace. |
-| `BeamWeaver.Filesystem.Composite` | Route different virtual path prefixes to different filesystems. |
-| `BeamWeaver.Filesystem.Sandbox` | Adapt a `BeamWeaver.Sandbox` implementation into filesystem tools plus `execute`. |
-| Custom module | Any struct whose module calls `use BeamWeaver.Filesystem`. See [Custom Filesystems](#custom-filesystems). |
+### A memory store
 
-## Tool Surface
+`Filesystem.Store.new(store: store, namespace: parts)` stores one record per
+file. A runtime namespace function can select the authenticated tenant.
+The caller can also supply the store per invocation. Scope reads, writes and
+maintenance operations consistently; see [Memory Files](memory_files.md).
 
-Setting `filesystem` on an agent adds
-`BeamWeaver.Agent.Middleware.Filesystem`, which contributes these model-visible
-tools:
+Store-backed files use explicit namespaces and can be read without a model:
+
+```elixir
+alias BeamWeaver.Filesystem
+store = BeamWeaver.Memory.ETS.new()
+policy_backend = Filesystem.Store.new(store: store, namespace: ["acme", "policies"])
+[%{error: nil}] = Filesystem.upload_files(policy_backend, [{"/refunds.md", "Refunds take five business days.
+"}])
+[%{content: "Refunds take five business days.
+", error: nil}] = Filesystem.download_files(policy_backend, ["/refunds.md"])
+```
+
+### Mix backends by path
+
+`Composite` uses the longest matching route prefix. Unmatched paths go to its
+default, State unless configured otherwise. Listings/searches expose one
+virtual tree, including nested mounts. Backend errors propagate rather than
+being presented as complete partial results. State routes retain full virtual
+paths in the thread's `files` map.
+
+A routed state backend returns a file update for the parent state:
+
+```elixir
+scratch = BeamWeaver.Filesystem.Composite.new(routes: %{"/scratch/" => BeamWeaver.Filesystem.State.new()})
+%{files_update: files} = BeamWeaver.Filesystem.write(scratch, "/scratch/draft.md", "Draft reply", state: %{})
+Map.keys(files)
+#=> ["/scratch/draft.md"]
+```
+
+The policy route uses the store above; unmatched paths use thread state:
+
+```elixir
+alias BeamWeaver.Filesystem
+mixed = Filesystem.Composite.new(default: Filesystem.State.new(), routes: %{"/policies/" => policy_backend})
+%{error: nil, file_data: %{content: policy_text}} = Filesystem.read(mixed, "/policies/refunds.md", state: %{})
+true = policy_text =~ "five business days"
+%{error: nil, files_update: notes} = Filesystem.write(mixed, "/notes/draft.md", "Ready for review.", state: %{})
+true = Map.has_key?(notes, "/notes/draft.md")
+```
+
+### Run commands
+
+LocalShell executes on your host and is not isolation. Commands receive a
+restricted baseline environment plus `env:`; `inherit_env: true` passes the
+whole application environment. Its command timeout is in seconds, unlike
+agent/node timeouts. Output can be truncated to first/last portions.
+See [Sandboxes](sandboxes.md) before exposing execution to an agent.
+
+Use an explicit temporary working directory and inspect the command result:
+
+```elixir
+root = Path.join(System.tmp_dir!(), "beam-weaver-shell-#{System.unique_integer([:positive])}")
+
+try do
+  shell = BeamWeaver.Filesystem.LocalShell.new(root: root, timeout: 5)
+  result = BeamWeaver.Filesystem.Executable.execute(shell, "printf ready")
+  {0, "ready"} = {result.exit_code, result.output}
+after
+  File.rm_rf!(root)
+end
+```
+
+### A sandbox
+
+`Filesystem.Sandbox` adapts a started sandbox to file tools and execution.
+Start long-lived sandboxes outside per-call declarations and stop them at the
+end of their intended lifecycle. Mounted composite files are not automatically
+visible to a command running in another backend.
+
+## The file tools
 
 | Tool | Behavior |
 | --- | --- |
-| `ls` | List files and directories under an absolute virtual path. |
-| `read_file` | Read a file with optional `offset` and `limit` line pagination. |
-| `write_file` | Create a new file. Existing files are not overwritten. |
-| `edit_file` | Replace exact strings in UTF-8 files. Multiple matches require `replace_all`. |
-| `glob` | Find files matching a glob pattern. |
-| `grep` | Search UTF-8 files for a literal string. |
-| `execute` | Added only when the configured filesystem implements `BeamWeaver.Filesystem.Executable`. |
+| `ls` | List immediate entries at `path` |
+| `read_file` | Read `file_path`, with zero-based line `offset` and `limit` |
+| `write_file` | Create or replace complete content |
+| `edit_file` | Replace exact `old_string`; ambiguous matches need `replace_all` |
+| `glob` | Match names/paths under a search root |
+| `grep` | Find literal, case-sensitive text; optional file glob |
+| `execute` | Run a command where supported |
 
-`read_file` returns UTF-8 text directly. Binary content is stored as base64 in
-`BeamWeaver.Filesystem.FileData`; the tool currently presents base64 data as an
-image content block. Use `download_files/3` from custom code when you need raw
-bytes instead of model-visible content.
+Reads default to 2,000 lines and cap text at 80,000 characters on a line
+boundary. Follow continuation notes for larger files. Images and PDFs can
+return content blocks; other binary files return a notice. Search/list output
+is also bounded and reports truncation; narrow the query rather than treating
+that output as exhaustive.
 
-The middleware also offloads large tool results under
-`/large_tool_results/<tool_call_id>` and oversized user messages under
-`/conversation_history/...`, so the model can recover details later with
-`read_file` or `grep`.
+Missing search roots return errors. Grep is not regex: use an appropriate
+command tool for regex search where execution is permitted. Concurrent edits
+to the same path in one model turn are rejected; shared application writers
+still need coordination.
 
-## State
+### Glob patterns
 
-`BeamWeaver.Filesystem.State` stores files in graph state under the `:files`
-key by default.
-
-```elixir
-filesystem BeamWeaver.Filesystem.State.new()
-```
-
-Use it for scratch pads, intermediate artifacts, offloaded tool results, and
-thread-scoped memory. Persistence depends on your graph or agent checkpointer:
-files survive across turns in the same thread when state is checkpointed, but
-they are not shared across threads.
-
-You can change the state key:
-
-```elixir
-filesystem BeamWeaver.Filesystem.State.new(state_key: :workspace_files)
-```
-
-## Local
-
-`BeamWeaver.Filesystem.Local` reads and writes real files under a trusted local
-root:
-
-```elixir
-filesystem BeamWeaver.Filesystem.Local.new(root: "/path/to/project")
-```
-
-`root_dir:` is also accepted:
-
-```elixir
-filesystem BeamWeaver.Filesystem.Local.new(root_dir: "/path/to/project")
-```
-
-The agent still sees virtual absolute paths. For example, `/lib/app.ex` maps to
-`/path/to/project/lib/app.ex`. BeamWeaver normalizes paths under the configured
-root, rejects `..`, `~`, Windows drive paths, and unsafe symlink escapes.
-
-{% hint style="warning" %}
-**Local Files Are Real Files**
-
-`BeamWeaver.Filesystem.Local` gives the agent direct read/write access under
-the configured root. Use it for trusted local development, CI workspaces, or
-mounted volumes. Do not expose it to arbitrary end users unless the surrounding
-application enforces a real security boundary.
-{% endhint %}
-
-For most coding-assistant setups, wrap local project access in a composite
-filesystem and keep internal agent artifacts in state:
-
-```elixir
-alias BeamWeaver.Filesystem
-
-filesystem =
-  Filesystem.Composite.new(
-    default: Filesystem.State.new(),
-    routes: %{
-      "/workspace/" => Filesystem.Local.new(root: "/path/to/project")
-    }
-  )
-```
-
-This keeps `/large_tool_results/` and `/conversation_history/` out of your
-project directory while still giving the agent `/workspace/...` access.
-
-## Local Shell
-
-`BeamWeaver.Filesystem.LocalShell` extends local filesystem access with the
-`execute` tool:
-
-```elixir
-filesystem BeamWeaver.Filesystem.LocalShell.new(
-  root: "/path/to/project",
-  env: %{"MIX_ENV" => "test"},
-  timeout: 120,
-  max_output_bytes: 100_000
-)
-```
-
-Commands run through `sh -c` in `root` with the current operating-system user's
-permissions. `inherit_env: false` clears inherited environment variables before
-applying `env`.
-
-{% hint style="danger" %}
-**Not A Sandbox**
-
-`LocalShell` can run arbitrary host commands. Filesystem permissions only apply
-to filesystem tools, not to shell command behavior. Use a sandbox filesystem or
-your own command policy for untrusted input, production services, or multi-tenant
-systems.
-{% endhint %}
-
-## Store
-
-`BeamWeaver.Filesystem.Store` stores files in a `BeamWeaver.Memory.Store`
-namespace. Use it for cross-thread files such as instructions or shared
-reference material.
-
-{% hint style="info" %}
-**Agent Memory**
-
-Keep agent memory either in plain files with `BeamWeaver.Filesystem.Local` or
-as records in a `BeamWeaver.Memory` store. [Memory](memory.md#choose-a-long-term-memory)
-compares the two.
-{% endhint %}
-
-```elixir
-alias BeamWeaver.Filesystem
-alias BeamWeaver.Memory
-
-store = Memory.ETS.new()
-
-filesystem =
-  Filesystem.Store.new(
-    store: store,
-    namespace: ["users", "user-123", "files"]
-  )
-
-{:ok, agent} =
-  BeamWeaver.Agent.build(
-    model: "openai:gpt-5.4",
-    store: store,
-    filesystem: filesystem
-  )
-```
-
-For multi-user applications, use a namespace factory so each user or tenant gets
-isolated storage:
-
-```elixir
-filesystem =
-  BeamWeaver.Filesystem.Store.new(
-    namespace: fn runtime ->
-      user_id = get_in(runtime.context || %{}, [:user_id]) || "anonymous"
-      ["users", user_id, "files"]
-    end
-  )
-```
-
-Namespace components cannot be empty and cannot contain `*` or `?`.
-
-## Composite
-
-`BeamWeaver.Filesystem.Composite` routes virtual path prefixes to different
-filesystems. Longer prefixes win.
-
-```elixir
-alias BeamWeaver.Filesystem
-
-filesystem =
-  Filesystem.Composite.new(
-    default: Filesystem.State.new(),
-    routes: %{
-      "/workspace/" => Filesystem.Local.new(root: "/srv/project"),
-      "/memories/" => Filesystem.Local.new(root: "/var/lib/my_app/memories")
-    }
-  )
-```
-
-Behavior:
-
-| Virtual path | Routed to |
-| --- | --- |
-| `/notes/plan.md` | `State` default |
-| `/workspace/lib/app.ex` | `Local` under `/srv/project/lib/app.ex` |
-| `/memories/preferences.md` | `Local` under `/var/lib/my_app/memories/preferences.md` |
-
-`ls`, `glob`, and `grep` preserve the original route prefixes in model-visible
-results. If the default filesystem implements `BeamWeaver.Filesystem.Executable`,
-the composite filesystem exposes `execute` through that default.
-
-You can set `artifacts_root:` to move middleware-created offloading paths:
-
-```elixir
-filesystem =
-  Filesystem.Composite.new(
-    default: Filesystem.State.new(),
-    artifacts_root: "/internal",
-    routes: %{"/workspace/" => Filesystem.Local.new(root: "/srv/project")}
-  )
-```
-
-## Sandbox
-
-`BeamWeaver.Filesystem.Sandbox` adapts a `BeamWeaver.Sandbox` implementation to
-the filesystem behaviour and executable extension:
-
-```elixir
-sandbox = BeamWeaver.Sandbox.local(root: "/tmp/agent-work")
-
-filesystem =
-  BeamWeaver.Filesystem.Sandbox.new(sandbox: sandbox)
-```
-
-Use a sandbox-backed filesystem when the agent needs shell execution but should
-not run directly on the host. BeamWeaver includes local and Docker sandbox
-building blocks; hard isolation depends on the sandbox implementation you
-choose and how you deploy it.
-
-See [Sandboxes](sandboxes.md) for sandbox lifecycle, file transfer APIs,
-provider integration patterns, and security guidance.
+A pattern without `/` matches names at any depth below `path`. A path pattern
+is relative to that root; `**/` spans directories and a leading `/` anchors
+the immediate root. `*`, `?`, character classes, alternatives and escaping
+are supported. Malformed patterns fail. Permission patterns have a narrower
+syntax and do not support character classes.
 
 ## Permissions
 
-Use `BeamWeaver.Filesystem.Permission` to allow or deny model-visible
-filesystem-tool operations before they reach the backend:
+Rules are ordered: **first match wins; unmatched paths are allowed**. End a
+restricted allowlist with a broad deny rule:
 
 ```elixir
 alias BeamWeaver.Filesystem.Permission
 
-filesystem_permissions [
-  Permission.new(
-    operations: [:write],
-    paths: ["/policies/**"],
-    mode: :deny
-  ),
-  Permission.new(
-    operations: [:read, :write],
-    paths: ["/workspace/**"],
-    mode: :allow
-  )
+rules = [
+  Permission.new(paths: ["/workspace/secrets/**"], mode: :deny),
+  Permission.new(paths: ["/workspace/**"], mode: :allow),
+  Permission.new(paths: ["/**"], mode: :deny)
 ]
+
+true = Permission.allowed?(rules, :read, "/workspace/notes.md")
+false = Permission.allowed?(rules, :read, "/workspace/secrets/key.txt")
+false = Permission.allowed?(rules, :read, "/etc/hosts")
 ```
 
-Rules are evaluated in order and the first match wins. If no rule matches, the
-operation is allowed. Permissions apply to `ls`, `read_file`, `write_file`,
-`edit_file`, `glob`, and `grep`; list and search results are post-filtered so
-denied paths do not appear in model-visible output.
+Pass rules through `filesystem_permissions`. `operations:` selects read/write;
+`paths:` supports `*`, `?`, `**` and alternatives. Deny rules account for case
+and normalization differences; allow rules match exactly. Tool checks validate
+both the requested path and its canonical target where supported.
 
-Permissions are not a shell sandbox. If `execute` is available, enforce command
-policy in the executable filesystem, sandbox, host environment, or
-`BeamWeaver.Agent.Middleware.ShellTool`.
+Permissions apply to the six file tools, not shell execution, custom tools or
+direct application calls to `Filesystem`. They also filter denied paths from
+list/search results. A denied search root must be replaced with an allowed
+root, even when the pattern names an allowed descendant.
 
-See [Filesystem Permissions](permissions.md) for rule ordering, read-only
-memory, subagent overrides, composite routing, and sandbox caveats.
+### Subagent permissions
 
-## Custom Filesystems
+Children using parent filesystem middleware inherit its rules unless their
+spec overrides them. `permissions: []` removes that restriction. A child with
+its own filesystem has its own boundary. The general-purpose worker receives
+the parent workspace rules. Review inheritance before granting shared writes.
 
-Write a module that calls `use BeamWeaver.Filesystem` when you want to project
-S3, Postgres, a remote API, or another storage system into the agent
-filesystem. `use BeamWeaver.Filesystem` declares the behaviour and implements
-the `BeamWeaver.Filesystem.Backend` protocol for the module's struct. The
-`BeamWeaver.Filesystem` functions and the file tools dispatch through that
-protocol, so `@behaviour BeamWeaver.Filesystem` alone is not enough: calls
-raise `protocol BeamWeaver.Filesystem.Backend not implemented`.
+### Composite and executable backends
 
-Required callbacks:
+Rules match virtual paths including mount prefixes. A command can access what
+its execution environment permits regardless of file-tool rules. Keep a
+non-executable composite default when mounts contain protected data, or use a
+separate execution environment with an appropriate policy.
 
-| Callback | Purpose |
-| --- | --- |
-| `ls/3` | Return immediate child entries for a virtual path. |
-| `read/3` | Return `%BeamWeaver.Filesystem.ReadResult{}` with `%FileData{}`. |
-| `write/4` | Create a new file. Return conflict errors instead of overwriting. |
-| `edit/5` | Replace exact strings in a UTF-8 file. |
-| `glob/3` | Return matching `%FileInfo{}` entries. |
-| `grep/3` | Return `%GrepMatch{}` entries. |
-| `upload_files/3` | Bulk upload path/content pairs. |
-| `download_files/3` | Bulk download raw bytes or text. |
+Symlink resolution narrows path access but cannot identify every hard-link
+alias or eliminate races from another process replacing links after a check.
+Do not treat path rules as an operating-system sandbox.
 
-Normal "not found" and validation failures should return result structs with
-`error:` set, not raise exceptions.
+Apply narrow rules before broad rules:
 
 ```elixir
-defmodule MyApp.S3Filesystem do
+alias BeamWeaver.Filesystem.Permission
+
+rules = [
+  Permission.new(paths: ["/workspace/.env", "/workspace/secrets/**"], mode: :deny),
+  Permission.new(paths: ["/workspace/**"], mode: :allow),
+  Permission.new(paths: ["/**"], mode: :deny)
+]
+
+for path <- ["/workspace/notes.md", "/workspace/secrets/api_key.txt", "/etc/hosts"],
+    do: Permission.allowed?(rules, :read, path)
+
+#=> [true, false, false]
+```
+
+Normalization does not turn a forbidden path into an allowed path:
+
+```elixir
+for path <- ["/workspace/./.env", "/WORKSPACE/.ENV", "/workspace/../etc/hosts", "/Workspace/notes.md"],
+    do: Permission.allowed?(rules, :read, path)
+
+#=> [false, false, false, false]
+```
+
+## Change the large-result limits
+
+Explicit `Filesystem` middleware can customize
+`tool_token_limit_before_evict` (default 20,000) and
+`human_message_token_limit_before_evict` (default 50,000); nil disables the
+respective offload. Missing backend/permission options inherit declarations.
+Large results are archived and replaced by previews; [Context Management](context_management.md)
+explains retention and overflow recovery.
+
+## Wrap a backend for policy checks
+
+A wrapper can enforce content rules, quotas or logging before delegating to
+an inner backend. Preserve canonical-path resolution if the inner backend
+supports links. Cover every write path, including uploads performed by your
+application; file-tool permission rules do not automatically cover them.
+
+A wrapper can reject writes and edits while forwarding other operations. This example checks only write/edit content; bulk uploads are delegated unchanged:
+
+```elixir
+defmodule MyApp.NoCardNumbers do
   use BeamWeaver.Filesystem
 
   alias BeamWeaver.Filesystem
 
-  defstruct [:bucket, prefix: ""]
+  defstruct [:inner]
+
+  @refusal "notes must not contain card numbers"
 
   @impl true
-  def ls(_backend, _path, _opts) do
-    %Filesystem.LsResult{entries: []}
+  def write(fs, path, content, opts) do
+    if card_number?(content),
+      do: %Filesystem.WriteResult{path: path, error: @refusal},
+      else: Filesystem.write(fs.inner, path, content, opts)
   end
 
   @impl true
-  def read(_backend, _path, _opts) do
-    %Filesystem.ReadResult{error: "file_not_found"}
+  def edit(fs, path, old, new, opts) do
+    if card_number?(new),
+      do: %Filesystem.EditResult{path: path, error: @refusal},
+      else: Filesystem.edit(fs.inner, path, old, new, opts)
   end
 
   @impl true
-  def write(_backend, path, _content, _opts) do
-    %Filesystem.WriteResult{path: path}
-  end
-
+  def ls(fs, path, opts), do: Filesystem.ls(fs.inner, path, opts)
   @impl true
-  def edit(_backend, path, _old, _new, _opts) do
-    %Filesystem.EditResult{path: path, occurrences: 0, error: "string not found"}
-  end
-
+  def read(fs, path, opts), do: Filesystem.read(fs.inner, path, opts)
   @impl true
-  def glob(_backend, _pattern, _opts) do
-    %Filesystem.GlobResult{matches: []}
-  end
-
+  def glob(fs, pattern, opts), do: Filesystem.glob(fs.inner, pattern, opts)
   @impl true
-  def grep(_backend, _pattern, _opts) do
-    %Filesystem.GrepResult{matches: []}
-  end
-
+  def grep(fs, pattern, opts), do: Filesystem.grep(fs.inner, pattern, opts)
   @impl true
-  def upload_files(_backend, files, _opts) do
-    Enum.map(files, fn {path, _content} -> %Filesystem.UploadResult{path: path} end)
-  end
-
+  def upload_files(fs, files, opts), do: Filesystem.upload_files(fs.inner, files, opts)
   @impl true
-  def download_files(_backend, paths, _opts) do
-    Enum.map(paths, fn path -> %Filesystem.DownloadResult{path: path, error: "file_not_found"} end)
-  end
+  def download_files(fs, paths, opts), do: Filesystem.download_files(fs.inner, paths, opts)
+  @impl true
+  def canonical_paths(fs, paths, opts), do: Filesystem.canonical_paths(fs.inner, paths, opts)
+
+  defp card_number?(content), do: IO.iodata_to_binary(content) =~ ~r/\b(?:\d[ -]?){13,16}\b/
 end
 ```
 
-To expose `execute`, also call `use BeamWeaver.Filesystem.Executable` in the
-same filesystem module. It implements the
-`BeamWeaver.Filesystem.ExecutableBackend` protocol, which is how an agent
-detects that the filesystem can run commands:
+Exercise the wrapper directly:
 
 ```elixir
-defmodule MyApp.RemoteExecutorFilesystem do
-  use BeamWeaver.Filesystem
+fs = %MyApp.NoCardNumbers{inner: BeamWeaver.Filesystem.State.new()}
+BeamWeaver.Filesystem.write(fs, "/notes/ada.md", "Card: 4111 1111 1111 1111").error
+#=> "notes must not contain card numbers"
+```
+
+## Write a backend
+
+Implement `BeamWeaver.Filesystem` operations: listing, reading, writing,
+editing, glob/grep, upload/download and optional canonical paths. Return the
+appropriate result struct with an `error` field on failure. Implement
+`Filesystem.Executable` separately when command execution is supported.
+
+### Check that permissions see your links
+
+Link-capable adapters and wrappers should implement/forward `canonical_paths/3`.
+`Filesystem.Conformance.check_symlinks/3` exercises permission behavior with
+backend-created links. Use it in adapter tests; storage without links does
+not need that check.
+
+An executable adapter can delegate commands to an application-owned container:
+
+```elixir
+defmodule MyApp.ContainerExecutor do
   use BeamWeaver.Filesystem.Executable
+  alias BeamWeaver.Filesystem.Executable.ExecuteResult
+  defstruct [:sandbox]
 
-  defstruct [:endpoint]
+  @impl true
+  def id(workspace), do: "container:" <> workspace.sandbox.container
 
-  # Filesystem callbacks omitted for brevity.
-
-  @impl BeamWeaver.Filesystem.Executable
-  def id(_backend), do: "remote-executor"
-
-  @impl BeamWeaver.Filesystem.Executable
-  def execute(_backend, command, _opts) do
-    %BeamWeaver.Filesystem.Executable.ExecuteResult{
-      exit_code: 0,
-      output: "ran: #{command}"
-    }
+  @impl true
+  def execute(workspace, command, opts) do
+    result = BeamWeaver.Sandbox.execute(workspace.sandbox, command, opts)
+    struct!(ExecuteResult, Map.from_struct(result))
   end
+end
+
+sandbox = BeamWeaver.Sandbox.Docker.new(image: "python:3.11-slim") |> BeamWeaver.Sandbox.Docker.start!()
+
+try do
+  workspace = struct!(MyApp.ContainerExecutor, sandbox: sandbox)
+  result = BeamWeaver.Filesystem.Executable.execute(workspace, "printf ready", timeout: 5)
+  {result.exit_code, result.output}
+  # The result is asserted before the container is stopped.
+  {0, "ready"} = {result.exit_code, result.output}
+after
+  BeamWeaver.Sandbox.Docker.stop(sandbox)
 end
 ```
 
-## Policy Hooks
+A wrapper must preserve canonical-path resolution. Run the conformance check on disposable files:
 
-Path permissions are the first line of defense. For custom validation,
-auditing, rate limits, or content inspection, wrap a filesystem and delegate to
-the inner implementation. See
-[Filesystem Permissions](permissions.md#policy-hooks) for a complete wrapper
-example and the interaction between path rules, composite filesystems, and
-executable backends.
+```elixir
+root = Path.join(System.tmp_dir!(), "beam-weaver-links-#{System.unique_integer([:positive])}")
+
+try do
+  files = struct!(MyApp.NoCardNumbers, inner: BeamWeaver.Filesystem.Local.new(root: root))
+  make_link = fn link, target -> File.ln_s!(Path.join(root, target), Path.join(root, link)) end
+  :ok = BeamWeaver.Filesystem.Conformance.check_symlinks(files, make_link)
+after
+  File.rm_rf!(root)
+end
+```

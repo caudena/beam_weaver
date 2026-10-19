@@ -21,9 +21,9 @@ defmodule BeamWeaver.TypeSafe.Input do
     end
   end
 
-  def json(%Question{} = question), do: question |> Map.from_struct() |> json()
+  defp json(%Question{} = question), do: question |> Map.from_struct() |> json()
 
-  def json(%Message{} = message) do
+  defp json(%Message{} = message) do
     with {:ok, content} <- message_content(message.content),
          {:ok, calls} <- json(message.tool_calls) do
       json(%{
@@ -36,10 +36,10 @@ defmodule BeamWeaver.TypeSafe.Input do
     end
   end
 
-  def json(%ToolCall{} = call), do: call |> Map.from_struct() |> Map.take([:id, :name, :args]) |> json()
-  def json(%_{}), do: invalid("state contains an unsupported struct; project it to JSON data first")
+  defp json(%ToolCall{} = call), do: call |> Map.from_struct() |> Map.take([:id, :name, :args]) |> json()
+  defp json(%_{}), do: invalid("state contains an unsupported struct; project it to JSON data first")
 
-  def json(map) when is_map(map) do
+  defp json(map) when is_map(map) do
     Enum.reduce_while(map, {:ok, %{}}, fn {key, value}, {:ok, acc} ->
       with {:ok, key} <- json_key(key),
            false <- Map.has_key?(acc, key),
@@ -52,15 +52,15 @@ defmodule BeamWeaver.TypeSafe.Input do
     end)
   end
 
-  def json(list) when is_list(list), do: Result.traverse(list, &json/1)
-  def json(value) when is_nil(value) or is_boolean(value) or is_number(value), do: {:ok, value}
+  defp json(list) when is_list(list), do: Result.traverse(list, &json/1)
+  defp json(value) when is_nil(value) or is_boolean(value) or is_number(value), do: {:ok, value}
 
-  def json(value) when is_binary(value) do
+  defp json(value) when is_binary(value) do
     if String.valid?(value), do: {:ok, value}, else: invalid("input must be valid UTF-8")
   end
 
-  def json(value) when is_atom(value), do: {:ok, Atom.to_string(value)}
-  def json(_value), do: invalid("input contains a non-JSON value")
+  defp json(value) when is_atom(value), do: {:ok, Atom.to_string(value)}
+  defp json(_value), do: invalid("input contains a non-JSON value")
 
   defp json_key(key) when is_atom(key), do: {:ok, Atom.to_string(key)}
   defp json_key(key) when is_binary(key), do: json(key)

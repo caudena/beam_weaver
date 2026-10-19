@@ -186,6 +186,17 @@ defmodule BeamWeaver.Provider.ReplayTest do
     assert {:error, %{type: :invalid_provider_replay}} = Replay.restore(projection, binding)
   end
 
+  test "rejects unknown OpenAI reasoning provider fields instead of raising" do
+    projection = %{
+      "version" => 1,
+      "binding" => %{"provider" => "openai"},
+      "content" => [%{"type" => "reasoning", "reasoning" => "x", "provider" => %{"foo" => 1}}],
+      "tool_calls" => []
+    }
+
+    assert {:error, %{type: :invalid_provider_replay}} = Replay.restore(projection, %{provider: "openai"})
+  end
+
   test "reapplies the replay size bound while restoring persisted projections" do
     binding = replay_binding("anthropic")
     assert {:ok, projection} = Replay.project(Message.assistant("answer"), binding)

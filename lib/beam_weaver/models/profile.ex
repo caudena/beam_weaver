@@ -1,6 +1,16 @@
 defmodule BeamWeaver.Models.Profile do
   @moduledoc """
   Model capability metadata.
+
+  `context_limit_kind` says how the limits apply: `:separate_input` when
+  `max_input_tokens` bounds the request alone, and `:shared_input_output`
+  when the request and its output share `max_context_tokens`.
+  `BeamWeaver.ContextBudget` rejects any other kind.
+
+  `reasoning_effort_levels` lists the reasoning efforts a model takes, such as
+  `[:low, :medium, :high]`, and is empty when it takes none or BeamWeaver
+  doesn't know them. `reasoning_effort_default` is the effort the provider
+  uses when a call names none, when it's known.
   """
 
   # credo:disable-for-next-line Credo.Check.Warning.StructFieldAmount
@@ -28,6 +38,8 @@ defmodule BeamWeaver.Models.Profile do
     audio_outputs: false,
     video_outputs: false,
     reasoning_output: false,
+    reasoning_effort_levels: [],
+    reasoning_effort_default: nil,
     tool_calling: false,
     tool_call_streaming: false,
     tool_choice: false,
@@ -140,8 +152,7 @@ defmodule BeamWeaver.Models.Profile do
   def tokenizer_family(%__MODULE__{tokenizer: tokenizer}), do: tokenizer
   def tokenizer_family(_profile), do: nil
 
-  @doc false
-  def known_keys do
+  defp known_keys do
     %__MODULE__{}
     |> Map.from_struct()
     |> Map.keys()

@@ -2,12 +2,20 @@ defmodule BeamWeaver.Checkpoint.Lineage do
   @moduledoc false
 
   alias BeamWeaver.Checkpoint
+  alias BeamWeaver.Checkpoint.Batch
   alias BeamWeaver.Core.Error
 
   @max_count 10_000
   @max_bytes 64 * 1024 * 1024
 
-  def collect(saver, config, opts) do
+  def fork_at(%module{} = saver, source_config, target_thread_id, opts) do
+    with {:ok, lineage} <- collect(saver, source_config, opts),
+         {:ok, configs} <- module.put_many(saver, Batch.fork_entries(lineage, target_thread_id), []) do
+      {:ok, List.last(configs)}
+    end
+  end
+
+  defp collect(saver, config, opts) do
     count = Keyword.get(opts, :max_checkpoints, 1_000)
     bytes = Keyword.get(opts, :max_bytes, @max_bytes)
 
@@ -15,11 +23,8 @@ defmodule BeamWeaver.Checkpoint.Lineage do
          configurable = Checkpoint.configurable(config),
          true <- is_binary(configurable["checkpoint_id"]),
          {:ok, tuple} when not is_nil(tuple) <- Checkpoint.fetch_tuple(saver, config),
-         {:ok, predecessors} <-
-           Checkpoint.list_result(saver, owner_config(configurable),
-             before: config,
-             limit: count - 1
-           ) do
+         owner = %{"configurable" => Map.take(configurable, ["thread_id", "checkpoint_ns", "checkpoint_target_ns"])},
+         {:ok, predecessors} <- Checkpoint.list_result(saver, owner, before: config, limit: count - 1) do
       tuples = Map.new([tuple | predecessors], &{checkpoint_id(&1), &1})
       walk(tuple, tuples, [], %{}, count, bytes, 0, length(predecessors) == count - 1)
     else
@@ -79,12 +84,6 @@ defmodule BeamWeaver.Checkpoint.Lineage do
             error(:checkpoint_lineage_missing, "checkpoint parent is missing")
         end
     end
-  end
-
-  defp owner_config(configurable) do
-    %{
-      "configurable" => Map.take(configurable, ["thread_id", "checkpoint_ns", "checkpoint_target_ns"])
-    }
   end
 
   defp checkpoint_id(tuple), do: tuple.config["configurable"]["checkpoint_id"]

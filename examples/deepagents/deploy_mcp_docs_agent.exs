@@ -1,51 +1,62 @@
+# A documentation agent: it answers from a docs search tool and cites the
+# pages it used. Its instructions live in /AGENTS.md.
+#
+# `search_docs` stands in for the search tool of a documentation server; it
+# returns canned pages so the example runs offline from the docs.
+#
+#   mix run examples/deepagents/deploy_mcp_docs_agent.exs
+
 Code.require_file("support/support.exs", __DIR__)
+
+defmodule BeamWeaver.Examples.DeepAgents.DeployMcpDocsAgent.SearchDocs do
+  use BeamWeaver.Tool
+
+  name "search_docs"
+  description "Search the BeamWeaver documentation and return matching passages with their page paths."
+
+  schema do
+    field :query, :string, description: "What to search for"
+  end
+
+  @impl true
+  def invoke(_tool, %{"query" => _query}, _opts) do
+    {:ok,
+     """
+     docs/filesystem.md: An agent with `filesystem:` gets the tools ls, read_file, write_file, edit_file, glob and grep.
+     docs/filesystem.md: Filesystem.State keeps files in the agent state; Filesystem.Local uses a real directory.
+     docs/sandboxes.md: A sandbox backend also adds the execute tool for shell commands.
+     """}
+  end
+end
 
 defmodule BeamWeaver.Examples.DeepAgents.DeployMcpDocsAgent do
   alias BeamWeaver.Agent
-  alias BeamWeaver.Core.Message
-  alias BeamWeaver.Core.Tool
-  alias BeamWeaver.Filesystem.Local
+  alias BeamWeaver.Examples.DeepAgents.DeployMcpDocsAgent.SearchDocs
   alias BeamWeaver.Examples.DeepAgents.Support
+  alias BeamWeaver.Filesystem.Local
 
   def run do
-    root = fresh_root!("deploy_mcp_docs_agent")
-    File.write!(Path.join(root, "AGENTS.md"), "Answer from docs first. Cite page paths.\n")
+    root = Support.fresh_root!("deploy_mcp_docs_agent")
+
+    File.write!(
+      Path.join(root, "AGENTS.md"),
+      "Answer from search_docs results only, and cite the page paths you used.\n"
+    )
 
     {:ok, agent} =
       Support.create(
-        name: "deploy-mcp-docs-agent",
+        name: "docs-agent",
         model: Support.model(),
         filesystem: Local.new(root: root),
         memory: ["/AGENTS.md"],
-        tools: [docs_search_tool()]
+        tools: [SearchDocs]
       )
 
     {:ok, %{messages: messages}} =
-      Agent.invoke(agent, %{messages: [Message.user("How do DeepAgents backends work?")]})
+      Agent.invoke(agent, %{messages: ["How do filesystem backends work in BeamWeaver?"]})
 
-    IO.puts(Message.text(List.last(messages)))
-  end
-
-  defp docs_search_tool do
-    Tool.from_function!(
-      name: "search_docs",
-      description: "Search connected documentation. This port uses a local MCP-like stub.",
-      input_schema: %{
-        "type" => "object",
-        "properties" => %{"query" => %{"type" => "string"}},
-        "required" => ["query"]
-      },
-      handler: fn %{"query" => query}, _opts ->
-        "docs result for #{query}: backends expose ls/read/write/edit/glob/grep"
-      end
-    )
-  end
-
-  defp fresh_root!(name) do
-    root = Path.join(System.tmp_dir!(), "beam_weaver_deepagents_#{name}")
-    File.rm_rf!(root)
-    File.mkdir_p!(root)
-    root
+    IO.puts(Support.assert_text!(List.last(messages)))
+    Support.assert_tools_called!(messages, ["search_docs"])
   end
 end
 

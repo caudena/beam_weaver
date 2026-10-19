@@ -23,6 +23,27 @@ defmodule BeamWeaver.SchemaTest do
     field(:entries, {:array, NestedFields})
   end
 
+  defmodule Ticket do
+    use BeamWeaver.Schema
+
+    field(:priority, :string, enum: ["low", "high"], nullable: true)
+    field(:status, :string, enum: ["open", nil], nullable: true, required: false)
+    field(:size, {:union, [:string, :integer]}, nullable: true, required: false)
+    field(:note, :any, nullable: true, required: false)
+  end
+
+  test "a field type can be a JSON Schema map" do
+    [{module, _bytecode}] =
+      Code.compile_string("""
+      defmodule BeamWeaver.SchemaTest.MapField do
+        use BeamWeaver.Schema
+        field :due, %{"type" => "string", "format" => "date"}
+      end
+      """)
+
+    assert module.json_schema()["properties"]["due"] == %{"type" => "string", "format" => "date"}
+  end
+
   test "module DSL resolves primitive atoms as JSON Schema types" do
     schema = PrimitiveFields.json_schema()
 
@@ -36,6 +57,15 @@ defmodule BeamWeaver.SchemaTest do
 
     assert schema["properties"]["nested"] == nested_schema
     assert schema["properties"]["entries"] == %{"type" => "array", "items" => nested_schema}
+  end
+
+  test "a nullable field accepts null, and its enum lists nil once" do
+    properties = Ticket.json_schema()["properties"]
+
+    assert properties["priority"] == %{"type" => ["string", "null"], "enum" => ["low", "high", nil]}
+    assert properties["status"]["enum"] == ["open", nil]
+    assert properties["size"] == %{"anyOf" => [%{"type" => "string"}, %{"type" => "integer"}, %{"type" => "null"}]}
+    assert properties["note"] == %{"anyOf" => [%{}, %{"type" => "null"}]}
   end
 
   describe "to_json_schema/1 field defaults" do

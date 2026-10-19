@@ -1,13 +1,14 @@
 defmodule BeamWeaver.Core.Messages.Serialization do
-  @moduledoc """
-  Safe plain-data serialization for messages.
-  """
+  @moduledoc false
+
+  import BeamWeaver.MapShape, only: [reject_nil_values: 1]
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
-  alias BeamWeaver.Core.MessageLike
 
   @version 1
+  @fields ~w(role content id name metadata response_metadata usage_metadata status artifacts server_tool_calls
+             server_tool_results tool_calls tool_call_id)
 
   @spec encode(Message.t()) :: map()
   def encode(%Message{} = message) do
@@ -32,23 +33,9 @@ defmodule BeamWeaver.Core.Messages.Serialization do
   end
 
   @spec decode(map()) :: {:ok, Message.t()} | {:error, Error.t()}
-  def decode(%{"version" => @version, "type" => "message"} = map) do
-    MessageLike.to_message(%{
-      role: map["role"],
-      content: decode_content(map["content"]),
-      id: map["id"],
-      name: map["name"],
-      metadata: map["metadata"] || %{},
-      response_metadata: map["response_metadata"] || %{},
-      usage_metadata: map["usage_metadata"],
-      status: map["status"],
-      artifacts: map["artifacts"] || [],
-      server_tool_calls: map["server_tool_calls"] || [],
-      server_tool_results: map["server_tool_results"] || [],
-      tool_calls: map["tool_calls"] || [],
-      tool_call_id: map["tool_call_id"]
-    })
-  end
+  # `Message.from/1` fills in the defaults of the fields left out.
+  def decode(%{"version" => @version, "type" => "message"} = map),
+    do: map |> Map.take(@fields) |> Map.put_new("content", nil) |> Message.from()
 
   def decode(%{"type" => "message"} = map) do
     {:error,
@@ -57,14 +44,10 @@ defmodule BeamWeaver.Core.Messages.Serialization do
      })}
   end
 
-  def decode(map) when is_map(map), do: MessageLike.to_message(map)
+  def decode(map) when is_map(map), do: Message.from(map)
 
   def decode(_value),
     do: {:error, Error.new(:invalid_message, "serialized message must be a map")}
-
-  defp decode_content(content), do: content
-
-  defp stringify_keys(nil), do: nil
 
   defp stringify_keys(%{__struct__: module} = struct) do
     struct
@@ -78,9 +61,9 @@ defmodule BeamWeaver.Core.Messages.Serialization do
 
   defp stringify_keys(value), do: value
 
-  defp stringify_value(value) when is_map(value), do: stringify_keys(value)
-  defp stringify_value(value) when is_list(value), do: Enum.map(value, &stringify_value/1)
-  defp stringify_value(value), do: value
+  def stringify_value(value) when is_map(value), do: stringify_keys(value)
+  def stringify_value(value) when is_list(value), do: Enum.map(value, &stringify_value/1)
+  def stringify_value(value), do: value
 
   defp struct_type(_module, type) when not is_nil(type), do: type
 
@@ -90,6 +73,4 @@ defmodule BeamWeaver.Core.Messages.Serialization do
   defp encode_status(nil), do: nil
   defp encode_status(status) when is_atom(status), do: Atom.to_string(status)
   defp encode_status(status), do: status
-
-  defp reject_nil_values(map), do: Map.reject(map, fn {_key, value} -> is_nil(value) end)
 end

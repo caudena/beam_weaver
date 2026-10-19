@@ -7,28 +7,17 @@ defmodule BeamWeaver.Compaction.CutPoint do
           {list(InputEvent.t()), list(InputEvent.t())}
   def split(events, tail_budget, active_ids) do
     protected = protected_ids(events, active_ids)
+    protected_ordinal = Enum.find_value(events, &(MapSet.member?(protected, &1.event_id) && &1.lane_event_ordinal))
 
-    {_, budget_ordinal, protected_ordinal, _budget_open} =
+    {_tokens, budget_ordinal} =
       events
       |> Enum.reverse()
-      |> Enum.reduce({0, nil, nil, true}, fn event, {tokens, budget_first, protected_first, budget_open} ->
-        protected_first =
-          if MapSet.member?(protected, event.event_id),
-            do: event.lane_event_ordinal,
-            else: protected_first
-
+      |> Enum.reduce_while({0, nil}, fn event, {tokens, budget_first} ->
         cost = InputEvent.estimated_tokens(event)
 
-        if budget_open and (tokens + cost <= tail_budget or is_nil(budget_first)) do
-          {
-            tokens + cost,
-            event.lane_event_ordinal,
-            protected_first,
-            true
-          }
-        else
-          {tokens, budget_first, protected_first, false}
-        end
+        if tokens + cost <= tail_budget or is_nil(budget_first),
+          do: {:cont, {tokens + cost, event.lane_event_ordinal}},
+          else: {:halt, {tokens, budget_first}}
       end)
 
     first_retained_ordinal =
@@ -45,13 +34,8 @@ defmodule BeamWeaver.Compaction.CutPoint do
   end
 
   defp protected_ids(events, active_ids) do
-    active = MapSet.new(active_ids)
-
-    events
-    |> Enum.filter(& &1.protected)
-    |> Enum.map(& &1.event_id)
-    |> Enum.concat(last_user_ids(events, 2))
-    |> Enum.reduce(active, &MapSet.put(&2, &1))
+    flagged = for event <- events, event.protected, do: event.event_id
+    MapSet.new(active_ids ++ flagged ++ last_user_ids(events, 2))
   end
 
   defp last_user_ids(events, count) do
@@ -90,16 +74,13 @@ defmodule BeamWeaver.Compaction.CutPoint do
       |> Enum.flat_map(&tool_call_ids/1)
       |> MapSet.new()
 
-    events
-    |> Enum.filter(fn event ->
-      event.lane_event_ordinal >= ordinal or
-        Enum.any?(tool_call_ids(event), &MapSet.member?(retained_call_ids, &1))
-    end)
-    |> List.first()
-    |> case do
-      nil -> ordinal
-      event -> event.lane_event_ordinal
-    end
+    first =
+      Enum.find(events, fn event ->
+        event.lane_event_ordinal >= ordinal or
+          Enum.any?(tool_call_ids(event), &MapSet.member?(retained_call_ids, &1))
+      end)
+
+    if first, do: first.lane_event_ordinal, else: ordinal
   end
 
   defp tool_call_ids(%InputEvent{tool: %{} = tool}) do

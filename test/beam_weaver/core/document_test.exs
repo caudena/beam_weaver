@@ -1,11 +1,10 @@
 defmodule BeamWeaver.Core.DocumentTest do
   use ExUnit.Case, async: true
 
-  alias BeamWeaver.Blob
   alias BeamWeaver.Core.Document
 
   test "builds pattern-matchable documents with string ids and metadata" do
-    assert {:ok, %Document{id: "123", content: "hello", metadata: %{source: "test"}, type: "Document"}} =
+    assert {:ok, %Document{id: "123", content: "hello", metadata: %{source: "test"}}} =
              Document.new("hello", id: 123, metadata: %{source: "test"})
   end
 
@@ -26,52 +25,17 @@ defmodule BeamWeaver.Core.DocumentTest do
     assert error.type == :invalid_document
   end
 
-  test "documents inspect with content and metadata for debugging" do
-    doc = Document.new!("Hello, World!", metadata: %{source: "fixture"})
+  test "from/1 builds documents from documents, strings, and :content maps" do
+    doc = Document.new!("hello", id: "d1")
 
-    inspected = inspect(doc)
-    assert inspected =~ "BeamWeaver.Core.Document"
-    assert inspected =~ "Hello, World!"
-    assert inspected =~ "source"
-  end
+    assert {:ok, ^doc} = Document.from(doc)
+    assert {:ok, %Document{content: "hi", metadata: %{}}} = Document.from("hi")
 
-  test "documents expose serializable prompt strings" do
-    assert Document.serializable?()
+    assert {:ok, %Document{id: "7", content: "hi", metadata: %{source: "s"}}} =
+             Document.from(%{content: "hi", id: 7, metadata: %{source: "s"}})
 
-    assert to_string(Document.new!("Hello")) == "page_content='Hello'"
-
-    assert to_string(Document.new!("Hello", metadata: %{source: "fixture"})) ==
-             "page_content='Hello' metadata=%{source: \"fixture\"}"
-  end
-
-  test "blobs read memory and path data with source and mimetype metadata" do
-    assert {:ok, memory} =
-             Blob.from_data("hello", id: 123, source: "inline", mime_type: "text/plain")
-
-    assert memory.id == "123"
-    assert memory.mimetype == "text/plain"
-    assert Blob.source(memory) == "inline"
-    assert Blob.repr(memory) == "Blob 123 inline"
-    assert {:ok, "hello"} = Blob.as_string(memory)
-    assert {:ok, "hello"} = Blob.as_bytes(memory)
-
-    assert {:ok, "hello"} =
-             Blob.as_bytes_io(memory, fn io ->
-               IO.read(io, :eof)
-             end)
-
-    path = Path.join(System.tmp_dir!(), "beam-weaver-blob-#{System.unique_integer()}.txt")
-    File.write!(path, "from path")
-
-    try do
-      assert {:ok, path_blob} = Blob.from_path(path)
-      assert path_blob.path == path
-      assert path_blob.mimetype == "text/plain"
-      assert Blob.source(path_blob) == path
-      assert {:ok, "from path"} = Blob.as_string(path_blob)
-    after
-      File.rm(path)
-    end
+    assert {:error, %{type: :invalid_document}} = Document.from(%{"content" => "hi"})
+    assert {:error, %{type: :invalid_document}} = Document.from(:nope)
   end
 
   test "rejects invalid document content and metadata" do

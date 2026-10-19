@@ -142,7 +142,7 @@ defmodule BeamWeaver.RetryPolicyTest do
 
     assert RetryPolicy.retry?(
              RetryPolicy.new!(retry_on: :transient),
-             Error.new(:transport_error, "Google transport request failed", %{
+             Error.new(:connection, "Google transport request failed", %{
                reason: "%Req.TransportError{reason: :nxdomain}"
              })
            )
@@ -164,6 +164,17 @@ defmodule BeamWeaver.RetryPolicyTest do
     mfa_policy = RetryPolicy.new!(retry_on: {Predicate, :transient?, ["ok"]})
     assert RetryPolicy.retry?(mfa_policy, transient)
     refute RetryPolicy.retry?(mfa_policy, permanent)
+  end
+
+  # An error that says retrying can't help, such as an invalid API key, is
+  # retried only by a policy that names its type or retries everything.
+  test ":error leaves out an error marked retryable: false" do
+    unauthorized = Error.new(:authentication, "Invalid API key", %{status: 401, retryable: false})
+
+    refute RetryPolicy.retry?(RetryPolicy.new!(), unauthorized)
+    assert RetryPolicy.retry?(RetryPolicy.new!(retry_on: :authentication), unauthorized)
+    assert RetryPolicy.retry?(RetryPolicy.new!(retry_on: :all), unauthorized)
+    assert RetryPolicy.retry?(RetryPolicy.new!(), Error.new(:server_error, "Busy", %{status: 503, retryable: true}))
   end
 
   test "rejects unknown string options without creating atoms" do

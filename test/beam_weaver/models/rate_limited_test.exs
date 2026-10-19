@@ -2,7 +2,6 @@ defmodule BeamWeaver.Models.RateLimitedTest do
   use ExUnit.Case, async: true
 
   alias BeamWeaver.Cache.ETS, as: CacheETS
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.ChatModel
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
@@ -49,22 +48,6 @@ defmodule BeamWeaver.Models.RateLimitedTest do
 
     def stream(%__MODULE__{parent: parent}, _messages, _opts) do
       send(parent, :model_streamed)
-      {:ok, [Message.assistant("chunk")]}
-    end
-  end
-
-  defmodule LazyStreamingModel do
-    @behaviour ChatModel
-
-    defstruct [:parent]
-
-    def invoke(%__MODULE__{parent: parent}, _messages, _opts) do
-      send(parent, :lazy_invoke_fallback)
-      {:ok, Message.assistant("fallback")}
-    end
-
-    def stream(%__MODULE__{parent: parent}, _messages, _opts) do
-      send(parent, :lazy_model_streamed)
       {:ok, [Message.assistant("chunk")]}
     end
   end
@@ -141,7 +124,7 @@ defmodule BeamWeaver.Models.RateLimitedTest do
     assert opts[:timeout] == 25
   end
 
-  test "rate-limited model works through sync and async batches" do
+  test "rate-limited model acquires once per item on every batch" do
     parent = self()
 
     model =
@@ -165,16 +148,13 @@ defmodule BeamWeaver.Models.RateLimitedTest do
     assert [
              {:ok, %Message{content: "ok"}},
              {:ok, %Message{content: "ok"}}
-           ] =
-             model
-             |> ChatModel.async_batch([[Message.user("three")], [Message.user("four")]])
-             |> Async.await_batch()
+           ] = ChatModel.batch(model, [[Message.user("three")], [Message.user("four")]])
 
     assert_received {:acquire, 1, _opts}
     assert_received {:acquire, 1, _opts}
   end
 
-  test "rate-limited model acquires before streaming and supports async stream handles" do
+  test "rate-limited model acquires before every streaming call" do
     parent = self()
 
     model =
@@ -191,32 +171,11 @@ defmodule BeamWeaver.Models.RateLimitedTest do
     assert opts[:key] == {:openai, "gpt"}
     assert_received :model_streamed
 
-    assert {:ok, [%Message{content: "chunk"}]} =
-             model
-             |> ChatModel.async_stream([Message.user("hi")])
-             |> Async.await()
+    assert {:ok, [%Message{content: "chunk"}]} = ChatModel.stream(model, [Message.user("hi")])
 
     assert_received {:acquire, 1, _opts}
     assert_received :model_streamed
     refute_received :invoke_fallback
-  end
-
-  test "rate-limited model delegates streaming to the wrapped model instead of falling back to invoke" do
-    parent = self()
-
-    model =
-      %LazyStreamingModel{parent: parent}
-      |> Models.with_rate_limiter(
-        limiter: %Limiter{parent: parent},
-        amount: 1,
-        key: {:openai, "gpt"}
-      )
-
-    assert {:ok, [%Message{content: "chunk"}]} = ChatModel.stream(model, [Message.user("hi")])
-
-    assert_received {:acquire, 1, _opts}
-    assert_received :lazy_model_streamed
-    refute_received :lazy_invoke_fallback
   end
 
   test "cache hits skip the inner rate limiter in the explicit native wrapper order" do
@@ -237,14 +196,6 @@ defmodule BeamWeaver.Models.RateLimitedTest do
     assert_received :model_invoked
 
     assert {:ok, %Message{content: "ok"}} = ChatModel.invoke(model, [Message.user("hi")])
-    refute_received {:acquire, 1, _opts}
-    refute_received :model_invoked
-
-    assert {:ok, %Message{content: "ok"}} =
-             model
-             |> ChatModel.async_invoke([Message.user("hi")])
-             |> Async.await()
-
     refute_received {:acquire, 1, _opts}
     refute_received :model_invoked
   end

@@ -7,6 +7,11 @@ defmodule BeamWeaver.Compaction.Result do
   the retained source events, referenced artifact IDs, and any provider usage
   returned by the application callback.
 
+  `anti_thrash` is the request's `BeamWeaver.Compaction.State` rebased to the
+  request's accounting identity and root turn. Save it as the lane's state;
+  once the checkpoint is active, record it with
+  `BeamWeaver.Compaction.State.record_success/2`.
+
   Receiving this struct does not make the checkpoint durable or active.
   """
 
@@ -20,7 +25,7 @@ defmodule BeamWeaver.Compaction.Result do
     :retained_events,
     :provider_usage
   ]
-  defstruct @enforce_keys ++ [:compaction_checkpoint, artifact_ids: []]
+  defstruct @enforce_keys ++ [:compaction_checkpoint, :anti_thrash, artifact_ids: []]
 
   @type t :: %__MODULE__{}
 end

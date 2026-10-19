@@ -9,42 +9,42 @@ defmodule BeamWeaver.Tracing.MiddlewareTraceTest do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Agent.Nodes.Model, as: ModelNode
   alias BeamWeaver.Agent.StructuredOutput
+  alias BeamWeaver.Agent.ToolNode
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Graph
   alias BeamWeaver.Graph.Compiled
-  alias BeamWeaver.Graph.Nodes.ToolNode
   alias BeamWeaver.Models.FakeChatModel
   alias BeamWeaver.Tracing
   alias BeamWeaver.Tracing.Context
   alias BeamWeaver.Tracing.Store
 
   defmodule ToolWrapper do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :tool_wrapper
 
-    def wrap_tool_call(request, handler) do
+    def wrap_tool_call(_middleware, request, handler) do
       handler.(request)
     end
   end
 
   defmodule ModelWrapper do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :model_wrapper
 
-    def wrap_model_call(request, handler) do
+    def wrap_model_call(_middleware, request, handler) do
       handler.(request)
     end
   end
 
   setup do
-    Tracing.reset()
+    Tracing.clear()
     Context.clear()
 
     on_exit(fn ->
-      Tracing.reset()
+      Tracing.clear()
       Context.clear()
     end)
 
@@ -123,8 +123,8 @@ defmodule BeamWeaver.Tracing.MiddlewareTraceTest do
 
     assert {:ok, _finished_parent} = Tracing.finish_run(parent)
 
-    todo = run_by_name!("TodoListMiddleware.wrap_model_call")
-    filesystem = run_by_name!("FilesystemMiddleware.wrap_model_call")
+    todo = run_by_name!("TodoList.wrap_model_call")
+    filesystem = run_by_name!("Filesystem.wrap_model_call")
     model = run_by_kind_child!(:model, filesystem.id)
 
     assert todo.parent_id == parent.id
@@ -141,7 +141,7 @@ defmodule BeamWeaver.Tracing.MiddlewareTraceTest do
     request = ModelRequest.new(messages: [Message.user("hi")])
 
     error =
-      Error.new(:rate_limit_error, "Insufficient balance or no resource package.", %{
+      Error.new(:billing_exhausted, "Insufficient balance or no resource package.", %{
         status: 429,
         code: "1113",
         provider: "zai"
@@ -156,13 +156,13 @@ defmodule BeamWeaver.Tracing.MiddlewareTraceTest do
 
     assert {:ok, _finished_parent} = Tracing.finish_run(parent)
 
-    wrapper = run_by_name!("ModelWrapperMiddleware.wrap_model_call")
+    wrapper = run_by_name!("ModelWrapper.wrap_model_call")
 
     assert wrapper.parent_id == parent.id
     assert wrapper.status == :error
 
     assert wrapper.error == %{
-             type: :rate_limit_error,
+             type: :billing_exhausted,
              message: "Insufficient balance or no resource package.",
              details: %{status: 429, code: "1113", provider: "zai"}
            }
@@ -185,7 +185,7 @@ defmodule BeamWeaver.Tracing.MiddlewareTraceTest do
 
     assert {:ok, _finished_parent} = Tracing.finish_run(parent)
 
-    hook = run_by_name!("TodoListMiddleware.after_model")
+    hook = run_by_name!("TodoList.after_model")
 
     assert hook.parent_id == parent.id
     assert hook.inputs.messages_count == 1
@@ -223,8 +223,8 @@ defmodule BeamWeaver.Tracing.MiddlewareTraceTest do
 
     assert {:ok, _finished_parent} = Tracing.finish_run(parent)
 
-    scoped = run_by_name!("ToolCallLimitMiddleware[tool_call_limit:search].after_model")
-    global = run_by_name!("ToolCallLimitMiddleware[tool_call_limit].after_model")
+    scoped = run_by_name!("ToolCallLimit[tool_call_limit:search].after_model")
+    global = run_by_name!("ToolCallLimit[tool_call_limit].after_model")
 
     assert scoped.parent_id == parent.id
     assert global.parent_id == parent.id
@@ -266,7 +266,7 @@ defmodule BeamWeaver.Tracing.MiddlewareTraceTest do
 
     assert {:ok, _finished_parent} = Tracing.finish_run(parent)
 
-    wrapper = run_by_name!("ToolWrapperMiddleware.wrap_tool_call")
+    wrapper = run_by_name!("ToolWrapper.wrap_tool_call")
     tool_run = run_by_name!("trace_echo")
 
     assert wrapper.parent_id == parent.id
@@ -281,7 +281,7 @@ defmodule BeamWeaver.Tracing.MiddlewareTraceTest do
     assert tool_run.outputs == %{output: "echo hi"}
   end
 
-  test "structured output traces as a sequence parent with parsed output" do
+  test "structured output traces as a parent run with parsed output" do
     schema = %{
       "title" => "answer",
       "type" => "object",
@@ -305,25 +305,25 @@ defmodule BeamWeaver.Tracing.MiddlewareTraceTest do
 
     assert {:ok, _finished_parent} = Tracing.finish_run(parent)
 
-    sequence = run_by_name!("RunnableSequence")
-    model = run_by_kind_child!(:model, sequence.id)
+    structured = run_by_name!("StructuredOutput")
+    model = run_by_kind_child!(:model, structured.id)
 
-    assert sequence.parent_id == parent.id
-    assert model.parent_id == sequence.id
-    assert sequence.metadata.structured_output == true
-    assert sequence.metadata.structured_output_schema == ["answer"]
-    assert sequence.metadata.structured_output_strategy == :provider
-    assert sequence.metadata.structured_output_requested_strategy == :provider
-    assert sequence.metadata.structured_output_effective_strategy == :provider
-    assert sequence.metadata.structured_output_fallback_reason == nil
-    assert sequence.metadata.structured_output_schema_bytes > 0
-    assert sequence.metadata.structured_output_schema_properties == 1
+    assert structured.parent_id == parent.id
+    assert model.parent_id == structured.id
+    assert structured.metadata.structured_output == true
+    assert structured.metadata.structured_output_schema == ["answer"]
+    assert structured.metadata.structured_output_strategy == :provider
+    assert structured.metadata.structured_output_requested_strategy == :provider
+    assert structured.metadata.structured_output_effective_strategy == :provider
+    assert structured.metadata.structured_output_fallback_reason == nil
+    assert structured.metadata.structured_output_schema_bytes > 0
+    assert structured.metadata.structured_output_schema_properties == 1
     assert model.metadata.thread_id == "thread-1"
     assert model.metadata.structured_output == :response_format
     assert model.metadata.structured_output_requested_strategy == :provider
     assert model.metadata.structured_output_effective_strategy == :provider
     refute Map.has_key?(model.metadata, :middleware)
-    assert sequence.outputs == %{structured_response: %{"ok" => true}}
+    assert structured.outputs == %{structured_response: %{"ok" => true}}
   end
 
   defp run_by_name!(name) do

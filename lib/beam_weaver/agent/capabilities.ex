@@ -1,33 +1,82 @@
 defmodule BeamWeaver.Agent.Capabilities do
   @moduledoc false
 
+  alias BeamWeaver.Agent.CapabilityProfile
+  alias BeamWeaver.Agent.CapabilityProfileConfig
   alias BeamWeaver.Agent.Middleware
+  alias BeamWeaver.Agent.Middleware.DynamicPrompt
+  alias BeamWeaver.Agent.Middleware.Helpers
   alias BeamWeaver.Agent.Middleware.HumanInTheLoop
+  alias BeamWeaver.Agent.Middleware.OverflowRecovery
   alias BeamWeaver.Agent.Middleware.Summarization
   alias BeamWeaver.Agent.Middleware.ToolSelection
   alias BeamWeaver.Agent.ModelResolver
   alias BeamWeaver.Agent.ProviderProfile
   alias BeamWeaver.Agent.Spec
   alias BeamWeaver.Agent.Subagent.AsyncSpec
+  alias BeamWeaver.Agent.Subagent.Spec, as: SubagentSpec
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Filesystem.State
 
   @default_recursion_limit 9999
 
-  @spec apply(Spec.t()) :: Spec.t()
+  # Middleware that read and write files: an entry you list yourself uses the
+  # declared filesystem unless its own options name a backend.
+  @backend_middleware [
+    Middleware.Filesystem,
+    Middleware.Skills,
+    Middleware.Memory,
+    Middleware.CompactConversation,
+    Middleware.OverflowRecovery
+  ]
+
+  @spec apply(Spec.t()) :: {:ok, Spec.t()} | {:error, Error.t()}
   def apply(%Spec{} = spec) do
-    spec
-    |> resolve_model()
-    |> add_capability_middleware()
-    |> maybe_default_recursion_limit()
+    with {:ok, profile} <- capability_profile(spec),
+         {:ok, spec} <- resolve_model(spec),
+         profile = with_extra_middleware(profile),
+         own_middleware = List.wrap(spec.middleware || []),
+         spec = apply_profile(spec, profile),
+         filesystem = capability_filesystem(spec),
+         {:ok, subagents} <- maybe_subagents(spec, filesystem, profile, own_middleware) do
+      {:ok,
+       spec
+       |> maybe_default_recursion_limit()
+       |> add_capability_middleware(filesystem, subagents)}
+    end
+  rescue
+    # The middleware constructors raise for settings they can't take.
+    error in [ArgumentError, KeyError] -> {:error, Error.new(:invalid_agent, Middleware.option_error(error))}
   end
 
   defp resolve_model(%Spec{model: model, model_opts: opts} = spec) do
-    opts = model_init_opts(model, opts || [])
+    cond do
+      not Keyword.keyword?(opts) ->
+        invalid_model_opts(opts)
 
-    case ModelResolver.resolve_model(model, opts) do
-      {:ok, resolved} -> %{spec | model: resolved}
-      _error -> spec
+      Keyword.has_key?(opts, :tool_timeout) ->
+        {:error,
+         Error.new(
+           :invalid_agent,
+           "tool_timeout is not a model option; declare `tool_timeout` in the agent (or pass :tool_timeout to build/1)",
+           %{option: :tool_timeout}
+         )}
+
+      is_nil(model) ->
+        {:ok, spec}
+
+      true ->
+        with {:ok, resolved} <- ModelResolver.resolve_agent_model(model, model_init_opts(model, opts)) do
+          {:ok, %{spec | model: resolved}}
+        end
     end
+  end
+
+  defp invalid_model_opts(opts) do
+    {:error,
+     Error.new(:invalid_agent, "agent model options must be a keyword list", %{
+       model_opts: ModelResolver.describe(opts)
+     })}
   end
 
   defp model_init_opts(model, opts) when is_binary(model) or is_atom(model),
@@ -35,33 +84,160 @@ defmodule BeamWeaver.Agent.Capabilities do
 
   defp model_init_opts(_model, opts), do: opts
 
-  defp add_capability_middleware(%Spec{} = spec) do
-    filesystem = capability_filesystem(spec)
+  # The profile is looked up before the model is resolved, so `:auto` matches
+  # the "provider:model" string as written.
+  defp capability_profile(%Spec{capability_profile: value}) when value in [nil, false], do: {:ok, nil}
+  defp capability_profile(%Spec{capability_profile: :auto, model: model}), do: {:ok, CapabilityProfile.for_model(model)}
+  defp capability_profile(%Spec{capability_profile: %CapabilityProfile{} = profile}), do: {:ok, profile}
+
+  defp capability_profile(%Spec{capability_profile: %CapabilityProfileConfig{} = config}),
+    do: {:ok, CapabilityProfileConfig.to_capability_profile(config)}
+
+  defp capability_profile(%Spec{capability_profile: other}) do
+    {:error,
+     Error.new(
+       :invalid_agent,
+       "capability_profile must be :auto, a BeamWeaver.Agent.CapabilityProfile or a BeamWeaver.Agent.CapabilityProfileConfig",
+       %{capability_profile: inspect(other)}
+     )}
+  end
+
+  # A profile's middleware function runs once, so the agent and its
+  # general-purpose subagent get the same middleware from it.
+  defp with_extra_middleware(nil), do: nil
+
+  defp with_extra_middleware(%CapabilityProfile{} = profile),
+    do: %{profile | middleware: CapabilityProfile.materialize_extra_middleware(profile)}
+
+  # A profile tunes the agent's own declarations: its prompt text goes after
+  # the system prompt, its excluded tools and descriptions join
+  # `exclude_tools` and `tool_descriptions` (the agent's own descriptions win),
+  # and its middleware follows the agent's.
+  defp apply_profile(%Spec{} = spec, nil), do: spec
+
+  defp apply_profile(%Spec{} = spec, %CapabilityProfile{} = profile) do
     middleware = List.wrap(spec.middleware || [])
+    extra_middleware = CapabilityProfile.materialize_extra_middleware(profile)
+    middleware = middleware ++ Enum.reject(extra_middleware, &middleware_present?(middleware, &1))
+
+    %{
+      spec
+      | system_prompt: spec.system_prompt || profile.base_system_prompt,
+        exclude_tools: Enum.uniq(List.wrap(spec.exclude_tools || []) ++ List.wrap(profile.excluded_tools || [])),
+        tool_descriptions: Map.merge(Map.new(profile.tool_descriptions || %{}), Map.new(spec.tool_descriptions || %{})),
+        middleware: middleware
+    }
+    |> append_profile_prompt(profile.prompt_suffix)
+  end
+
+  # `DynamicPrompt` replaces the declared prompt, so with one the profile's
+  # text goes after the prompt it builds, through another `DynamicPrompt`
+  # that runs after it.
+  defp append_profile_prompt(%Spec{} = spec, suffix) when suffix in [nil, ""], do: spec
+
+  defp append_profile_prompt(%Spec{} = spec, suffix) do
+    if Enum.any?(spec.middleware, &(middleware_key(&1) == DynamicPrompt)) do
+      suffix_prompt = DynamicPrompt.new(prompt: &Helpers.append_prompt(&1.system_message, suffix))
+      %{spec | middleware: spec.middleware ++ [suffix_prompt]}
+    else
+      %{spec | system_prompt: append_prompt(spec.system_prompt, suffix)}
+    end
+  end
+
+  defp append_prompt(nil, suffix), do: suffix
+  defp append_prompt(prompt, suffix) when is_binary(prompt), do: prompt <> "\n\n" <> suffix
+  defp append_prompt(prompt, suffix), do: Helpers.append_prompt(prompt, suffix)
+
+  # Capability middleware goes ahead of the agent's own list. `DynamicPrompt`
+  # goes first of all: it replaces the declared `system_prompt`, and every
+  # middleware after it adds its own sections to that prompt. The tool filter
+  # comes next, so the prompt sections see only the tools the model is offered.
+  # `UnsupportedMedia` goes last, innermost, so it checks the model that is
+  # called after a fallback or router has picked it.
+  defp add_capability_middleware(%Spec{} = spec, filesystem, subagents) do
+    {dynamic_prompts, middleware} =
+      spec.middleware
+      |> List.wrap()
+      |> Enum.split_with(&(middleware_key(&1) == DynamicPrompt))
+
+    middleware = Enum.map(middleware, &with_declared_backend(&1, spec, filesystem))
 
     capability_middleware =
       [
+        maybe_tool_filter(spec),
         maybe_skills(spec, filesystem),
         maybe_filesystem(spec, filesystem),
-        maybe_subagents(spec, filesystem),
-        maybe_summarization(spec),
+        subagents,
+        # A compaction the model asked for applies before automatic
+        # summarization checks the thread.
         maybe_compact_conversation(spec, filesystem),
+        maybe_summarization(spec),
         maybe_overflow_recovery(spec, filesystem),
         maybe_tool_call_normalization(spec),
         maybe_async_subagents(spec),
-        maybe_tool_filter(spec),
         maybe_prompt_caching(spec),
         maybe_memory(spec, filesystem),
         maybe_hitl(spec)
       ]
       |> List.flatten()
       |> Enum.reject(&is_nil/1)
+      |> Enum.reject(&replaced_by_own_entry?(middleware, &1))
 
-    capability_middleware =
-      Enum.reject(capability_middleware, &middleware_present?(middleware, &1))
+    unsupported_media = Enum.reject([Middleware.UnsupportedMedia], &middleware_present?(middleware, &1))
 
-    %{spec | middleware: capability_middleware ++ middleware}
+    middleware = summarize_after_clip(dynamic_prompts ++ capability_middleware ++ middleware ++ unsupported_media)
+    %{spec | middleware: middleware}
   end
+
+  # With both, `OverflowRecovery` summarizes a call that still overflows once
+  # it has clipped the trailing tool results, and `Summarization` leaves
+  # overflows to it, so it doesn't matter which of the two is listed first.
+  defp summarize_after_clip(middleware) do
+    with %OverflowRecovery{retry?: true} = recovery <- built(middleware, OverflowRecovery),
+         %Summarization{} = summarization <- built(middleware, Summarization) do
+      summarization = %{summarization | on_overflow: false}
+      recovery = %{recovery | summarization: summarization}
+
+      Enum.map(middleware, fn entry ->
+        case middleware_key(entry) do
+          OverflowRecovery -> recovery
+          Summarization -> summarization
+          _module -> entry
+        end
+      end)
+    else
+      _either_missing -> middleware
+    end
+  end
+
+  # The list's entry of `module`, built, or `nil`.
+  defp built(middleware, module) do
+    with entry when not is_nil(entry) <- Enum.find(middleware, &(middleware_key(&1) == module)),
+         {:ok, %{__struct__: ^module} = built} <- Middleware.normalize(entry),
+         do: built,
+         else: (_other -> nil)
+  end
+
+  # An entry of the agent's own list replaces the capability middleware of the
+  # same module, except `ToolSelection`: the one that `exclude_tools` and
+  # `tool_descriptions` add filters the tools before the agent's own runs.
+  defp replaced_by_own_entry?(_middleware, %ToolSelection{}), do: false
+  defp replaced_by_own_entry?(middleware, candidate), do: middleware_present?(middleware, candidate)
+
+  defp with_declared_backend(entry, _spec, nil), do: entry
+
+  defp with_declared_backend(module, spec, filesystem) when module in @backend_middleware,
+    do: {module, declared_backend_opts(module, spec, filesystem)}
+
+  defp with_declared_backend({module, opts}, spec, filesystem) when module in @backend_middleware and is_list(opts),
+    do: {module, Keyword.merge(declared_backend_opts(module, spec, filesystem), opts)}
+
+  defp with_declared_backend(entry, _spec, _filesystem), do: entry
+
+  defp declared_backend_opts(Middleware.Filesystem, spec, filesystem),
+    do: [backend: filesystem, permissions: List.wrap(spec.filesystem_permissions || [])]
+
+  defp declared_backend_opts(_module, _spec, filesystem), do: [backend: filesystem]
 
   defp capability_filesystem(%Spec{} = spec) do
     cond do
@@ -76,15 +252,9 @@ defmodule BeamWeaver.Agent.Capabilities do
       enabled?(spec.compact_conversation) or enabled?(spec.overflow_recovery)
   end
 
-  defp maybe_filesystem(%Spec{filesystem: filesystem} = spec, resolved_filesystem) do
-    if empty?(filesystem) do
-      nil
-    else
-      Middleware.Filesystem.new(
-        backend: resolved_filesystem,
-        permissions: List.wrap(spec.filesystem_permissions || [])
-      )
-    end
+  defp maybe_filesystem(%Spec{} = spec, resolved_filesystem) do
+    if not empty?(spec.filesystem),
+      do: Middleware.Filesystem.new(declared_backend_opts(Middleware.Filesystem, spec, resolved_filesystem))
   end
 
   defp maybe_skills(%Spec{skills: skills}, _filesystem) when skills in [nil, false, []], do: nil
@@ -103,116 +273,117 @@ defmodule BeamWeaver.Agent.Capabilities do
     Middleware.Memory.new(backend: filesystem || State.new(), memory: memory)
   end
 
-  defp maybe_subagents(%Spec{subagents: subagents}, _filesystem)
+  # The filesystem permissions subagents inherit: those of the agent's own
+  # `Filesystem` entry when it has one, which replaces the declared
+  # filesystem, else the declared ones.
+  defp subagent_permissions(%Spec{} = spec) do
+    declared = List.wrap(spec.filesystem_permissions || [])
+
+    Enum.find_value(List.wrap(spec.middleware), declared, fn
+      %Middleware.Filesystem{permissions: permissions} -> permissions
+      {Middleware.Filesystem, opts} when is_list(opts) -> Keyword.get(opts, :permissions, declared)
+      _entry -> nil
+    end)
+  end
+
+  # The `task` middleware for the `subagents` declaration, or an
+  # `:invalid_subagent` error naming the subagent that can't be used. The
+  # general-purpose subagent also gets the agent's tool descriptions, its
+  # profile, and its own middleware entries, with the declared filesystem,
+  # to take the ones that replace middleware it would build.
+  defp maybe_subagents(%Spec{subagents: subagents}, _filesystem, _profile, _own_middleware)
        when subagents in [nil, false, []],
-       do: nil
+       do: {:ok, nil}
 
-  defp maybe_subagents(%Spec{} = spec, filesystem) do
-    subagents = sync_subagents(spec.subagents)
+  defp maybe_subagents(%Spec{} = spec, filesystem, profile, own_middleware) do
+    case sync_subagents(spec.subagents) do
+      [] ->
+        {:ok, nil}
 
-    if subagents == [] do
-      nil
-    else
-      new_middleware("Subagents",
-        subagents: subagents,
-        model: spec.model,
-        backend: filesystem || State.new(),
-        parent_tools: List.wrap(spec.tools || []),
-        permissions: List.wrap(spec.filesystem_permissions || []),
-        skills: List.wrap(spec.skills || []),
-        interrupt_on: spec.interrupt_on,
-        checkpointer: spec.checkpointer,
-        summarization: summarization_enabled?(spec),
-        compact_conversation: enabled?(spec.compact_conversation)
-      )
+      subagents ->
+        Middleware.Subagents.build(
+          subagents: subagents,
+          model: spec.model,
+          backend: filesystem || State.new(),
+          parent_tools: List.wrap(spec.tools || []),
+          exclude_tools: List.wrap(spec.exclude_tools || []),
+          tool_descriptions: spec.tool_descriptions || %{},
+          capability_profile: profile,
+          parent_middleware: Enum.map(own_middleware, &with_declared_backend(&1, spec, filesystem)),
+          permissions: subagent_permissions(spec),
+          skills: List.wrap(spec.skills || []),
+          interrupt_on: spec.interrupt_on,
+          summarization: subagent_summarization(spec),
+          compact_conversation: enabled?(spec.compact_conversation)
+        )
     end
   end
 
   defp maybe_async_subagents(%Spec{} = spec) do
-    subagents =
-      spec.async_subagents
-      |> List.wrap()
-      |> Kernel.++(async_subagents(spec.subagents))
-
-    if subagents == [] do
-      nil
-    else
-      new_middleware("AsyncSubagents", subagents: subagents)
-    end
+    subagents = List.wrap(spec.async_subagents) ++ Enum.filter(List.wrap(spec.subagents), &match?(%AsyncSpec{}, &1))
+    if subagents != [], do: Middleware.AsyncSubagents.new(subagents: subagents)
   end
 
+  # A `subagent` line that led back to an agent module being read left that
+  # subagent unread; it is read here, when the agent that lists it is built.
   defp sync_subagents(subagents) do
     subagents
     |> List.wrap()
-    |> Enum.reject(&async_subagent?/1)
+    |> Enum.reject(&match?(%AsyncSpec{}, &1))
+    |> Enum.map(fn
+      %SubagentSpec{} = subagent -> SubagentSpec.read(subagent)
+      subagent -> subagent
+    end)
   end
 
-  defp async_subagents(subagents) do
-    subagents
-    |> List.wrap()
-    |> Enum.filter(&async_subagent?/1)
-  end
-
-  defp async_subagent?(%AsyncSpec{}), do: true
-  defp async_subagent?(_subagent), do: false
-
-  defp new_middleware(name, opts) do
-    name
-    |> middleware_module()
-    |> apply(:new, [opts])
-  end
-
-  defp middleware_module(name), do: Module.concat(BeamWeaver.Agent.Middleware, name)
-
+  # `compact_conversation` also turns on automatic summarization, configured by
+  # its `summarization:` option; the other options configure the tool.
   defp maybe_summarization(%Spec{} = spec) do
-    case spec.compact_conversation do
-      settings when is_list(settings) ->
-        Summarization.new(Keyword.put_new(settings, :model, spec.model))
-
-      value when value in [true, :auto] ->
-        Summarization.new(model: spec.model, trigger: {:messages, 20}, keep: {:messages, 8})
-
-      _other ->
-        nil
+    if settings = settings(spec.compact_conversation) do
+      case Keyword.get(settings, :summarization, true) do
+        false -> nil
+        true -> summarization(spec, settings, [])
+        summarization when is_list(summarization) -> summarization(spec, settings, summarization)
+      end
     end
   end
 
+  # The declaration's `model:` and `summarizer:` write automatic summaries
+  # too, unless `summarization:` sets its own. A summary covers all the old
+  # messages, as the tool's does, unless `summarization:` trims them.
+  # Fractional limits are taken of the agent model's context window.
+  defp summarization(%Spec{} = spec, declaration, settings) do
+    declaration
+    |> Keyword.take([:summarizer])
+    |> Keyword.merge(settings)
+    |> Keyword.put_new(:model, Keyword.get(declaration, :model, spec.model))
+    |> Keyword.put_new(:trim_tokens_to_summarize, nil)
+    |> Keyword.put_new(:max_input_tokens, max_input_tokens(spec.model))
+    |> Summarization.new()
+  end
+
   defp maybe_compact_conversation(%Spec{} = spec, filesystem) do
-    case spec.compact_conversation do
-      settings when is_list(settings) ->
-        settings
-        |> Keyword.put_new(:model, spec.model)
-        |> Keyword.put_new(:backend, filesystem || State.new())
-        |> Middleware.CompactConversation.new()
-
-      value when value in [true, :auto] ->
-        Middleware.CompactConversation.new(model: spec.model, backend: filesystem || State.new())
-
-      _other ->
-        nil
+    if settings = settings(spec.compact_conversation) do
+      settings
+      |> Keyword.delete(:summarization)
+      |> Keyword.put_new(:model, spec.model)
+      |> Keyword.put_new(:backend, filesystem || State.new())
+      |> Middleware.CompactConversation.new()
     end
   end
 
   defp maybe_overflow_recovery(%Spec{} = spec, filesystem) do
-    case spec.overflow_recovery do
-      settings when is_list(settings) ->
-        settings
-        |> Keyword.put_new(:backend, filesystem || State.new())
-        |> Keyword.put_new(:keep, {:messages, 8})
-        |> Keyword.put_new(:max_input_tokens, max_input_tokens(spec.model))
-        |> Middleware.OverflowRecovery.new()
-
-      value when value in [true, :auto] ->
-        Middleware.OverflowRecovery.new(
-          backend: filesystem || State.new(),
-          keep: {:messages, 8},
-          max_input_tokens: max_input_tokens(spec.model)
-        )
-
-      _other ->
-        nil
+    if settings = settings(spec.overflow_recovery) do
+      settings
+      |> Keyword.put_new(:backend, filesystem || State.new())
+      |> Keyword.put_new(:max_input_tokens, max_input_tokens(spec.model))
+      |> Middleware.OverflowRecovery.new()
     end
   end
+
+  defp settings(value) when value in [true, :auto], do: []
+  defp settings(settings) when is_list(settings), do: settings
+  defp settings(_value), do: nil
 
   defp maybe_prompt_caching(%Spec{prompt_caching: value}) when value in [nil, false], do: nil
 
@@ -266,7 +437,29 @@ defmodule BeamWeaver.Agent.Capabilities do
     )
   end
 
-  defp summarization_enabled?(%Spec{compact_conversation: value}), do: enabled?(value)
+  # The subagents summarize their conversations when the agent does, with the
+  # same settings: `compact_conversation true`, or the `summarization:` option
+  # of its settings (`false` turns it off). The summary model, the
+  # `compact_conversation` `model:`, carries over when there is one; otherwise
+  # each subagent summarizes with its own model.
+  defp subagent_summarization(%Spec{compact_conversation: value}) when value in [true, :auto], do: true
+
+  defp subagent_summarization(%Spec{compact_conversation: settings}) when is_list(settings) do
+    case Keyword.get(settings, :summarization, true) do
+      false -> false
+      true -> with_summary_model([], settings)
+      summarization when is_list(summarization) -> with_summary_model(summarization, settings)
+    end
+  end
+
+  defp subagent_summarization(%Spec{}), do: false
+
+  defp with_summary_model(summarization, settings) do
+    case settings |> Keyword.take([:model, :summarizer]) |> Keyword.merge(summarization) do
+      [] -> true
+      summarization -> summarization
+    end
+  end
 
   defp enabled?(value), do: value not in [nil, false, []]
 
@@ -282,10 +475,7 @@ defmodule BeamWeaver.Agent.Capabilities do
   defp middleware_key({module, _opts}) when is_atom(module), do: module
   defp middleware_key(other), do: other
 
-  defp max_input_tokens(%{profile: %{max_input_tokens: limit}}) when is_integer(limit), do: limit
-
-  defp max_input_tokens(%{profile: %{"max_input_tokens" => limit}}) when is_integer(limit),
-    do: limit
-
-  defp max_input_tokens(_model), do: nil
+  def max_input_tokens(%{profile: %{max_input_tokens: limit}}) when is_integer(limit), do: limit
+  def max_input_tokens(%{profile: %{"max_input_tokens" => limit}}) when is_integer(limit), do: limit
+  def max_input_tokens(_model), do: nil
 end

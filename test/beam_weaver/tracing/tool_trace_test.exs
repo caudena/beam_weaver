@@ -2,10 +2,10 @@ defmodule BeamWeaver.Tracing.ToolTraceTest do
   use ExUnit.Case, async: false
 
   alias BeamWeaver.Agent.ToolCallRequest
+  alias BeamWeaver.Agent.ToolNode
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
-  alias BeamWeaver.Graph.Nodes.ToolNode
   alias BeamWeaver.ShellPolicy
   alias BeamWeaver.Tracing
   alias BeamWeaver.Tracing.Context
@@ -13,11 +13,11 @@ defmodule BeamWeaver.Tracing.ToolTraceTest do
   alias BeamWeaver.Tools.Shell
 
   defmodule UnregisteredToolInterceptor do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :unregistered_tool_interceptor
 
-    def wrap_tool_call(request, handler) do
+    def wrap_tool_call(_middleware, request, handler) do
       case request.tool_call.name do
         "magic_tool" ->
           Message.tool("magic:#{request.tool_call.args["value"]}",
@@ -32,22 +32,22 @@ defmodule BeamWeaver.Tracing.ToolTraceTest do
   end
 
   defmodule RetryWrapper do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :retry_wrapper
 
-    def wrap_tool_call(%ToolCallRequest{} = request, handler) do
+    def wrap_tool_call(_middleware, %ToolCallRequest{} = request, handler) do
       _ignored_first_attempt = handler.(request)
       handler.(request)
     end
   end
 
   setup do
-    Tracing.reset()
+    Tracing.clear()
     Context.clear()
 
     on_exit(fn ->
-      Tracing.reset()
+      Tracing.clear()
       Context.clear()
     end)
 
@@ -91,6 +91,30 @@ defmodule BeamWeaver.Tracing.ToolTraceTest do
     assert tool_run.metadata.tool_call_id == "call-search"
     assert tool_run.metadata.description == "Search project docs"
     assert tool_run.metadata.component == :docs
+  end
+
+  test "trace: false records no run for the call, and the runs it starts go under the caller's" do
+    model = %BeamWeaver.Models.FakeChatModel{response: "Ready"}
+
+    tool =
+      Tool.from_function!(
+        name: "ask_model",
+        description: "Ask a model",
+        input_schema: %{type: "object", properties: %{}},
+        handler: fn _input, _opts ->
+          {:ok, reply} = BeamWeaver.Core.ChatModel.invoke(model, "Reply with Ready.")
+          {:ok, Message.text(reply)}
+        end
+      )
+
+    {:ok, caller} = Tracing.start_run("caller", kind: :graph)
+    assert {:ok, %Message{}} = BeamWeaver.Core.ChatModel.invoke(model, "Reply with Ready.", trace: false)
+    assert {:ok, "Ready"} = Tool.invoke(tool, %{}, trace: false)
+    assert {:ok, _finished} = Tracing.finish_run(caller)
+
+    assert tool_runs() == []
+    assert [inner] = Enum.filter(Store.list(), &(&1.kind == :model))
+    assert inner.parent_id == caller.id
   end
 
   test "handled tool and validation errors finish successfully while unhandled errors fail" do
@@ -263,7 +287,7 @@ defmodule BeamWeaver.Tracing.ToolTraceTest do
 
     [wrapper] =
       Store.list()
-      |> Enum.filter(&(&1.name == "RetryWrapperMiddleware.wrap_tool_call"))
+      |> Enum.filter(&(&1.name == "RetryWrapper.wrap_tool_call"))
 
     assert wrapper.parent_id == parent.id
     assert first.parent_id == wrapper.id

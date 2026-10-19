@@ -5,6 +5,22 @@ defmodule BeamWeaver.SkillTest do
   alias BeamWeaver.Skill
 
   describe "parse/2" do
+    test "an empty metadata value stays an empty string" do
+      document = "---\nname: notes\ndescription: Take notes.\nmetadata:\n  owner: \"\"\n---\nWrite notes.\n"
+
+      assert {:ok, %Skill{metadata: %{"owner" => ""}}} = Skill.parse(document)
+    end
+
+    test "an empty metadata mapping is no metadata, and an empty mapping isn't a tool list" do
+      # `metadata: {}` failed with "skill metadata must be a map".
+      document = "---\nname: notes\ndescription: Take notes.\nmetadata: {}\n---\nWrite notes.\n"
+      assert {:ok, %Skill{metadata: metadata}} = Skill.parse(document)
+      assert metadata == %{}
+
+      document = "---\nname: notes\ndescription: Take notes.\nallowed-tools: {}\n---\nWrite notes.\n"
+      assert {:error, %Error{details: %{field: "allowed-tools"}}} = Skill.parse(document)
+    end
+
     test "parses the complete supported metadata subset" do
       document = """
       ---
@@ -80,6 +96,39 @@ defmodule BeamWeaver.SkillTest do
       )
     end
 
+    test "takes allowed-tools as a YAML list as well as a string" do
+      # A list, block or flow, was rejected with "must be a string".
+      for tools <- ["\n  - read_file\n  - web_search", " [read_file, web_search]", " read_file, web_search"] do
+        document = "---\nname: research\ndescription: Research.\nallowed-tools:#{tools}\n---\nBody"
+        assert {:ok, %Skill{allowed_tools: ["read_file", "web_search"]}} = Skill.parse(document)
+      end
+    end
+
+    test "an over-long field names the field, its size and the limit" do
+      # It said only "skill license is invalid".
+      document = "---\nname: research\ndescription: Research.\nlicense: #{String.duplicate("x", 1100)}\n---\nBody"
+
+      assert {:error, %Error{type: :invalid_skill, message: message, details: %{field: "license"}}} =
+               Skill.parse(document)
+
+      assert message == "skill license is 1100 bytes, over the limit of 1024"
+    end
+
+    test "an over-long description is cut at 1,024 bytes, on a character boundary, with a warning" do
+      # A 1,100-byte description failed the whole skill.
+      description = String.duplicate("x", 1023) <> String.duplicate("é", 40)
+      document = "---\nname: research\ndescription: #{description}\n---\nBody"
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert {:ok, %Skill{description: cut}} = Skill.parse(document)
+          assert cut == String.duplicate("x", 1023)
+        end)
+
+      assert log =~
+               ~s(Skill "research" has a 1103-byte description, over the limit of 1024; only its first 1023 bytes are kept.)
+    end
+
     test "rejects authority-bearing, dynamic, and unknown fields" do
       rejected_fields = [
         "agent: analyst",
@@ -117,8 +166,8 @@ defmodule BeamWeaver.SkillTest do
       )
 
       assert_invalid(
-        "---\nname: safe\ndescription: Safe skill\nallowed-tools:\n  - read_file\n---\nBody",
-        "must be a string"
+        "---\nname: safe\ndescription: Safe skill\nallowed-tools:\n  - 3\n---\nBody",
+        "must be a string or a list of strings"
       )
 
       assert_invalid(

@@ -7,7 +7,7 @@ defmodule BeamWeaver.Agent.Middleware.TodoList do
   middleware prevents conflicting parallel TODO writes from one model response.
   """
 
-  @behaviour BeamWeaver.Agent.Middleware
+  use BeamWeaver.Agent.Middleware
 
   alias BeamWeaver.Agent.Middleware.Helpers
   alias BeamWeaver.Agent.ModelRequest
@@ -18,10 +18,13 @@ defmodule BeamWeaver.Agent.Middleware.TodoList do
 
   @default_tool_name "write_todos"
   @default_tool_description Todo.default_description()
-  @default_system_prompt """
-  ## `write_todos`
 
-  You have access to the `write_todos` tool to help you manage and plan complex objectives.
+  # `{tool_name}` becomes the tool's name, so a renamed tool keeps a prompt
+  # that names it.
+  @system_prompt_template """
+  ## `{tool_name}`
+
+  You have access to the `{tool_name}` tool to help you manage and plan complex objectives.
   Use this tool for complex objectives to ensure that you are tracking each necessary step and giving the user visibility into your progress.
   This tool is very helpful for planning complex objectives, and for breaking down these larger complex objectives into smaller steps.
 
@@ -31,14 +34,11 @@ defmodule BeamWeaver.Agent.Middleware.TodoList do
 
   ## Important To-Do List Usage Notes to Remember
 
-  - The `write_todos` tool should never be called multiple times in parallel.
+  - The `{tool_name}` tool should never be called multiple times in parallel.
   - Don't be afraid to revise the To-Do list as you go. New information may reveal new tasks that need to be done, or old tasks that are irrelevant.
   """
 
-  @parallel_error """
-  Error: The `write_todos` tool should never be called multiple times in parallel. \
-  Please call it only once per model invocation to update the todo list.
-  """
+  @default_system_prompt String.replace(@system_prompt_template, "{tool_name}", @default_tool_name)
 
   defstruct state_key: :todos,
             tool_name: @default_tool_name,
@@ -46,11 +46,16 @@ defmodule BeamWeaver.Agent.Middleware.TodoList do
             system_prompt: @default_system_prompt
 
   def new(opts \\ []) do
+    tool_name = Keyword.get(opts, :tool_name, @default_tool_name)
+
     %__MODULE__{
       state_key: Keyword.get(opts, :state_key, :todos),
-      tool_name: Keyword.get(opts, :tool_name, @default_tool_name),
+      tool_name: tool_name,
       tool_description: Keyword.get(opts, :tool_description, @default_tool_description),
-      system_prompt: Keyword.get(opts, :system_prompt, @default_system_prompt)
+      system_prompt:
+        Keyword.get_lazy(opts, :system_prompt, fn ->
+          String.replace(@system_prompt_template, "{tool_name}", tool_name)
+        end)
     }
   end
 
@@ -74,16 +79,18 @@ defmodule BeamWeaver.Agent.Middleware.TodoList do
     ]
   end
 
+  @impl true
   def wrap_model_call(%__MODULE__{} = middleware, %ModelRequest{} = request, handler) do
     request
     |> ModelRequest.override(system_message: Helpers.append_prompt(request.system_message, middleware.system_prompt))
     |> handler.()
   end
 
+  @impl true
   def after_model(%__MODULE__{} = middleware, state, _runtime) do
     state
     |> State.messages()
-    |> latest_assistant()
+    |> Helpers.last_message(:assistant)
     |> parallel_todo_error(middleware)
   end
 
@@ -94,28 +101,23 @@ defmodule BeamWeaver.Agent.Middleware.TodoList do
     todo_calls = Enum.filter(calls, &(tool_name(&1) == middleware.tool_name))
 
     if length(todo_calls) > 1 do
-      %{messages: Enum.map(todo_calls, &error_message/1)}
+      %{messages: Enum.map(todo_calls, &error_message(&1, middleware.tool_name))}
     end
   end
 
   defp parallel_todo_error(_message, _middleware), do: nil
 
-  defp error_message(call) do
-    Message.tool(String.trim(@parallel_error),
-      tool_call_id: tool_call_id(call),
+  defp error_message(call, tool_name) do
+    error =
+      "Error: The `#{tool_name}` tool should never be called multiple times in parallel. " <>
+        "Please call it only once per model invocation to update the todo list."
+
+    Message.tool(error,
+      tool_call_id: Helpers.tool_call_id(call),
       name: tool_name(call),
       metadata: %{status: "error", error_type: :parallel_todo_writes}
     )
   end
 
-  defp latest_assistant(messages) do
-    Enum.find(Enum.reverse(messages), &match?(%Message{role: :assistant}, &1))
-  end
-
   defp tool_name(call), do: Map.get(call, :name)
-
-  defp tool_call_id(call) do
-    Map.get(call, :id) ||
-      Map.get(call, :tool_call_id)
-  end
 end

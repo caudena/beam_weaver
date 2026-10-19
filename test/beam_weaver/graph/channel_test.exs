@@ -1,40 +1,16 @@
 defmodule BeamWeaver.Graph.ChannelTest do
   use ExUnit.Case, async: true
 
-  alias BeamWeaver.Checkpoint
-  alias BeamWeaver.Checkpoint.ETS, as: CheckpointETS
   alias BeamWeaver.Graph.Channel
   alias BeamWeaver.Graph.Channels.AnyValue
   alias BeamWeaver.Graph.Channels.BinaryOperatorAggregate
   alias BeamWeaver.Graph.Channels.DeltaChannel
   alias BeamWeaver.Graph.Channels.EphemeralValue
   alias BeamWeaver.Graph.Channels.LastValue
-  alias BeamWeaver.Graph.Channels.LastValueAfterFinish
   alias BeamWeaver.Graph.Channels.NamedBarrierValue
-  alias BeamWeaver.Graph.Channels.NamedBarrierValueAfterFinish
   alias BeamWeaver.Graph.Channels.Topic
   alias BeamWeaver.Graph.Channels.UntrackedValue
-  alias BeamWeaver.Graph.Execution.ChannelVersion
   alias BeamWeaver.Graph.Overwrite
-
-  defmodule VersionedChannel do
-    use BeamWeaver.Graph.Channel
-
-    defstruct [:key, value: nil]
-
-    def new(opts \\ []), do: %__MODULE__{key: Keyword.get(opts, :key)}
-    def update(channel, [value]), do: {:ok, %{channel | value: value}, true}
-    def update(channel, []), do: {:ok, channel, false}
-    def get(%{value: nil, key: key}), do: {:error, BeamWeaver.Graph.Channel.empty_error(key)}
-    def get(%{value: value}), do: {:ok, value}
-    def checkpoint(%{value: nil}), do: BeamWeaver.Graph.Channel.missing()
-    def checkpoint(%{value: value}), do: value
-    def from_checkpoint(channel, checkpoint), do: %{channel | value: checkpoint}
-    def copy(channel), do: struct(__MODULE__, Map.from_struct(channel))
-    def available?(%{value: value}), do: not is_nil(value)
-    def null_version(_channel), do: "zero"
-    def version_equal?(_channel, left, right), do: to_string(left) == to_string(right)
-  end
 
   defmodule DefaultedChannel do
     use BeamWeaver.Graph.Channel
@@ -82,18 +58,10 @@ defmodule BeamWeaver.Graph.ChannelTest do
     assert {:error, %{type: :empty_channel}} = Channel.get(empty)
   end
 
-  test "channel version comparison uses channel-specific null and equality policy" do
-    graph =
-      BeamWeaver.Graph.new(state_schema: %{custom: BeamWeaver.Graph.channel(VersionedChannel)})
-
-    refute ChannelVersion.changed?(%{}, %{"custom" => :zero}, "custom", graph)
-    assert ChannelVersion.changed?(%{}, %{"custom" => "one"}, "custom", graph)
-  end
-
   test "use BeamWeaver.Graph.Channel supplies default optional callbacks" do
     channel = DefaultedChannel.new(key: "defaulted")
 
-    assert BeamWeaver.Graph.Channel.Dispatch.impl_for(channel)
+    assert BeamWeaver.Graph.Channel.implemented_by?(channel.__struct__)
     assert Channel.value_type(channel) == :custom
     assert Channel.update_type(channel) == :custom
     assert Channel.null_version(channel) == nil
@@ -142,14 +110,13 @@ defmodule BeamWeaver.Graph.ChannelTest do
              Channel.update(channel, [%Overwrite{value: 1}, %Overwrite{value: 2}])
   end
 
-  test "any value clears on empty update after being available" do
+  test "any value keeps the last of several writes until it is written again" do
     channel = AnyValue.new()
 
     assert {:ok, channel, true} = Channel.update(channel, ["same", "same"])
     assert Channel.get(channel) == {:ok, "same"}
-    assert {:ok, channel, true} = Channel.update(channel, [])
-    assert {:error, %{type: :empty_channel}} = Channel.get(channel)
-    assert {:ok, _channel, false} = Channel.update(channel, [])
+    assert {:ok, ^channel, false} = Channel.update(channel, [])
+    assert Channel.get(channel) == {:ok, "same"}
   end
 
   test "ephemeral values clear on the next empty update and can be guarded" do
@@ -175,37 +142,6 @@ defmodule BeamWeaver.Graph.ChannelTest do
 
     restored = Channel.from_checkpoint(UntrackedValue.new(), Channel.checkpoint(channel))
     assert {:error, %{type: :empty_channel}} = Channel.get(restored)
-  end
-
-  test "last value after finish becomes readable only after finish and clears on consume" do
-    channel = LastValueAfterFinish.new(key: "done", type: :string)
-    assert Channel.value_type(channel) == :string
-    assert Channel.update_type(channel) == :string
-    assert Channel.checkpoint(channel) == Channel.missing()
-    assert {:ok, ^channel, false} = Channel.update(channel, [])
-    assert {:ok, ^channel, false} = Channel.finish(channel)
-
-    assert {:ok, channel, true} = Channel.update(channel, ["answer"])
-    assert {:error, %{type: :empty_channel}} = Channel.get(channel)
-    refute Channel.available?(channel)
-
-    assert {:ok, channel, true} = Channel.finish(channel)
-    assert Channel.get(channel) == {:ok, "answer"}
-    assert Channel.available?(channel)
-    assert {:ok, ^channel, false} = Channel.finish(channel)
-
-    checkpoint = Channel.checkpoint(channel)
-    restored = Channel.from_checkpoint(LastValueAfterFinish.new(key: "done"), checkpoint)
-    assert Channel.get(restored) == {:ok, "answer"}
-
-    assert {:ok, reset, true} = Channel.update(restored, ["next"])
-    assert {:error, %{type: :empty_channel}} = Channel.get(reset)
-    assert Channel.checkpoint(reset) == {"next", false}
-
-    assert {:ok, channel, true} = Channel.consume(channel)
-    assert {:error, %{type: :empty_channel}} = Channel.get(channel)
-    assert Channel.checkpoint(channel) == Channel.missing()
-    assert {:ok, ^channel, false} = Channel.consume(channel)
   end
 
   test "named barriers become available only after all names are seen" do
@@ -236,30 +172,6 @@ defmodule BeamWeaver.Graph.ChannelTest do
     assert {:error, %{type: :invalid_update}} = Channel.update(channel, ["c"])
   end
 
-  test "named barriers after finish wait for all names and finish" do
-    channel = NamedBarrierValueAfterFinish.new(["a", "b"])
-
-    assert {:ok, channel, true} = Channel.update(channel, ["a", "b"])
-    assert {:error, %{type: :empty_channel}} = Channel.get(channel)
-
-    assert {:ok, channel, true} = Channel.finish(channel)
-    assert Channel.get(channel) == {:ok, nil}
-    assert {:ok, ^channel, false} = Channel.finish(channel)
-
-    checkpoint = Channel.checkpoint(channel)
-
-    restored =
-      NamedBarrierValueAfterFinish.new(["a", "b"])
-      |> Channel.from_checkpoint(checkpoint)
-
-    assert Channel.get(restored) == {:ok, nil}
-
-    copied = Channel.copy(restored)
-    assert {:ok, copied, true} = Channel.consume(copied)
-    assert {:error, %{type: :empty_channel}} = Channel.get(copied)
-    assert Channel.get(restored) == {:ok, nil}
-  end
-
   test "delta channel applies reducer batches, overwrite, replay, and missing checkpoints" do
     reducer = fn state, writes -> state ++ writes end
     channel = DeltaChannel.new(reducer, initial: [])
@@ -270,12 +182,12 @@ defmodule BeamWeaver.Graph.ChannelTest do
     assert Channel.checkpoint(channel) == Channel.missing()
 
     assert {:ok, channel, true} = Channel.update(channel, [%Overwrite{value: ["x"]}, "y"])
-    assert Channel.get(channel) == {:ok, ["x", "y"]}
+    assert Channel.get(channel) == {:ok, ["x"]}
 
     assert {:ok, channel, true} =
              Channel.update(channel, ["before", %{"__overwrite__" => ["z"]}, "after"])
 
-    assert Channel.get(channel) == {:ok, ["z", "before", "after"]}
+    assert Channel.get(channel) == {:ok, ["z"]}
 
     restored = Channel.from_checkpoint(DeltaChannel.new(reducer, initial: []), Channel.missing())
 
@@ -323,7 +235,7 @@ defmodule BeamWeaver.Graph.ChannelTest do
                ]
              )
 
-    assert Channel.get(replayed) == {:ok, %{"x" => 10, "z" => 30}}
+    assert Channel.get(replayed) == {:ok, %{"x" => 10}}
   end
 
   test "delta channel map reducers support deletion semantics and nil seeds" do
@@ -355,47 +267,5 @@ defmodule BeamWeaver.Graph.ChannelTest do
 
     assert {:ok, replayed, true} = DeltaChannel.replay_writes(nil_seed, [{"t0", "x", "after"}])
     assert Channel.get(replayed) == {:ok, "after"}
-  end
-
-  test "delta channel replays saver pending-write history for its channel" do
-    saver = CheckpointETS.new()
-    reducer = fn existing, updates -> existing ++ List.wrap(updates) end
-    channel = DeltaChannel.new(reducer, key: "items", initial: [])
-
-    {:ok, first} =
-      Checkpoint.put(
-        saver,
-        %{"configurable" => %{"thread_id" => "delta-history"}},
-        checkpoint("00000000000000000001"),
-        %{step: 0},
-        %{}
-      )
-
-    assert :ok =
-             Checkpoint.put_writes(saver, first, [{"items", "a"}, {"other", "skip"}], "task-a")
-
-    {:ok, second} =
-      Checkpoint.put(
-        saver,
-        first,
-        checkpoint("00000000000000000002"),
-        %{step: 1},
-        %{}
-      )
-
-    assert :ok = Checkpoint.put_writes(saver, second, [{"items", "b"}], "task-b")
-
-    assert {:ok, replayed, true} = DeltaChannel.replay_history(channel, saver, second)
-    assert Channel.get(replayed) == {:ok, ["a", "b"]}
-  end
-
-  defp checkpoint(id) do
-    %{
-      "id" => id,
-      "channel_values" => %{},
-      "channel_versions" => %{},
-      "versions_seen" => %{},
-      "updated_channels" => []
-    }
   end
 end

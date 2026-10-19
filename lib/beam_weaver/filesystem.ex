@@ -1,45 +1,21 @@
-defprotocol BeamWeaver.Filesystem.Backend do
-  @moduledoc """
-  Protocol dispatch for BeamWeaver filesystem backends.
-
-  Custom backends must implement this protocol, usually by using
-  `BeamWeaver.Filesystem`.
-  """
-
-  def ls(backend, path, opts)
-  def read(backend, path, opts)
-  def write(backend, path, content, opts)
-  def edit(backend, path, old, new, opts)
-  def glob(backend, pattern, opts)
-  def grep(backend, pattern, opts)
-  def upload_files(backend, files, opts)
-  def download_files(backend, paths, opts)
-end
-
-defprotocol BeamWeaver.Filesystem.ExecutableBackend do
-  @moduledoc """
-  Protocol dispatch for filesystem backends that can execute commands.
-  """
-
-  def id(backend)
-  def execute(backend, command, opts)
-end
-
 defmodule BeamWeaver.Filesystem do
-  @moduledoc """
-  Filesystem backend behaviour used by agent filesystem capabilities.
+  @moduledoc ~S"""
+  Virtual filesystem operations used by workspace tools, memory files and skills.
 
-  Backends expose a virtual, POSIX-style filesystem to agent tools. Paths are
-  always absolute from the agent perspective, even when the backing storage is
-  graph state, a BeamWeaver memory store, local disk, Docker, or a remote
-  sandbox service.
+  Paths are absolute from the agent perspective. Backends map them to thread
+  state, namespaced memory, disk or a sandbox. Operations return typed result
+  structs; inspect their error field before consuming content or claiming a write.
+
+  The facade itself does not apply an agent's filesystem_permissions. Those rules
+  belong to file-tool execution; direct application calls must enforce their own
+  access policy. Shell execution is a separate capability and boundary.
+  See [Filesystem](filesystem.md) for backend selection and lifetimes.
   """
-
-  alias BeamWeaver.Core.Async
-  alias BeamWeaver.Filesystem.Backend, as: FilesystemBackend
 
   defmodule FileInfo do
-    @moduledoc "Metadata for one virtual filesystem entry."
+    @moduledoc ~S"""
+    Metadata for one virtual entry: path, directory flag, size and modification time. It contains no file contents.
+    """
     defstruct [:path, :is_dir, :size, :modified_at]
 
     @type t :: %__MODULE__{
@@ -51,7 +27,9 @@ defmodule BeamWeaver.Filesystem do
   end
 
   defmodule GrepMatch do
-    @moduledoc "One literal grep match."
+    @moduledoc ~S"""
+    One literal search hit with virtual path, one-based line number and matching text.
+    """
     defstruct [:path, :line, :text]
 
     @type t :: %__MODULE__{
@@ -62,7 +40,7 @@ defmodule BeamWeaver.Filesystem do
   end
 
   defmodule FileData do
-    @moduledoc "File content in DeepAgents v2 shape."
+    @moduledoc "File content with its encoding (utf-8 text, or base64 for binary data) and timestamps."
     defstruct [:content, encoding: "utf-8", created_at: nil, modified_at: nil]
 
     @type t :: %__MODULE__{
@@ -74,7 +52,9 @@ defmodule BeamWeaver.Filesystem do
   end
 
   defmodule LsResult do
-    @moduledoc "Result returned by filesystem directory listing calls."
+    @moduledoc ~S"""
+    Directory entries or an error. An empty successful list is different from a missing/denied directory.
+    """
 
     defstruct entries: nil, error: nil
 
@@ -85,7 +65,9 @@ defmodule BeamWeaver.Filesystem do
   end
 
   defmodule ReadResult do
-    @moduledoc "Result returned by filesystem read calls."
+    @moduledoc ~S"""
+    Read content in file_data or an error. Check encoding before treating binary data as text.
+    """
 
     defstruct file_data: nil, error: nil
 
@@ -96,7 +78,9 @@ defmodule BeamWeaver.Filesystem do
   end
 
   defmodule WriteResult do
-    @moduledoc "Result returned by filesystem write calls."
+    @moduledoc ~S"""
+    Write outcome with path and error. A state-backed files_update must be merged into graph state by the caller/tool.
+    """
 
     defstruct [:path, :files_update, error: nil]
 
@@ -108,7 +92,9 @@ defmodule BeamWeaver.Filesystem do
   end
 
   defmodule EditResult do
-    @moduledoc "Result returned by filesystem edit calls."
+    @moduledoc ~S"""
+    Exact-edit outcome with occurrence count, error and any state-backed files_update.
+    """
 
     defstruct [:path, :files_update, occurrences: nil, error: nil]
 
@@ -121,18 +107,22 @@ defmodule BeamWeaver.Filesystem do
   end
 
   defmodule GlobResult do
-    @moduledoc "Result returned by filesystem glob calls."
+    @moduledoc ~S"""
+    Matched FileInfo entries or an error; absence of matches is not a permission or backend failure.
+    """
 
     defstruct matches: nil, error: nil
 
     @type t :: %__MODULE__{
-            matches: [String.t()] | nil,
+            matches: [FileInfo.t()] | nil,
             error: term()
           }
   end
 
   defmodule GrepResult do
-    @moduledoc "Result returned by filesystem grep calls."
+    @moduledoc ~S"""
+    Literal GrepMatch entries or an error. Search truncation in model-facing tools is reported separately.
+    """
 
     defstruct matches: nil, error: nil
 
@@ -143,7 +133,9 @@ defmodule BeamWeaver.Filesystem do
   end
 
   defmodule UploadResult do
-    @moduledoc "Result returned for one uploaded file."
+    @moduledoc ~S"""
+    Outcome for one uploaded path. Check error for every batch entry; another file may have succeeded.
+    """
 
     defstruct [:path, :error]
 
@@ -154,7 +146,9 @@ defmodule BeamWeaver.Filesystem do
   end
 
   defmodule DownloadResult do
-    @moduledoc "Result returned for one downloaded file."
+    @moduledoc ~S"""
+    Outcome for one downloaded path. content is present on success; check error before using it.
+    """
 
     defstruct [:path, :content, :error]
 
@@ -176,59 +170,128 @@ defmodule BeamWeaver.Filesystem do
   def invalid_path, do: @invalid_path
   def directory_error, do: @is_directory
 
-  @deprecated "Use directory_error/0 instead"
-  # credo:disable-for-next-line Credo.Check.Readability.PredicateFunctionNames
-  def is_directory, do: directory_error()
-
   def permission_denied, do: @permission_denied
 
   defmacro __using__(_opts) do
     quote do
       @behaviour BeamWeaver.Filesystem
-
-      defimpl BeamWeaver.Filesystem.Backend, for: __MODULE__ do
-        def ls(backend, path, opts), do: @for.ls(backend, path, opts)
-        def read(backend, path, opts), do: @for.read(backend, path, opts)
-        def write(backend, path, content, opts), do: @for.write(backend, path, content, opts)
-        def edit(backend, path, old, new, opts), do: @for.edit(backend, path, old, new, opts)
-        def glob(backend, pattern, opts), do: @for.glob(backend, pattern, opts)
-        def grep(backend, pattern, opts), do: @for.grep(backend, pattern, opts)
-        def upload_files(backend, files, opts), do: @for.upload_files(backend, files, opts)
-        def download_files(backend, paths, opts), do: @for.download_files(backend, paths, opts)
-      end
     end
   end
 
+  @doc """
+  Lists entries immediately under a virtual path, returning LsResult.
+  """
   @callback ls(term(), String.t(), keyword()) :: LsResult.t()
+  @doc """
+  Reads file data with line offset/limit options. Inspect ReadResult.error before file_data.
+  """
   @callback read(term(), String.t(), keyword()) :: ReadResult.t()
+  @doc """
+  Creates or replaces file content. State backends return files_update for the caller to merge.
+  """
   @callback write(term(), String.t(), iodata(), keyword()) :: WriteResult.t()
+  @doc """
+  Replaces exact nonempty text; ambiguous matches require replace_all. Returns occurrence count or error.
+  """
   @callback edit(term(), String.t(), String.t(), String.t(), keyword()) :: EditResult.t()
+  @doc """
+  Finds paths using the backend's glob contract under opts[:path].
+  """
   @callback glob(term(), String.t(), keyword()) :: GlobResult.t()
+  @doc """
+  Finds literal case-sensitive text with optional path/glob filtering, returning GrepMatch values.
+  """
   @callback grep(term(), String.t(), keyword()) :: GrepResult.t()
+  @doc """
+  Writes a batch of {virtual_path, content} entries, returning one result per file. Uploads replace existing data.
+  """
   @callback upload_files(term(), [{String.t(), iodata()}], keyword()) :: [UploadResult.t()]
+  @doc """
+  Reads a batch of virtual paths, returning one result per file, including individual errors.
+  """
   @callback download_files(term(), [String.t()], keyword()) :: [DownloadResult.t()]
+  @doc """
+  Resolves requested paths to backend targets for permission checks. Wrappers must forward this for link-capable storage.
+  """
+  @callback canonical_paths(term(), [String.t()], keyword()) :: [{:ok, String.t()} | {:error, term()}]
 
-  def ls(backend, path, opts \\ []), do: FilesystemBackend.ls(backend, path, opts)
-  def read(backend, path, opts \\ []), do: FilesystemBackend.read(backend, path, opts)
+  @optional_callbacks canonical_paths: 3
 
-  def write(backend, path, content, opts \\ []),
-    do: FilesystemBackend.write(backend, path, content, opts)
+  # Each function calls the backend struct's module.
+  @doc """
+  Lists entries immediately under a virtual path, returning LsResult.
+  """
+  def ls(%module{} = backend, path, opts \\ []), do: module.ls(backend, path, opts)
 
-  def edit(backend, path, old, new, opts \\ []),
-    do: FilesystemBackend.edit(backend, path, old, new, opts)
+  @doc """
+  Reads file data with line offset/limit options. Inspect ReadResult.error before file_data.
+  """
+  def read(%module{} = backend, path, opts \\ []), do: module.read(backend, path, opts)
 
-  def glob(backend, pattern, opts \\ []), do: FilesystemBackend.glob(backend, pattern, opts)
-  def grep(backend, pattern, opts \\ []), do: FilesystemBackend.grep(backend, pattern, opts)
+  @doc """
+  Creates or replaces file content. State backends return files_update for the caller to merge.
+  """
+  def write(%module{} = backend, path, content, opts \\ []), do: module.write(backend, path, content, opts)
 
-  def upload_files(backend, files, opts \\ []),
-    do: FilesystemBackend.upload_files(backend, files, opts)
+  @doc """
+  Replaces exact nonempty text; ambiguous matches require replace_all. Returns occurrence count or error.
+  """
+  def edit(%module{} = backend, path, old, new, opts \\ []), do: module.edit(backend, path, old, new, opts)
 
-  def download_files(backend, paths, opts \\ []),
-    do: FilesystemBackend.download_files(backend, paths, opts)
+  @doc """
+  Finds paths using the backend's glob contract under opts[:path].
+  """
+  def glob(%module{} = backend, pattern, opts \\ []), do: module.glob(backend, pattern, opts)
 
-  def ls_info(backend, path, opts \\ []), do: ls(backend, path, opts)
-  def glob_info(backend, pattern, opts \\ []), do: glob(backend, pattern, opts)
+  @doc """
+  Finds literal case-sensitive text with optional path/glob filtering, returning GrepMatch values.
+  """
+  def grep(%module{} = backend, pattern, opts \\ []), do: module.grep(backend, pattern, opts)
 
+  @doc """
+  Writes a batch of {virtual_path, content} entries, returning one result per file. Uploads replace existing data.
+  """
+  def upload_files(%module{} = backend, files, opts \\ []), do: module.upload_files(backend, files, opts)
+
+  @doc """
+  Reads a batch of virtual paths, returning one result per file, including individual errors.
+  """
+  def download_files(%module{} = backend, paths, opts \\ []), do: module.download_files(backend, paths, opts)
+
+  @doc """
+  The path of the file `backend` reaches for each of `paths`, in order.
+
+  That is the path without `.` segments and repeated slashes and, on a backend
+  with symlinks such as `BeamWeaver.Filesystem.Local`, with every symlink on
+  the way followed: for a link `/notes/key.txt` to `/secrets/key.txt`, it is
+  `/secrets/key.txt`. The part of a path that doesn't exist yet is kept, so a
+  new file's path is its folder's path plus its name. `BeamWeaver.Filesystem.Permission`
+  checks this path as well as the one the model wrote, so a link can't give a
+  denied file an allowed name.
+
+  Each result is `{:ok, path}`, or `{:error, reason}` for a path the backend
+  can't resolve, such as a relative path or one through a symlink that is
+  broken or leads out of the backend.
+
+  The callback is optional: a backend without it has no links, and its paths
+  come back cleaned. A backend that wraps another one should pass the call to
+  it.
+  """
+  @spec canonical_paths(t(), [String.t()], keyword()) :: [{:ok, String.t()} | {:error, term()}]
+  def canonical_paths(%module{} = backend, paths, opts \\ []) when is_list(paths) do
+    if BeamWeaver.Behaviour.exported?(module, :canonical_paths, 3),
+      do: module.canonical_paths(backend, paths, opts),
+      else: Enum.map(paths, &BeamWeaver.Filesystem.Path.clean_path/1)
+  end
+
+  @doc "Whether `backend` is a struct whose module implements this behaviour."
+  @spec backend?(term()) :: boolean()
+  def backend?(%module{}), do: BeamWeaver.Behaviour.implemented_by?(module, __MODULE__)
+  def backend?(_other), do: false
+
+  @doc """
+  Renders literal grep results as path:line:text text, or an Error-prefixed string.
+  """
   def grep_raw(backend, pattern, opts \\ []) do
     case grep(backend, pattern, opts) do
       %GrepResult{error: nil, matches: matches} ->
@@ -240,40 +303,21 @@ defmodule BeamWeaver.Filesystem do
         "Error: #{error}"
     end
   end
-
-  def async_ls(backend, path, opts \\ []), do: Async.run_call(opts, &ls(backend, path, &1))
-  def async_read(backend, path, opts \\ []), do: Async.run_call(opts, &read(backend, path, &1))
-
-  def async_write(backend, path, content, opts \\ []),
-    do: Async.run_call(opts, &write(backend, path, content, &1))
-
-  def async_edit(backend, path, old, new, opts \\ []),
-    do: Async.run_call(opts, &edit(backend, path, old, new, &1))
-
-  def async_glob(backend, pattern, opts \\ []),
-    do: Async.run_call(opts, &glob(backend, pattern, &1))
-
-  def async_grep(backend, pattern, opts \\ []),
-    do: Async.run_call(opts, &grep(backend, pattern, &1))
-
-  def async_upload_files(backend, files, opts \\ []),
-    do: Async.run_call(opts, &upload_files(backend, files, &1))
-
-  def async_download_files(backend, paths, opts \\ []),
-    do: Async.run_call(opts, &download_files(backend, paths, &1))
 end
 
 defmodule BeamWeaver.Filesystem.Executable do
-  @moduledoc """
-  Extension behaviour for DeepAgents backends that can execute shell commands.
+  @moduledoc ~S"""
+  Optional command-execution behavior for filesystem backends.
 
-  This behaviour does not imply security. Local shell adapters are explicitly
-  unsafe; real isolation must be provided by Docker/gVisor/Kata, Firecracker, or
-  a managed sandbox service.
+  Support for this interface says a backend can execute commands, not that it
+  isolates them. LocalShell runs with host-user privileges. Sandbox backends
+  inherit the configured container/service boundary. Agent file permissions do
+  not constrain execute.
+
+  Inspect error, exit_code and truncated output on ExecuteResult. A delivered
+  nonzero command exit is not necessarily a failed tool transport. See
+  [Sandboxes](sandboxes.md).
   """
-
-  alias BeamWeaver.Core.Async
-  alias BeamWeaver.Filesystem.ExecutableBackend
 
   defmodule ExecuteResult do
     @moduledoc "Result returned by executable filesystem backends."
@@ -295,42 +339,16 @@ defmodule BeamWeaver.Filesystem.Executable do
   defmacro __using__(_opts) do
     quote do
       @behaviour BeamWeaver.Filesystem.Executable
-
-      defimpl BeamWeaver.Filesystem.ExecutableBackend, for: __MODULE__ do
-        def id(backend), do: @for.id(backend)
-        def execute(backend, command, opts), do: @for.execute(backend, command, opts)
-      end
     end
   end
 
-  def id(backend), do: ExecutableBackend.id(backend)
+  def id(%module{} = backend), do: module.id(backend)
+  def execute(%module{} = backend, command, opts \\ []), do: module.execute(backend, command, opts)
 
-  def execute(backend, command, opts \\ []),
-    do: ExecutableBackend.execute(backend, command, opts)
-
-  def async_execute(backend, command, opts \\ []),
-    do: Async.run_call(opts, &execute(backend, command, &1))
-
-  def execute_accepts_timeout?(backend) when is_struct(backend) do
-    executable?(backend)
-  end
-
-  def execute_accepts_timeout?(_backend), do: false
-
-  def executable?(backend) when is_struct(backend) do
-    case ExecutableBackend.impl_for(backend) do
-      nil -> false
-      _impl -> executable_enabled?(backend)
-    end
+  def executable?(%module{} = backend) do
+    BeamWeaver.Behaviour.implemented_by?(module, __MODULE__) and
+      (not function_exported?(module, :executable?, 1) or module.executable?(backend) == true)
   end
 
   def executable?(_backend), do: false
-
-  defp executable_enabled?(%{__struct__: module} = backend) do
-    if function_exported?(module, :executable?, 1) do
-      module.executable?(backend) == true
-    else
-      true
-    end
-  end
 end

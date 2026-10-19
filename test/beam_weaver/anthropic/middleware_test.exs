@@ -25,8 +25,8 @@ defmodule BeamWeaver.Anthropic.MiddlewareTest do
            ]
   end
 
-  test "server tool helpers expose expected tool declarations" do
-    assert Bash.new() |> Bash.call_opts() == [tools: [%{"type" => "bash_20250124"}]]
+  test "provider tool helpers expose expected tool declarations" do
+    assert Bash.new() |> Bash.call_opts() == [tools: [%{"type" => "bash_20250124", "name" => "bash"}]]
 
     assert FileSearch.new() |> FileSearch.call_opts() == [
              tools: [%{"type" => "tool_search_tool_bm25_20251119"}]

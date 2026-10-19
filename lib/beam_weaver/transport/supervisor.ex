@@ -10,7 +10,8 @@ defmodule BeamWeaver.Transport.Supervisor do
   @impl true
   def init(_opts) do
     children = [
-      {Finch, name: BeamWeaver.Transport.Finch}
+      {Finch, name: BeamWeaver.Transport.Finch},
+      BeamWeaver.Transport.IsolatedPools
     ]
 
     Supervisor.init(children, strategy: :one_for_one)

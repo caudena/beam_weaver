@@ -3,6 +3,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Models.Profile
+  alias BeamWeaver.Models.ProfileRegistry
   alias BeamWeaver.Models.ProfileRegistry.Params
 
   @pricing_source_url "https://developers.openai.com/api/docs/pricing"
@@ -33,79 +34,85 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                                      :web_search_options
                                    ]
 
-  @openai_astra_profile Profile.new(%{
-                          provider: :openai,
-                          id: "gpt-6-astra",
-                          name: "GPT-6 Astra",
-                          status: :active,
-                          release_date: "2026-09-04",
-                          last_updated: "2026-09-04",
-                          responses_api: true,
-                          chat_completions_api: true,
-                          tool_calling: true,
-                          tool_call_streaming: true,
-                          tool_choice: true,
-                          parallel_tool_calls: true,
-                          structured_output: true,
-                          structured_output_with_tools: true,
-                          streaming: true,
-                          usage_metadata: true,
-                          supported_params: @astra_responses_params,
-                          supported_params_by_api: %{
-                            responses: @astra_responses_params,
-                            chat_completions: @astra_chat_completions_params
-                          },
-                          max_input_tokens: 1_050_000,
-                          max_output_tokens: 128_000,
-                          image_inputs: true,
-                          image_url_inputs: true,
-                          image_tool_message: true,
-                          audio_inputs: false,
-                          video_inputs: false,
-                          reasoning_output: true,
-                          temperature: false,
-                          tokenizer: :o200k_base,
-                          extra: %{
-                            frontier: true,
-                            availability: :trusted_access_rollout,
-                            knowledge_cutoff: "2026-04-30",
-                            input_price_per_mtok: 10.00,
-                            cached_input_price_per_mtok: 1.00,
-                            cache_write_30m_price_per_mtok: 12.50,
-                            output_price_per_mtok: 50.00,
-                            cost_currency: "USD",
-                            pricing_source_url: @astra_source_url,
-                            higher_context_pricing_threshold_tokens: 272_000,
-                            higher_context_input_multiplier: 2.0,
-                            higher_context_output_multiplier: 1.5,
-                            pricing_modes: [:standard, :batch, :flex, :fast, :priority],
-                            batch_price_multiplier: 0.5,
-                            flex_price_multiplier: 0.5,
-                            fast_mode_price_multiplier: 2.0,
-                            fast_mode_service_tiers: [:fast, :priority],
-                            fast_mode_eu_data_residency: false,
-                            reasoning_efforts: [:low, :medium, :high, :xhigh, :max],
-                            unsupported_reasoning_efforts: [:none, :minimal],
-                            reasoning_modes: [:standard, :pro],
-                            persisted_reasoning_contexts: [:auto, :current_turn, :all_turns],
-                            prompt_cache_modes: [:implicit, :explicit],
-                            prompt_cache_ttl: "30m",
-                            prompt_cache_write_multiplier: 1.25,
-                            prompt_cache_read_discount_rate: 0.90,
-                            chat_completions_tool_calling: false,
-                            provider_capabilities: [
-                              :async_tool_calling,
-                              :computer_use,
-                              :configuration_updates,
-                              :explicit_prompt_caching,
-                              :mid_turn_steering,
-                              :multi_agent_beta,
-                              :persisted_reasoning,
-                              :pro_reasoning_mode,
-                              :programmatic_tool_calling
-                            ]
-                          }
-                        })
+  @openai_profile %{
+    provider: :openai,
+    status: :active,
+    responses_api: true,
+    chat_completions_api: true,
+    tool_calling: true,
+    tool_call_streaming: true,
+    tool_choice: true,
+    parallel_tool_calls: true,
+    structured_output: true,
+    structured_output_with_tools: true,
+    streaming: true,
+    usage_metadata: true,
+    max_output_tokens: 128_000,
+    image_inputs: true,
+    image_url_inputs: true,
+    image_tool_message: true,
+    pdf_inputs: true,
+    audio_inputs: false,
+    reasoning_output: true,
+    tokenizer: :o200k_base
+  }
+
+  @openai_astra_profile Profile.new(
+                          Map.merge(@openai_profile, %{
+                            id: "gpt-6-astra",
+                            name: "GPT-6 Astra",
+                            release_date: "2026-09-04",
+                            last_updated: "2026-09-04",
+                            supported_params: @astra_responses_params,
+                            supported_params_by_api: %{
+                              responses: @astra_responses_params,
+                              chat_completions: @astra_chat_completions_params
+                            },
+                            max_input_tokens: 1_050_000,
+                            video_inputs: false,
+                            temperature: false,
+                            reasoning_effort_levels: [:low, :medium, :high, :xhigh, :max],
+                            extra: %{
+                              frontier: true,
+                              availability: :trusted_access_rollout,
+                              knowledge_cutoff: "2026-04-30",
+                              input_price_per_mtok: 10.00,
+                              cached_input_price_per_mtok: 1.00,
+                              cache_write_30m_price_per_mtok: 12.50,
+                              output_price_per_mtok: 50.00,
+                              cost_currency: "USD",
+                              pricing_source_url: @astra_source_url,
+                              higher_context_pricing_threshold_tokens: 272_000,
+                              higher_context_input_multiplier: 2.0,
+                              higher_context_output_multiplier: 1.5,
+                              pricing_modes: [:standard, :batch, :flex, :fast, :priority],
+                              batch_price_multiplier: 0.5,
+                              flex_price_multiplier: 0.5,
+                              fast_mode_price_multiplier: 2.0,
+                              fast_mode_service_tiers: [:fast, :priority],
+                              fast_mode_eu_data_residency: false,
+                              unsupported_reasoning_efforts: [:none, :minimal],
+                              reasoning_modes: [:standard, :pro],
+                              persisted_reasoning_contexts: [:auto, :current_turn, :all_turns],
+                              prompt_cache_modes: [:implicit, :explicit],
+                              prompt_cache_ttl: "30m",
+                              prompt_cache_write_multiplier: 1.25,
+                              prompt_cache_read_discount_rate: 0.90,
+                              chat_completions_tool_calling: false,
+                              provider_capabilities: [
+                                :async_tool_calling,
+                                :computer_use,
+                                :configuration_updates,
+                                :explicit_prompt_caching,
+                                :mid_turn_steering,
+                                :multi_agent_beta,
+                                :persisted_reasoning,
+                                :pro_reasoning_mode,
+                                :programmatic_tool_calling
+                              ]
+                            }
+                          })
+                        )
 
   @gpt_6_specs [
     %{
@@ -123,106 +130,97 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
       cache_read_discount_rate: 0.95
     },
     %{id: "gpt-6-sol", name: "GPT-6 Sol", input: 2.00, cached: 0.20, output: 10.00, cutoff: "2026-04-20"},
-    %{id: "gpt-6-luna", name: "GPT-6 Luna", input: 0.10, cached: 0.01, output: 0.50, cutoff: "2026-05-18"}
+    # Luna also answers the Decisions API (see `BeamWeaver.OpenAI.DecisionModel`).
+    %{
+      id: "gpt-6-luna",
+      name: "GPT-6 Luna",
+      input: 0.10,
+      cached: 0.01,
+      output: 0.50,
+      cutoff: "2026-05-18",
+      decision_outputs: true
+    }
   ]
 
   @gpt_6_profiles Map.new(@gpt_6_specs, fn spec ->
                     reasoning_required? = Map.get(spec, :reasoning_required, false)
 
+                    responses_params =
+                      if reasoning_required?,
+                        do: @astra_responses_params,
+                        else: Params.responses() -- [:prompt_cache_retention]
+
                     {{:openai, spec.id},
-                     Profile.new(%{
-                       provider: :openai,
-                       id: spec.id,
-                       name: spec.name,
-                       status: :active,
-                       release_date: Map.get(spec, :release_date, "2026-09-22"),
-                       last_updated: Map.get(spec, :last_updated, "2026-09-23"),
-                       responses_api: true,
-                       chat_completions_api: true,
-                       tool_calling: true,
-                       tool_call_streaming: true,
-                       tool_choice: true,
-                       parallel_tool_calls: true,
-                       structured_output: true,
-                       structured_output_with_tools: true,
-                       streaming: true,
-                       usage_metadata: true,
-                       supported_params:
-                         if(reasoning_required?,
-                           do: @astra_responses_params,
-                           else: Params.responses() -- [:prompt_cache_retention]
-                         ),
-                       supported_params_by_api: %{
-                         responses:
-                           if(reasoning_required?,
-                             do: @astra_responses_params,
-                             else: Params.responses() -- [:prompt_cache_retention]
-                           ),
-                         chat_completions:
-                           if(reasoning_required?,
-                             do: @astra_chat_completions_params,
-                             else: Params.chat_completions() -- [:audio, :modalities, :prompt_cache_retention]
-                           )
-                       },
-                       max_context_tokens: Map.get(spec, :max_context_tokens),
-                       max_input_tokens: Map.get(spec, :max_input_tokens, 1_050_000),
-                       max_output_tokens: 128_000,
-                       image_inputs: true,
-                       image_url_inputs: true,
-                       image_tool_message: true,
-                       audio_inputs: false,
-                       video_inputs: false,
-                       reasoning_output: true,
-                       temperature: not reasoning_required?,
-                       tokenizer: :o200k_base,
-                       extra: %{
-                         frontier: true,
-                         knowledge_cutoff: spec.cutoff,
-                         input_price_per_mtok: spec.input,
-                         cached_input_price_per_mtok: spec.cached,
-                         cache_write_30m_price_per_mtok: spec.input * 1.25,
-                         output_price_per_mtok: spec.output,
-                         cost_currency: "USD",
-                         pricing_source_url: @pricing_source_url,
-                         pricing_last_checked: Map.get(spec, :last_updated, "2026-09-23"),
-                         higher_context_pricing_threshold_tokens: 272_000,
-                         higher_context_input_multiplier: 2.0,
-                         higher_context_output_multiplier: 1.5,
-                         regional_processing_multiplier: 1.1,
-                         pricing_modes: [:standard, :batch, :flex, :fast, :priority],
-                         batch_price_multiplier: 0.5,
-                         flex_price_multiplier: 0.5,
-                         fast_mode_price_multiplier: 2.0,
-                         fast_mode_service_tiers: [:fast, :priority],
-                         fast_mode_eu_data_residency: false,
-                         default_reasoning_effort: :medium,
-                         reasoning_efforts:
+                     Profile.new(
+                       Map.merge(@openai_profile, %{
+                         id: spec.id,
+                         name: spec.name,
+                         release_date: Map.get(spec, :release_date, "2026-09-22"),
+                         last_updated: Map.get(spec, :last_updated, "2026-09-23"),
+                         supported_params: responses_params,
+                         supported_params_by_api: %{
+                           responses: responses_params,
+                           chat_completions:
+                             if(reasoning_required?,
+                               do: @astra_chat_completions_params,
+                               else: Params.chat_completions() -- [:audio, :modalities, :prompt_cache_retention]
+                             )
+                         },
+                         max_context_tokens: Map.get(spec, :max_context_tokens),
+                         max_input_tokens: Map.get(spec, :max_input_tokens, 1_050_000),
+                         video_inputs: false,
+                         decision_outputs: Map.get(spec, :decision_outputs, false),
+                         temperature: not reasoning_required?,
+                         reasoning_effort_default: :medium,
+                         reasoning_effort_levels:
                            if(reasoning_required?,
                              do: [:low, :medium, :high, :xhigh, :max],
                              else: [:none, :low, :medium, :high, :xhigh, :max]
                            ),
-                         unsupported_reasoning_efforts:
-                           if(reasoning_required?, do: [:none, :minimal], else: [:minimal]),
-                         reasoning_modes: [:standard, :pro],
-                         persisted_reasoning_contexts: [:auto, :current_turn, :all_turns],
-                         prompt_cache_modes: [:implicit, :explicit],
-                         prompt_cache_ttl: "30m",
-                         prompt_cache_write_multiplier: 1.25,
-                         prompt_cache_read_discount_rate: Map.get(spec, :cache_read_discount_rate, 0.90),
-                         chat_completions_tool_calling: if(reasoning_required?, do: false, else: :none_reasoning_only),
-                         provider_capabilities: [
-                           :async_tool_calling,
-                           :computer_use,
-                           :configuration_updates,
-                           :explicit_prompt_caching,
-                           :mid_turn_steering,
-                           :multi_agent_beta,
-                           :persisted_reasoning,
-                           :pro_reasoning_mode,
-                           :programmatic_tool_calling
-                         ]
-                       }
-                     })}
+                         extra: %{
+                           frontier: true,
+                           knowledge_cutoff: spec.cutoff,
+                           input_price_per_mtok: spec.input,
+                           cached_input_price_per_mtok: spec.cached,
+                           cache_write_30m_price_per_mtok: spec.input * 1.25,
+                           output_price_per_mtok: spec.output,
+                           cost_currency: "USD",
+                           pricing_source_url: @pricing_source_url,
+                           pricing_last_checked: Map.get(spec, :last_updated, "2026-09-23"),
+                           higher_context_pricing_threshold_tokens: 272_000,
+                           higher_context_input_multiplier: 2.0,
+                           higher_context_output_multiplier: 1.5,
+                           regional_processing_multiplier: 1.1,
+                           pricing_modes: [:standard, :batch, :flex, :fast, :priority],
+                           batch_price_multiplier: 0.5,
+                           flex_price_multiplier: 0.5,
+                           fast_mode_price_multiplier: 2.0,
+                           fast_mode_service_tiers: [:fast, :priority],
+                           fast_mode_eu_data_residency: false,
+                           unsupported_reasoning_efforts:
+                             if(reasoning_required?, do: [:none, :minimal], else: [:minimal]),
+                           reasoning_modes: [:standard, :pro],
+                           persisted_reasoning_contexts: [:auto, :current_turn, :all_turns],
+                           prompt_cache_modes: [:implicit, :explicit],
+                           prompt_cache_ttl: "30m",
+                           prompt_cache_write_multiplier: 1.25,
+                           prompt_cache_read_discount_rate: Map.get(spec, :cache_read_discount_rate, 0.90),
+                           chat_completions_tool_calling:
+                             if(reasoning_required?, do: false, else: :none_reasoning_only),
+                           provider_capabilities: [
+                             :async_tool_calling,
+                             :computer_use,
+                             :configuration_updates,
+                             :explicit_prompt_caching,
+                             :mid_turn_steering,
+                             :multi_agent_beta,
+                             :persisted_reasoning,
+                             :pro_reasoning_mode,
+                             :programmatic_tool_calling
+                           ]
+                         }
+                       })
+                     )}
                   end)
 
   @openai_5_6_specs [
@@ -367,66 +365,49 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                            }
 
                            {{:openai, spec.id},
-                            Profile.new(%{
-                              provider: :openai,
-                              id: spec.id,
-                              name: spec.name,
-                              status: :active,
-                              release_date: "2026-07-09",
-                              last_updated: "2026-08-27",
-                              responses_api: true,
-                              chat_completions_api: true,
-                              tool_calling: true,
-                              tool_call_streaming: true,
-                              tool_choice: true,
-                              parallel_tool_calls: true,
-                              structured_output: true,
-                              structured_output_with_tools: true,
-                              streaming: true,
-                              usage_metadata: true,
-                              supported_params: Params.responses(),
-                              supported_params_by_api: %{
-                                responses: Params.responses(),
-                                chat_completions: Params.chat_completions()
-                              },
-                              max_input_tokens: 1_050_000,
-                              max_output_tokens: 128_000,
-                              image_inputs: true,
-                              image_url_inputs: true,
-                              image_tool_message: true,
-                              audio_inputs: false,
-                              reasoning_output: true,
-                              tokenizer: :o200k_base,
-                              extra:
-                                Map.merge(
-                                  %{
-                                    frontier: true,
-                                    pricing_modes: [:standard, :batch, :flex, :fast, :priority],
-                                    batch_price_multiplier: 0.5,
-                                    flex_price_multiplier: 0.5,
-                                    fast_mode_price_multiplier: 2.0,
-                                    fast_mode_service_tiers: [:fast, :priority],
-                                    default_reasoning_effort: :medium,
-                                    reasoning_efforts: [:none, :low, :medium, :high, :xhigh, :max],
-                                    reasoning_modes: [:standard, :pro],
-                                    persisted_reasoning_contexts: [:auto, :current_turn, :all_turns],
-                                    prompt_cache_modes: [:implicit, :explicit],
-                                    prompt_cache_ttl: "30m",
-                                    prompt_cache_write_multiplier: 1.25,
-                                    prompt_cache_read_discount_rate: 0.90,
-                                    provider_capabilities: [
-                                      :programmatic_tool_calling,
-                                      :multi_agent_beta,
-                                      :explicit_prompt_caching,
-                                      :persisted_reasoning,
-                                      :pro_reasoning_mode,
-                                      :original_image_detail
-                                    ]
-                                  }
-                                  |> Map.merge(pricing),
-                                  Map.get(spec, :extra, %{})
-                                )
-                            })}
+                            Profile.new(
+                              Map.merge(@openai_profile, %{
+                                id: spec.id,
+                                name: spec.name,
+                                release_date: "2026-07-09",
+                                last_updated: "2026-08-27",
+                                supported_params: Params.responses(),
+                                supported_params_by_api: %{
+                                  responses: Params.responses(),
+                                  chat_completions: Params.chat_completions()
+                                },
+                                max_input_tokens: 1_050_000,
+                                reasoning_effort_default: :medium,
+                                reasoning_effort_levels: [:none, :low, :medium, :high, :xhigh, :max],
+                                extra:
+                                  Map.merge(
+                                    %{
+                                      frontier: true,
+                                      pricing_modes: [:standard, :batch, :flex, :fast, :priority],
+                                      batch_price_multiplier: 0.5,
+                                      flex_price_multiplier: 0.5,
+                                      fast_mode_price_multiplier: 2.0,
+                                      fast_mode_service_tiers: [:fast, :priority],
+                                      reasoning_modes: [:standard, :pro],
+                                      persisted_reasoning_contexts: [:auto, :current_turn, :all_turns],
+                                      prompt_cache_modes: [:implicit, :explicit],
+                                      prompt_cache_ttl: "30m",
+                                      prompt_cache_write_multiplier: 1.25,
+                                      prompt_cache_read_discount_rate: 0.90,
+                                      provider_capabilities: [
+                                        :programmatic_tool_calling,
+                                        :multi_agent_beta,
+                                        :explicit_prompt_caching,
+                                        :persisted_reasoning,
+                                        :pro_reasoning_mode,
+                                        :original_image_detail
+                                      ]
+                                    }
+                                    |> Map.merge(pricing),
+                                    Map.get(spec, :extra, %{})
+                                  )
+                              })
+                            )}
                          end
                        )
 
@@ -462,71 +443,110 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                                   end
 
                                 params_by_api =
-                                  if chat? do
-                                    %{
-                                      responses: Params.responses(),
-                                      chat_completions: Params.chat_completions()
-                                    }
-                                  else
-                                    %{responses: Params.responses()}
-                                  end
+                                  if chat?,
+                                    do: %{responses: Params.responses(), chat_completions: Params.chat_completions()},
+                                    else: %{responses: Params.responses()}
 
                                 {{:openai, spec.id},
-                                 Profile.new(%{
-                                   provider: :openai,
-                                   id: spec.id,
-                                   name: spec.name,
-                                   status: :active,
-                                   last_updated: "2026-08-27",
-                                   responses_api: true,
-                                   chat_completions_api: chat?,
-                                   tool_calling: true,
-                                   tool_call_streaming: true,
-                                   tool_choice: true,
-                                   parallel_tool_calls: true,
-                                   structured_output: Map.get(spec, :structured_output, true),
-                                   structured_output_with_tools: Map.get(spec, :structured_output_with_tools, true),
-                                   streaming: Map.get(spec, :streaming, true),
-                                   usage_metadata: true,
-                                   supported_params: Params.responses(),
-                                   supported_params_by_api: params_by_api,
-                                   max_input_tokens: spec.max_input,
-                                   max_output_tokens: Map.get(spec, :max_output, 128_000),
-                                   image_inputs: true,
-                                   image_url_inputs: true,
-                                   image_tool_message: true,
-                                   audio_inputs: false,
-                                   reasoning_output: Map.get(spec, :reasoning, true),
-                                   tokenizer: :o200k_base,
-                                   extra:
-                                     Map.merge(pricing, %{
-                                       frontier: true,
-                                       reasoning_efforts: spec.efforts
-                                     })
-                                 })}
+                                 Profile.new(
+                                   Map.merge(@openai_profile, %{
+                                     id: spec.id,
+                                     name: spec.name,
+                                     last_updated: "2026-08-27",
+                                     chat_completions_api: chat?,
+                                     structured_output: Map.get(spec, :structured_output, true),
+                                     structured_output_with_tools: Map.get(spec, :structured_output_with_tools, true),
+                                     streaming: Map.get(spec, :streaming, true),
+                                     supported_params: Params.responses(),
+                                     supported_params_by_api: params_by_api,
+                                     max_input_tokens: spec.max_input,
+                                     max_output_tokens: Map.get(spec, :max_output, 128_000),
+                                     reasoning_output: Map.get(spec, :reasoning, true),
+                                     reasoning_effort_levels: spec.efforts,
+                                     extra: Map.put(pricing, :frontier, true)
+                                   })
+                                 )}
                               end
                             )
 
-  @openai_deprecated_models %{
-    "gpt-5-chat-latest" => "gpt-5.5",
-    "gpt-5-chat" => "gpt-5.5",
-    "gpt-4.1-nano" => "gpt-5-nano",
-    "gpt-4.5-preview" => "gpt-5.5",
-    "gpt-4o-mini-search-preview" => "gpt-5.4-mini",
-    "gpt-4o-search-preview" => "gpt-5.4",
-    "gpt-4o-audio-preview" => "gpt-5.4",
-    "gpt-4o-realtime-preview" => "gpt-5.4",
-    "gpt-4-turbo" => "gpt-4.1",
-    "gpt-4-turbo-preview" => "gpt-4.1",
-    "gpt-4" => "gpt-4.1",
-    "gpt-3.5-turbo" => "gpt-5.4-mini",
-    "o4-mini" => "gpt-5-mini",
-    "o3-mini" => "gpt-5-mini",
-    "o1-pro" => "gpt-5.5-pro",
-    "o1" => "gpt-5",
-    "o1-mini" => "gpt-5-mini",
-    "o1-preview" => "gpt-5",
-    "text-embedding-ada-002" => "text-embedding-3-small"
+  @openai_retired_models %{
+    "gpt-5-chat-latest" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-sol"},
+    "gpt-5-chat" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-sol"},
+    "gpt-5-codex" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-sol"},
+    "gpt-5.1-chat-latest" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-sol"},
+    "gpt-5.1-codex" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-sol"},
+    "gpt-5.1-codex-max" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-sol"},
+    "gpt-5.2-codex" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-sol"},
+    "o3-deep-research" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-sol"},
+    "o3-deep-research-2025-06-26" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-sol"},
+    "o4-mini-deep-research" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-sol"},
+    "o4-mini-deep-research-2025-06-26" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-sol"},
+    "computer-use-preview" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-terra"},
+    "computer-use-preview-2025-03-11" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-terra"},
+    "gpt-4o-mini-search-preview" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-terra"},
+    "gpt-4o-mini-search-preview-2025-03-11" => %{
+      status: :retired,
+      shutdown_date: "2026-07-23",
+      replacement: "gpt-5.6-terra"
+    },
+    "gpt-4o-search-preview" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-terra"},
+    "gpt-4o-search-preview-2025-03-11" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-terra"},
+    "gpt-5.1-codex-mini" => %{status: :retired, shutdown_date: "2026-07-23", replacement: "gpt-5.6-terra"},
+    "gpt-5.2-chat-latest" => %{status: :retired, shutdown_date: "2026-08-10", replacement: "gpt-5.6-sol"},
+    "gpt-5.3-chat-latest" => %{status: :retired, shutdown_date: "2026-08-10", replacement: "gpt-5.6-sol"},
+    "chatgpt-4o-latest" => %{status: :retired, shutdown_date: "2026-02-17", replacement: "gpt-6-luna"},
+    "codex-mini-latest" => %{status: :retired, shutdown_date: "2026-02-12", replacement: "gpt-6-sol"},
+    "o1-preview" => %{status: :retired, shutdown_date: "2025-07-28", replacement: "gpt-6-sol"},
+    "o1-preview-2024-09-12" => %{status: :retired, shutdown_date: "2025-07-28", replacement: "gpt-6-sol"},
+    "o1-mini" => %{status: :retired, shutdown_date: "2025-10-27", replacement: "gpt-6-luna"},
+    "o1-mini-2024-09-12" => %{status: :retired, shutdown_date: "2025-10-27", replacement: "gpt-6-luna"},
+    "gpt-4.5-preview" => %{status: :retired, shutdown_date: "2025-07-14", replacement: "gpt-6-sol"},
+    "gpt-4.5-preview-2025-02-27" => %{status: :retired, shutdown_date: "2025-07-14", replacement: "gpt-6-sol"}
+  }
+
+  @openai_scheduled_models %{
+    "gpt-4o" => %{status: :deprecated, shutdown_date: "2027-01-14", replacement: "gpt-6-luna"},
+    "gpt-4o-2024-08-06" => %{status: :deprecated, shutdown_date: "2027-01-14", replacement: "gpt-6-luna"},
+    "gpt-4o-2024-11-20" => %{status: :deprecated, shutdown_date: "2027-01-14", replacement: "gpt-6-luna"},
+    "gpt-4o-mini" => %{status: :deprecated, shutdown_date: "2027-01-14", replacement: "gpt-6-luna"},
+    "gpt-4o-mini-2024-07-18" => %{status: :deprecated, shutdown_date: "2027-01-14", replacement: "gpt-6-luna"},
+    "gpt-4.1" => %{status: :deprecated, shutdown_date: "2027-01-14", replacement: "gpt-6-luna"},
+    "gpt-4.1-2025-04-14" => %{status: :deprecated, shutdown_date: "2027-01-14", replacement: "gpt-6-luna"},
+    "gpt-4.1-mini" => %{status: :deprecated, shutdown_date: "2027-01-14", replacement: "gpt-6-luna"},
+    "gpt-4.1-mini-2025-04-14" => %{status: :deprecated, shutdown_date: "2027-01-14", replacement: "gpt-6-luna"},
+    "gpt-5.3-codex" => %{status: :deprecated, shutdown_date: "2027-04-01", replacement: "gpt-6-sol"},
+    "gpt-5.1" => %{status: :deprecated, shutdown_date: "2027-04-01", replacement: "gpt-6-sol"},
+    "gpt-5.4-nano" => %{status: :deprecated, shutdown_date: "2027-04-01", replacement: "gpt-6-luna"},
+    "gpt-5" => %{status: :deprecated, shutdown_date: "2026-12-11", replacement: "gpt-5.6-sol"},
+    "gpt-5-2025-08-07" => %{status: :deprecated, shutdown_date: "2026-12-11", replacement: "gpt-5.6-sol"},
+    "gpt-5-pro" => %{status: :deprecated, shutdown_date: "2026-12-11", replacement: "gpt-5.6-sol"},
+    "gpt-5-pro-2025-10-06" => %{status: :deprecated, shutdown_date: "2026-12-11", replacement: "gpt-5.6-sol"},
+    "o3" => %{status: :deprecated, shutdown_date: "2026-12-11", replacement: "gpt-5.6-sol"},
+    "o3-2025-04-16" => %{status: :deprecated, shutdown_date: "2026-12-11", replacement: "gpt-5.6-sol"},
+    "o3-pro" => %{status: :deprecated, shutdown_date: "2026-12-11", replacement: "gpt-5.6-sol"},
+    "o3-pro-2025-06-10" => %{status: :deprecated, shutdown_date: "2026-12-11", replacement: "gpt-5.6-sol"},
+    "gpt-5-mini" => %{status: :deprecated, shutdown_date: "2026-12-11", replacement: "gpt-5.6-terra"},
+    "gpt-5-mini-2025-08-07" => %{status: :deprecated, shutdown_date: "2026-12-11", replacement: "gpt-5.6-terra"},
+    "gpt-5-nano" => %{status: :deprecated, shutdown_date: "2026-12-11", replacement: "gpt-5.6-luna"},
+    "gpt-5-nano-2025-08-07" => %{status: :deprecated, shutdown_date: "2026-12-11", replacement: "gpt-5.6-luna"},
+    "gpt-3.5-turbo" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-terra"},
+    "gpt-3.5-turbo-0125" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-terra"},
+    "o4-mini" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-terra"},
+    "o4-mini-2025-04-16" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-terra"},
+    "gpt-4" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-sol"},
+    "gpt-4-0613" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-sol"},
+    "gpt-4-1106-preview" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-sol"},
+    "gpt-4-turbo" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-sol"},
+    "gpt-4-turbo-2024-04-09" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-sol"},
+    "gpt-4o-2024-05-13" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-sol"},
+    "o1" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-sol"},
+    "o1-2024-12-17" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-sol"},
+    "o1-pro" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-sol"},
+    "o1-pro-2025-03-19" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-sol"},
+    "o3-mini" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-sol"},
+    "o3-mini-2025-01-31" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-sol"},
+    "gpt-4.1-nano" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-luna"},
+    "gpt-4.1-nano-2025-04-14" => %{status: :deprecated, shutdown_date: "2026-10-23", replacement: "gpt-5.6-luna"}
   }
 
   @openai_chat_aliases %{
@@ -565,6 +585,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                   extra: %{
                     embedding_dimensions: 1536,
                     input_price_per_mtok: 0.02,
+                    output_price_per_mtok: 0.0,
                     cost_currency: "USD",
                     pricing_source_url: @pricing_source_url
                   }
@@ -580,83 +601,105 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                   extra: %{
                     embedding_dimensions: 3072,
                     input_price_per_mtok: 0.13,
+                    output_price_per_mtok: 0.0,
                     cost_currency: "USD",
                     pricing_source_url: @pricing_source_url
                   }
                 })
             })
-  def profiles_map, do: @profiles
+  @profiles Map.new(@profiles, fn {key, profile} ->
+              extra = Map.put(profile.extra, :pricing_last_checked, "2026-10-19")
+
+              extra =
+                if profile.id in ["gpt-6-astra", "gpt-6.1-sol"] do
+                  Map.merge(extra, %{
+                    ultrafast_price_multiplier: 6.0,
+                    ultrafast_access: :limited_preview,
+                    pricing_modes: [:standard, :batch, :flex, :fast, :priority, :ultrafast]
+                  })
+                else
+                  extra
+                end
+
+              extra =
+                if profile.id in ["gpt-5.6-terra", "gpt-5.6-luna"] do
+                  Map.merge(extra, %{
+                    higher_context_pricing_threshold_tokens: 272_000,
+                    higher_context_input_multiplier: 2.0,
+                    higher_context_output_multiplier: 1.5
+                  })
+                else
+                  extra
+                end
+
+              profile = %{profile | extra: extra}
+
+              profile =
+                case @openai_scheduled_models[profile.id] do
+                  nil ->
+                    profile
+
+                  lifecycle ->
+                    %{
+                      profile
+                      | status: :deprecated,
+                        last_updated: "2026-10-19",
+                        extra:
+                          Map.merge(extra, %{
+                            scheduled_shutdown_date: lifecycle.shutdown_date,
+                            recommended_replacement: lifecycle.replacement,
+                            lifecycle_source_url: "https://developers.openai.com/api/docs/deprecations"
+                          })
+                    }
+                end
+
+              {key, profile}
+            end)
   def profiles, do: Map.values(@profiles)
-  def frontier_ids, do: @openai_frontier_ids
 
   def resolve(model) do
     cond do
-      Map.has_key?(@openai_deprecated_models, model) ->
-        deprecated_model_error(model)
+      metadata = @openai_retired_models[model] ->
+        ProfileRegistry.deprecated_error(:openai, model, "OpenAI model has been retired", metadata)
 
-      Map.has_key?(@openai_chat_aliases, model) ->
-        alias_profile(model, Map.fetch!(@openai_chat_aliases, model))
+      model == "text-embedding-ada-002" ->
+        {:error,
+         Error.new(:unsupported_model, "OpenAI embedding model is not in the supported set", %{
+           provider: :openai,
+           model: model,
+           replacement: "text-embedding-3-small",
+           expected: "openai:text-embedding-3-small"
+         })}
+
+      canonical_id = @openai_chat_aliases[model] ->
+        ProfileRegistry.fetch_alias(@profiles, :openai, model, canonical_id)
 
       restricted_chat_model?(model) and not MapSet.member?(@openai_frontier_ids, model) ->
         non_frontier_model_error(model)
 
       true ->
-        fetch_or_fallback(@profiles, :openai, model)
+        ProfileRegistry.fetch_or_fallback(@profiles, :openai, model)
     end
-  end
-
-  defp deprecated_model_error(model) do
-    replacement = Map.fetch!(@openai_deprecated_models, model)
-
-    {:error,
-     Error.new(:deprecated_model, "OpenAI model is deprecated", %{
-       provider: :openai,
-       model: model,
-       replacement: replacement,
-       expected: "openai:#{replacement}"
-     })}
   end
 
   defp non_frontier_model_error(model) do
-    replacement = Map.get(@openai_non_frontier_replacements, model, "gpt-5.5")
+    lifecycle = Map.get(@openai_scheduled_models, model, %{})
+    replacement = Map.get(lifecycle, :replacement, Map.get(@openai_non_frontier_replacements, model, "gpt-6.1-sol"))
 
     {:error,
-     Error.new(:unsupported_model, "OpenAI chat model is not in the supported frontier set", %{
-       provider: :openai,
-       model: model,
-       replacement: replacement,
-       expected: "openai:#{replacement}",
-       supported: MapSet.to_list(@openai_frontier_ids) |> Enum.sort()
-     })}
+     Error.new(
+       :unsupported_model,
+       "OpenAI chat model is not in the supported frontier set",
+       %{
+         provider: :openai,
+         model: model,
+         replacement: replacement,
+         expected: "openai:#{replacement}",
+         supported: MapSet.to_list(@openai_frontier_ids) |> Enum.sort()
+       }
+       |> Map.merge(lifecycle)
+     )}
   end
 
-  defp alias_profile(alias_id, canonical_id) do
-    case Map.fetch(@profiles, {:openai, canonical_id}) do
-      {:ok, profile} ->
-        extra =
-          profile.extra
-          |> Map.put(:canonical_model, canonical_id)
-          |> Map.put(:alias_model, alias_id)
-
-        {:ok, %{profile | id: alias_id, name: "#{profile.name} (alias)", extra: extra}}
-
-      :error ->
-        {:fallback, :openai, alias_id}
-    end
-  end
-
-  defp restricted_chat_model?("gpt-" <> _rest), do: true
-
-  defp restricted_chat_model?(model) when is_binary(model) do
-    String.match?(model, ~r/^o\d/)
-  end
-
-  defp restricted_chat_model?(_model), do: false
-
-  defp fetch_or_fallback(profiles, provider, model) do
-    case Map.fetch(profiles, {provider, model}) do
-      {:ok, profile} -> {:ok, profile}
-      :error -> {:fallback, provider, model}
-    end
-  end
+  defp restricted_chat_model?(model), do: is_binary(model) and String.match?(model, ~r/^(gpt-|o\d)/)
 end

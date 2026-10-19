@@ -3,7 +3,7 @@ defmodule BeamWeaver.DeepSeek.SharedBoundariesTest do
 
   alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Message
-  alias BeamWeaver.DeepSeek.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.DeepSeek.ResponsesModel
   alias BeamWeaver.Provider.StructuredOutput
 

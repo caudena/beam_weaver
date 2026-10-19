@@ -2,21 +2,13 @@ defmodule BeamWeaver.TextSplitter.MarkdownHeaders do
   @moduledoc false
 
   alias BeamWeaver.Core.Document
-  alias BeamWeaver.TextSplitter.Shared
 
-  defstruct headers: [
-              {"#", "Header 1"},
-              {"##", "Header 2"},
-              {"###", "Header 3"},
-              {"####", "Header 4"},
-              {"#####", "Header 5"},
-              {"######", "Header 6"}
-            ],
+  defstruct headers: for(level <- 1..6, do: {String.duplicate("#", level), "Header #{level}"}),
             return_each_line: false,
             strip_whitespace: true,
             strip_headers?: true
 
-  def new(opts \\ []), do: struct(__MODULE__, opts)
+  def new(opts), do: struct(__MODULE__, opts)
 
   def split_text(%__MODULE__{}, text), do: String.split(text, "\n", trim: true)
 
@@ -79,20 +71,9 @@ defmodule BeamWeaver.TextSplitter.MarkdownHeaders do
     end)
   end
 
-  defp flush_markdown_section(_document, _splitter, _metadata, [], docs), do: docs
-
   defp flush_markdown_section(document, splitter, metadata, lines, docs) do
-    content =
-      lines
-      |> Enum.reverse()
-      |> Enum.join("\n")
-      |> maybe_trim(splitter)
-
-    if content == "" do
-      docs
-    else
-      [Document.new!(content, metadata: Map.merge(document.metadata, metadata)) | docs]
-    end
+    content = lines |> Enum.reverse() |> Enum.join("\n") |> maybe_trim(splitter)
+    if content == "", do: docs, else: [Document.new!(content, metadata: Map.merge(document.metadata, metadata)) | docs]
   end
 
   defp drop_deeper_headers(metadata, level, header_map) do
@@ -113,69 +94,46 @@ defmodule BeamWeaver.TextSplitter.HTMLHeaders do
   alias BeamWeaver.Core.Document
   alias BeamWeaver.TextSplitter.Shared
 
-  defstruct headers: [
-              {"h1", "Header 1"},
-              {"h2", "Header 2"},
-              {"h3", "Header 3"},
-              {"h4", "Header 4"},
-              {"h5", "Header 5"},
-              {"h6", "Header 6"}
-            ],
+  defstruct headers: for(level <- 1..6, do: {"h#{level}", "Header #{level}"}),
             strip_whitespace: true
 
-  def new(opts \\ []), do: struct(__MODULE__, opts)
+  def new(opts), do: struct(__MODULE__, opts)
 
   def split_text(%__MODULE__{}, text), do: [Shared.strip_markup(text)]
 
   def split_document(%__MODULE__{} = splitter, %Document{} = document) do
-    header_map = Map.new(splitter.headers)
+    header_map = Map.new(splitter.headers, fn {tag, name} -> {String.downcase(tag), name} end)
     regex = ~r/<(h[1-6])[^>]*>(.*?)<\/\1>/is
     content = promote_font_size_headers(document.content)
     pieces = Regex.split(regex, content, include_captures: true, trim: false)
 
     {metadata, buffer, docs} =
       Enum.reduce(pieces, {%{}, [], []}, fn piece, {metadata, buffer, docs} ->
-        case Regex.run(regex, piece) do
-          [_, tag, title] ->
-            docs = flush_html_section(document, splitter, metadata, buffer, docs)
+        with [_, tag, title] <- Regex.run(regex, piece),
+             tag = String.downcase(tag),
+             {:ok, name} <- Map.fetch(header_map, tag) do
+          docs = flush_html_section(document, metadata, buffer, docs)
 
-            tag = String.downcase(tag)
+          metadata =
+            metadata
+            |> drop_deeper_headers(tag, header_map)
+            |> Map.put(name, Shared.strip_markup(title))
 
-            metadata =
-              metadata
-              |> drop_deeper_headers(tag, header_map)
-              |> Map.put(header_map[tag], Shared.strip_markup(title))
-
-            {metadata, [], docs}
-
-          _other ->
-            {metadata, [piece | buffer], docs}
+          {metadata, [], docs}
+        else
+          # Text, and headings that aren't in `headers`, stay in the section.
+          _other -> {metadata, [piece | buffer], docs}
         end
       end)
 
-    flush_html_section(document, splitter, metadata, buffer, docs)
+    flush_html_section(document, metadata, buffer, docs)
     |> Enum.reverse()
   end
 
-  defp flush_html_section(_document, _splitter, _metadata, [], docs), do: docs
-
-  defp flush_html_section(document, splitter, metadata, buffer, docs) do
-    content =
-      buffer
-      |> Enum.reverse()
-      |> Enum.join("")
-      |> Shared.strip_markup()
-      |> maybe_trim(splitter)
-
-    if content == "" do
-      docs
-    else
-      [Document.new!(content, metadata: Map.merge(document.metadata, metadata)) | docs]
-    end
+  defp flush_html_section(document, metadata, buffer, docs) do
+    content = buffer |> Enum.reverse() |> Enum.join("") |> Shared.strip_markup()
+    if content == "", do: docs, else: [Document.new!(content, metadata: Map.merge(document.metadata, metadata)) | docs]
   end
-
-  defp maybe_trim(text, %{strip_whitespace: true}), do: String.trim(text)
-  defp maybe_trim(text, _splitter), do: text
 
   defp drop_deeper_headers(metadata, tag, header_map) do
     current_level = header_level(tag)

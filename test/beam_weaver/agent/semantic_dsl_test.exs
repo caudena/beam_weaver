@@ -9,9 +9,6 @@ defmodule BeamWeaver.Agent.SemanticDSLTest do
   alias BeamWeaver.Core.ChatModel
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
-  alias BeamWeaver.Graph
-  alias BeamWeaver.Graph.Channels.BinaryOperatorAggregate
-  alias BeamWeaver.Graph.Channels.LastValue
 
   defmodule EchoModel do
     @behaviour ChatModel
@@ -93,28 +90,6 @@ defmodule BeamWeaver.Agent.SemanticDSLTest do
     end
   end
 
-  defmodule GraphWorkflow do
-    use Agent
-
-    graph do
-      state do
-        channel(:summary, merge: :last)
-        channel(:framework, merge: :map)
-      end
-
-      node(:summary, fn _state -> %{summary: "summary"} end, output: :summary)
-      node(:meddic, fn _state -> %{framework: %{meddic: "ok"}} end)
-      node(:bant, fn _state -> %{framework: %{bant: "ok"}} end)
-      node(:action, fn _state -> %{action: "done"} end)
-
-      edge(start(), :summary)
-      edge(:summary, :meddic)
-      edge(:summary, :bant)
-      join([:meddic, :bant], :action)
-      edge(:action, finish())
-    end
-  end
-
   test "tools block compiles to tool declarations and hides injected fields" do
     spec = SpecialistAgent.__beam_weaver_agent_spec__()
 
@@ -148,9 +123,12 @@ defmodule BeamWeaver.Agent.SemanticDSLTest do
     end
   end
 
-  test "graph state channel merge accepts atoms only" do
-    assert_raise ArgumentError, ~s/unknown graph state channel merge "map"/, fn ->
-      apply(Agent, :__add_graph_channel__, [Graph.new(), :summary, "map", []])
+  test "response_schema takes a module only when it declares a schema" do
+    # Both used to become an empty object schema.
+    for module <- [String, BeamWeaver.Agent.SemanticDSLTest.NoSuchSchema] do
+      assert_raise ArgumentError, ~r/response_schema #{inspect(module)} is not a schema module/, fn ->
+        Agent.__response_schema__(module, [])
+      end
     end
   end
 
@@ -180,6 +158,8 @@ defmodule BeamWeaver.Agent.SemanticDSLTest do
           defmodule BeamWeaver.Agent.SemanticDSLTest.StringContextSchemaField do
             use BeamWeaver.Agent
 
+            model("fake:chat")
+
             context_schema do
               field("workspace_id", :integer)
             end
@@ -207,17 +187,6 @@ defmodule BeamWeaver.Agent.SemanticDSLTest do
     assert subagent.graph_id == "research_graph"
     assert subagent.url == "https://agents.example.com"
     assert subagent.client == BeamWeaver.Agent.Protocol.ReqClient
-  end
-
-  test "graph block compiles state channels, nodes, edges, and joins" do
-    graph = GraphWorkflow.graph()
-
-    assert %LastValue{} = graph.channels[:summary]
-    assert %BinaryOperatorAggregate{} = graph.channels[:framework]
-    assert Map.has_key?(graph.nodes, "summary")
-    assert "summary" in graph.entry_points
-    assert MapSet.member?(graph.finish_points, "action")
-    assert [%{upstream: ["meddic", "bant"], target: "action"}] = graph.waiting_edges
   end
 
   defmodule MiddlewareWithOptsAgent do

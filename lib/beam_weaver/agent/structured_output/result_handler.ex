@@ -2,63 +2,67 @@ defmodule BeamWeaver.Agent.StructuredOutput.ResultHandler do
   @moduledoc false
 
   alias BeamWeaver.Agent.ModelResponse
+  alias BeamWeaver.Agent.Nodes.Model.Response
   alias BeamWeaver.Agent.StructuredOutput.AutoStrategy
   alias BeamWeaver.Agent.StructuredOutput.ProviderStrategy
-  alias BeamWeaver.Agent.StructuredOutput.Schema
   alias BeamWeaver.Agent.StructuredOutput.ToolStrategy
   alias BeamWeaver.Agent.StructuredOutput.Validation
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
 
-  @spec handle_model_output(Message.t(), term()) :: {:ok, ModelResponse.t()} | {:error, Error.t()}
-  def handle_model_output(%Message{} = message, nil) do
+  @spec handle_model_output(Message.t(), term(), [Message.t()]) ::
+          {:ok, ModelResponse.t()} | {:error, Error.t()}
+  def handle_model_output(%Message{} = message, nil, _history) do
     {:ok, %ModelResponse{messages: [message]}}
   end
 
-  def handle_model_output(%Message{tool_calls: calls} = message, %ProviderStrategy{})
+  def handle_model_output(%Message{tool_calls: calls} = message, %ProviderStrategy{}, _history)
       when is_list(calls) and calls != [] do
     {:ok, %ModelResponse{messages: [message]}}
   end
 
-  def handle_model_output(%Message{} = message, %ProviderStrategy{schema_spec: spec}) do
+  def handle_model_output(%Message{} = message, %ProviderStrategy{schema_spec: spec}, _history) do
     with {:ok, data} <- parsed_provider_data(message),
          {:ok, parsed} <- Validation.parse(spec, data) do
       {:ok, %ModelResponse{messages: [message], structured_response: parsed}}
-    else
-      {:error, %Error{} = error} -> {:error, error}
     end
   end
 
-  def handle_model_output(%Message{} = message, %ToolStrategy{} = strategy) do
+  def handle_model_output(%Message{} = message, %ToolStrategy{} = strategy, history) do
     structured_calls =
       Enum.filter(message.tool_calls || [], fn call ->
         call_name(call) in Enum.map(strategy.schema_specs, & &1.name)
       end)
 
     case structured_calls do
+      [] when message.tool_calls in [nil, []] ->
+        missing_structured_call(strategy, message, history)
+
       [] ->
         {:ok, %ModelResponse{messages: [message]}}
 
       [_one, _two | _rest] ->
-        names = structured_calls |> Enum.map(&call_name/1) |> Enum.reject(&is_nil/1)
+        names = Enum.map(structured_calls, &call_name/1)
 
-        structured_error(
-          strategy,
-          :multiple_structured_outputs,
-          "model returned multiple structured responses: #{Enum.join(names, ", ")}"
-        )
+        error =
+          Error.new(
+            :multiple_structured_outputs,
+            "model returned multiple structured responses: #{Enum.join(names, ", ")}"
+          )
+
+        structured_error(strategy, error, message, structured_calls, history)
 
       [call] ->
         spec = Enum.find(strategy.schema_specs, &(&1.name == call_name(call)))
 
         with {:ok, args} <- call_args(call),
              {:ok, parsed} <- Validation.parse(spec, args) do
-          message = annotate_structured_output_message(message, :tool, [spec.name])
+          message = annotate_structured_output_message(message, [spec.name])
 
           tool_message =
             Message.tool(
               strategy.tool_message_content || "Returning structured response: #{inspect(parsed)}",
-              tool_call_id: call_id(call),
+              tool_call_id: Response.tool_call_id(call),
               name: spec.name,
               metadata: %{status: "success", structured_response: true}
             )
@@ -70,45 +74,98 @@ defmodule BeamWeaver.Agent.StructuredOutput.ResultHandler do
            }}
         else
           {:error, %Error{} = error} ->
-            structured_error(strategy, error, call)
+            structured_error(strategy, error, message, [call], history)
         end
     end
   end
 
-  def handle_model_output(%Message{} = message, %AutoStrategy{schema: schema}) do
-    strategy = %ToolStrategy{schema: schema, schema_specs: Schema.schema_specs(schema)}
-    handle_model_output(message, strategy)
+  def handle_model_output(%Message{} = message, %AutoStrategy{schema: schema, opts: opts}, history) do
+    strategy =
+      BeamWeaver.Agent.StructuredOutput.tool(
+        schema,
+        Keyword.take(opts || [], [:tool_message_content, :handle_errors, :max_retries])
+      )
+
+    handle_model_output(message, strategy, history)
   end
 
-  defp structured_error(strategy, %Error{} = error, call) do
-    structured_error(strategy, error.type, error.message, call, error.details)
+  # A reply that calls no tool at all is an answer without the structured
+  # call: a model may ignore a forced tool choice, and some models (such as
+  # Kimi with thinking on) can't be forced. It fails like an answer that
+  # doesn't match the schema.
+  defp missing_structured_call(%ToolStrategy{} = strategy, %Message{} = message, history) do
+    names = Enum.map(strategy.schema_specs, & &1.name)
+
+    error =
+      Error.new(
+        :missing_structured_output,
+        "the answer must be a call to the #{Enum.join(names, " or ")} tool",
+        %{tools: names}
+      )
+
+    structured_error(strategy, error, message, [], history)
   end
 
-  defp structured_error(strategy, type, message) do
-    structured_error(strategy, type, message, nil, %{})
-  end
+  # An answer that fails: with `handle_errors`, the model's reply stays in the
+  # conversation followed by the error, as a tool message for each structured
+  # call or as a user message when it made none, so the agent asks the model
+  # again, until `max_retries` answers in a row have failed. Otherwise, or
+  # after that, the error ends the run.
+  defp structured_error(%ToolStrategy{} = strategy, %Error{} = error, message, calls, history) do
+    failed = failed_attempts(history)
 
-  defp structured_error(%ToolStrategy{handle_errors: false}, type, message, _call, details) do
-    {:error, Error.new(type, message, details)}
-  end
+    cond do
+      not handle_structured_error?(strategy.handle_errors, error.type) ->
+        {:error, error}
 
-  defp structured_error(%ToolStrategy{} = strategy, type, message, call, details) do
-    if handle_structured_error?(strategy.handle_errors, type) do
-      error = Error.new(type, message, details)
-      content = structured_error_content(strategy.handle_errors, error)
+      failed >= strategy.max_retries ->
+        {:error, %{error | details: Map.put(error.details || %{}, :attempts, failed + 1)}}
 
-      tool_message =
-        Message.tool(content,
-          tool_call_id: (call && call_id(call)) || "structured_output_error",
-          name: (call && call_name(call)) || "structured_output",
-          metadata: %{status: "error", error_type: type}
-        )
-
-      {:ok, %ModelResponse{messages: [tool_message]}}
-    else
-      {:error, Error.new(type, message, details)}
+      true ->
+        content = structured_error_content(strategy.handle_errors, error)
+        {:ok, %ModelResponse{messages: [message | error_messages(calls, content, error.type)]}}
     end
   end
+
+  defp error_messages([], content, type),
+    do: [Message.user(content, metadata: %{error_type: type, structured_output_error: true})]
+
+  defp error_messages(calls, content, type) do
+    Enum.map(calls, fn call ->
+      Message.tool(content,
+        tool_call_id: Response.tool_call_id(call),
+        name: call_name(call),
+        metadata: %{status: "error", error_type: type, structured_output_error: true}
+      )
+    end)
+  end
+
+  # The structured answers that failed since the person's last message,
+  # counted by the assistant replies that got a structured-output error back.
+  defp failed_attempts(history) do
+    history
+    |> List.wrap()
+    |> Enum.reverse()
+    |> Enum.take_while(&(not person_message?(&1)))
+    |> Enum.reverse()
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.count(fn [reply, result] ->
+      match?(%Message{role: :assistant}, reply) and structured_output_error?(result)
+    end)
+  end
+
+  defp person_message?(%Message{role: :user} = message), do: not structured_output_error?(message)
+  defp person_message?(_message), do: false
+
+  @doc false
+  # The error a failing structured answer got back: a tool message, or a
+  # user message after a reply that called no tool.
+  @spec structured_output_error?(term()) :: boolean()
+  def structured_output_error?(%Message{role: role, metadata: %{structured_output_error: true}})
+      when role in [:tool, :user],
+      do: true
+
+  def structured_output_error?(_message), do: false
 
   defp handle_structured_error?(true, _type), do: true
   defp handle_structured_error?(message, _type) when is_binary(message), do: true
@@ -117,30 +174,18 @@ defmodule BeamWeaver.Agent.StructuredOutput.ResultHandler do
   defp handle_structured_error?(allowed, type) when is_list(allowed), do: type in allowed
   defp handle_structured_error?(_handle_errors, _type), do: false
 
-  defp annotate_structured_output_message(%Message{} = message, strategy, names) do
-    metadata =
-      message.metadata
-      |> put_structured_output_metadata(strategy, names)
+  defp annotate_structured_output_message(%Message{} = message, names) do
+    annotation = %{structured_output_strategy: :tool, structured_output_tool_names: names}
 
-    response_metadata =
-      message.response_metadata
-      |> put_structured_output_metadata(strategy, names)
-
-    %{message | metadata: metadata, response_metadata: response_metadata}
-  end
-
-  defp put_structured_output_metadata(metadata, strategy, names) when is_map(metadata) do
-    metadata
-    |> Map.put(:structured_output_strategy, strategy)
-    |> Map.put(:structured_output_tool_names, names)
-  end
-
-  defp put_structured_output_metadata(_metadata, strategy, names) do
     %{
-      structured_output_strategy: strategy,
-      structured_output_tool_names: names
+      message
+      | metadata: Map.merge(map_or_empty(message.metadata), annotation),
+        response_metadata: Map.merge(map_or_empty(message.response_metadata), annotation)
     }
   end
+
+  defp map_or_empty(map) when is_map(map), do: map
+  defp map_or_empty(_value), do: %{}
 
   defp structured_error_content(message, _error) when is_binary(message), do: message
 
@@ -148,7 +193,11 @@ defmodule BeamWeaver.Agent.StructuredOutput.ResultHandler do
     do: formatter.(error)
 
   defp structured_error_content(_handle_errors, error),
-    do: "Structured output error: #{error.message}"
+    do: "Structured output error: #{error.message}#{error_detail(error.details)}. Fix it and answer again."
+
+  defp error_detail(%{missing: [_ | _] = missing}), do: " (#{Enum.join(missing, ", ")})"
+  defp error_detail(%{key: key, expected: type}) when is_binary(type), do: " (#{key}: expected #{type})"
+  defp error_detail(_details), do: ""
 
   defp parsed_provider_data(%Message{metadata: metadata} = message) do
     if is_map(metadata) and Map.has_key?(metadata, :parsed) do
@@ -156,8 +205,6 @@ defmodule BeamWeaver.Agent.StructuredOutput.ResultHandler do
     else
       decode_json(Message.text(message))
     end
-  rescue
-    _exception -> decode_json("")
   end
 
   defp decode_json(text) when is_binary(text) do
@@ -210,11 +257,4 @@ defmodule BeamWeaver.Agent.StructuredOutput.ResultHandler do
   end
 
   defp call_name(call), do: Map.get(call, :name)
-
-  defp call_id(call),
-    do:
-      Map.get(call, :call_id) ||
-        Map.get(call, :tool_call_id) ||
-        Map.get(call, :id) ||
-        Map.get(call, :provider_id)
 end

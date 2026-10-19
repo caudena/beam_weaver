@@ -119,21 +119,11 @@ defmodule BeamWeaver.TestSupport.Conformance.ToolCase do
       defp fixture(key, default \\ nil), do: Subject.fixture(@beamweaver_subject, key, default)
 
       defp equivalent_keys(key) when is_atom(key), do: [key, Atom.to_string(key)]
-      defp equivalent_keys(key) when is_binary(key), do: [key]
       defp equivalent_keys(key), do: [key]
 
+      defp wrong_type(type) when is_atom(type), do: wrong_type(Atom.to_string(type))
       defp wrong_type("string"), do: 123
-      defp wrong_type(:string), do: 123
-      defp wrong_type("integer"), do: "not integer"
-      defp wrong_type(:integer), do: "not integer"
-      defp wrong_type("number"), do: "not number"
-      defp wrong_type(:number), do: "not number"
-      defp wrong_type("boolean"), do: "not boolean"
-      defp wrong_type(:boolean), do: "not boolean"
-      defp wrong_type("object"), do: "not object"
-      defp wrong_type(:object), do: "not object"
-      defp wrong_type("array"), do: "not array"
-      defp wrong_type(:array), do: "not array"
+      defp wrong_type(type) when type in ["integer", "number", "boolean", "object", "array"], do: "not #{type}"
       defp wrong_type(_type), do: nil
     end
   end

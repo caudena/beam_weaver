@@ -3,6 +3,7 @@ defmodule BeamWeaver.Tools.FileSearch.Filesystem do
 
   alias BeamWeaver.Core.Document
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Result
 
   def search(tool, input) do
     with {:ok, max_results} <- max_results(tool, input),
@@ -51,37 +52,19 @@ defmodule BeamWeaver.Tools.FileSearch.Filesystem do
           path = Path.join(dir, name)
           relative_path = Path.relative_to(path, root)
 
-          cond do
-            not tool.include_hidden? and hidden_path?(relative_path) ->
-              []
-
-            regular_file?(path) ->
-              [%{root: root, path: path, relative_path: relative_path}]
-
-            directory?(path) ->
-              walk_dir(path, root, tool)
-
-            true ->
-              []
+          if not tool.include_hidden? and hidden_path?(relative_path) do
+            []
+          else
+            case File.lstat(path) do
+              {:ok, %{type: :regular}} -> [%{root: root, path: path, relative_path: relative_path}]
+              {:ok, %{type: :directory}} -> walk_dir(path, root, tool)
+              _other -> []
+            end
           end
         end)
 
       {:error, _reason} ->
         []
-    end
-  end
-
-  defp regular_file?(path) do
-    case File.lstat(path) do
-      {:ok, %{type: :regular}} -> true
-      _other -> false
-    end
-  end
-
-  defp directory?(path) do
-    case File.lstat(path) do
-      {:ok, %{type: :directory}} -> true
-      _other -> false
     end
   end
 
@@ -114,14 +97,8 @@ defmodule BeamWeaver.Tools.FileSearch.Filesystem do
 
   defp match_file(file, matcher, output_mode, tool) do
     case read_searchable_file(file.path, tool.max_file_bytes) do
-      {:ok, content} ->
-        file_document(file, content, matcher, output_mode, tool)
-
-      :skip ->
-        nil
-
-      {:error, _reason} ->
-        nil
+      {:ok, content} -> file_document(file, content, matcher, output_mode, tool)
+      _skipped_or_error -> nil
     end
   end
 
@@ -144,30 +121,27 @@ defmodule BeamWeaver.Tools.FileSearch.Filesystem do
     count = line_count + if path_match?, do: 1, else: 0
 
     if count > 0 do
-      document =
-        Document.new!(Integer.to_string(count),
-          metadata:
-            file_metadata(file, %{
-              match_count: count,
-              line_match_count: line_count,
-              path_match?: path_match?,
-              output_mode: "count"
-            })
-        )
-
-      Map.from_struct(document)
+      count
+      |> Integer.to_string()
+      |> Document.new!(
+        metadata:
+          file_metadata(file, %{
+            match_count: count,
+            line_match_count: line_count,
+            path_match?: path_match?,
+            output_mode: "count"
+          })
+      )
+      |> Map.from_struct()
     end
   end
 
   defp file_document(file, content, matcher, _output_mode, tool) do
     if matches?(matcher, content) or matches?(matcher, file.relative_path) do
-      document =
-        Document.new!(
-          snippet(content, matcher, tool.snippet_bytes),
-          metadata: file_metadata(file)
-        )
-
-      Map.from_struct(document)
+      content
+      |> snippet(matcher, tool.snippet_bytes)
+      |> Document.new!(metadata: file_metadata(file))
+      |> Map.from_struct()
     end
   end
 
@@ -186,20 +160,10 @@ defmodule BeamWeaver.Tools.FileSearch.Filesystem do
   defp trim_file(content, max_bytes) when byte_size(content) <= max_bytes, do: content
   defp trim_file(content, max_bytes), do: binary_part(content, 0, max_bytes)
 
-  defp snippet(content, {:literal, regex}, max_bytes) do
-    case Regex.run(regex, content, return: :index) do
-      [{index, length} | _captures] ->
-        snippet_at(content, index, length, max_bytes)
-
-      _nomatch ->
-        trim_file(content, max_bytes)
-    end
-  end
-
-  defp snippet(content, {:regex, regex}, max_bytes) do
+  defp snippet(content, {_mode, regex}, max_bytes) do
     case Regex.run(regex, content, return: :index) do
       [{index, length} | _captures] -> snippet_at(content, index, length, max_bytes)
-      _other -> trim_file(content, max_bytes)
+      _nomatch -> trim_file(content, max_bytes)
     end
   end
 
@@ -239,8 +203,7 @@ defmodule BeamWeaver.Tools.FileSearch.Filesystem do
 
   defp utf8_boundary?(content, index), do: String.valid?(binary_part(content, 0, index))
 
-  defp matches?({:literal, regex}, text), do: Regex.match?(regex, text)
-  defp matches?({:regex, regex}, text), do: Regex.match?(regex, text)
+  defp matches?({_mode, regex}, text), do: Regex.match?(regex, text)
 
   defp matching_line_count(content, matcher) do
     content
@@ -315,32 +278,9 @@ defmodule BeamWeaver.Tools.FileSearch.Filesystem do
   end
 
   defp compile_patterns(patterns) do
-    patterns
-    |> Enum.reduce_while({:ok, []}, fn pattern, {:ok, acc} ->
-      with {:ok, expanded} <- expand_pattern(pattern),
-           {:ok, regexes} <- compile_expanded_patterns(expanded) do
-        {:cont, {:ok, acc ++ regexes}}
-      else
-        {:error, error} -> {:halt, {:error, error}}
-      end
+    Result.flat_traverse(patterns, fn pattern ->
+      with {:ok, expanded} <- expand_pattern(pattern), do: Result.traverse(expanded, &compile_pattern/1)
     end)
-    |> case do
-      {:ok, regexes} -> {:ok, Enum.reverse(regexes)}
-      {:error, error} -> {:error, error}
-    end
-  end
-
-  defp compile_expanded_patterns(patterns) do
-    Enum.reduce_while(patterns, {:ok, []}, fn pattern, {:ok, acc} ->
-      case compile_pattern(pattern) do
-        {:ok, regex} -> {:cont, {:ok, [regex | acc]}}
-        {:error, error} -> {:halt, {:error, error}}
-      end
-    end)
-    |> case do
-      {:ok, regexes} -> {:ok, Enum.reverse(regexes)}
-      {:error, error} -> {:error, error}
-    end
   end
 
   defp expand_pattern(pattern) when is_binary(pattern) and pattern != "" do
@@ -378,18 +318,12 @@ defmodule BeamWeaver.Tools.FileSearch.Filesystem do
           suffix_start = start + length
           suffix = binary_part(pattern, suffix_start, byte_size(pattern) - suffix_start)
 
-          options
-          |> Enum.reduce_while({:ok, []}, fn option, {:ok, acc} ->
-            case expand_braces(prefix <> option <> suffix) do
-              {:ok, expanded} -> {:cont, {:ok, acc ++ expanded}}
-              {:error, error} -> {:halt, {:error, error}}
-            end
-          end)
+          Result.flat_traverse(options, &expand_braces(prefix <> &1 <> suffix))
         end
     end
   end
 
-  defp compile_pattern(pattern) when is_binary(pattern) and pattern != "" do
+  defp compile_pattern(pattern) do
     segments = Path.split(pattern)
 
     if Path.type(pattern) == :absolute or ".." in segments or
@@ -402,8 +336,6 @@ defmodule BeamWeaver.Tools.FileSearch.Filesystem do
       {:ok, Regex.compile!("^" <> compile_segments(segments) <> "$")}
     end
   end
-
-  defp compile_pattern(pattern), do: invalid_pattern(pattern)
 
   defp invalid_pattern(pattern) do
     {:error,

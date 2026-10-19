@@ -1,13 +1,14 @@
 defmodule BeamWeaver.RateLimiter.TokenBucketTest do
   use ExUnit.Case
 
-  alias BeamWeaver.Core.Async
+  import BeamWeaver.TestSupport.Eventually
+
   alias BeamWeaver.RateLimiter
   alias BeamWeaver.RateLimiter.Error
   alias BeamWeaver.RateLimiter.TokenBucket
 
   test "allows a burst up to capacity and then rejects drop-mode callers" do
-    limiter = start_bucket!(capacity: 2, initial_tokens: 2, refill_interval: 1_000)
+    limiter = start_bucket!(capacity: 2, initial_tokens: 2, refill_interval: 60_000)
 
     assert :ok = RateLimiter.acquire(limiter)
     assert :ok = RateLimiter.acquire(limiter)
@@ -30,28 +31,12 @@ defmodule BeamWeaver.RateLimiter.TokenBucketTest do
     assert {:error, %Error{type: :rate_limited}} =
              RateLimiter.acquire(limiter, 1, mode: :drop)
 
-    assert :ok = RateLimiter.acquire(limiter, 1, timeout: 100)
-  end
-
-  test "uses native token bucket timing options" do
-    limiter =
-      start_bucket!(
-        capacity: 2,
-        refill_amount: 1,
-        refill_interval: 50
-      )
-
-    assert %{
-             capacity: 2,
-             tokens: 0,
-             refill_amount: 1,
-             refill_interval: 50
-           } = RateLimiter.snapshot(limiter)
-
-    assert :ok = RateLimiter.acquire(limiter, 1, timeout: 120)
+    assert :ok = RateLimiter.acquire(limiter, 1, timeout: 5_000)
   end
 
   test "waits for refill instead of forcing callers to sleep outside the limiter" do
+    started_at = System.monotonic_time(:millisecond)
+
     limiter =
       start_bucket!(
         capacity: 1,
@@ -60,25 +45,8 @@ defmodule BeamWeaver.RateLimiter.TokenBucketTest do
         refill_interval: 30
       )
 
-    started_at = System.monotonic_time(:millisecond)
-
-    assert :ok = RateLimiter.acquire(limiter, 1, timeout: 200)
+    assert :ok = RateLimiter.acquire(limiter, 1, timeout: 5_000)
     assert System.monotonic_time(:millisecond) - started_at >= 20
-  end
-
-  test "async acquire returns a Task-backed handle" do
-    limiter =
-      start_bucket!(
-        capacity: 1,
-        initial_tokens: 0,
-        refill_amount: 1,
-        refill_interval: 25
-      )
-
-    assert :ok =
-             limiter
-             |> RateLimiter.async_acquire(1, timeout: 100)
-             |> Async.await(200)
   end
 
   test "returns a tagged timeout when queued work cannot get a token in time" do
@@ -87,7 +55,7 @@ defmodule BeamWeaver.RateLimiter.TokenBucketTest do
         capacity: 1,
         initial_tokens: 0,
         refill_amount: 1,
-        refill_interval: 1_000
+        refill_interval: 60_000
       )
 
     assert {:error, %Error{type: :timeout, message: message}} =
@@ -102,19 +70,17 @@ defmodule BeamWeaver.RateLimiter.TokenBucketTest do
         capacity: 1,
         initial_tokens: 0,
         refill_amount: 1,
-        refill_interval: 120
+        refill_interval: 60_000
       )
 
-    caller =
-      spawn(fn ->
-        RateLimiter.acquire(limiter, 1, timeout: 5_000)
-      end)
+    caller = spawn(fn -> RateLimiter.acquire(limiter, 1, timeout: 60_000) end)
+    assert eventually(fn -> RateLimiter.snapshot(limiter).queued == 1 end)
 
-    Process.sleep(25)
+    # Neither a refill nor the caller's own timeout comes during the test, so
+    # only its exit can empty the queue: the next refill stays in the bucket.
     Process.exit(caller, :kill)
-    Process.sleep(25)
-
-    assert :ok = RateLimiter.acquire(limiter, 1, timeout: 250)
+    assert eventually(fn -> RateLimiter.snapshot(limiter).queued == 0 end)
+    assert %{tokens: 0} = RateLimiter.snapshot(limiter)
   end
 
   test "rejects impossible requests with tagged errors" do
@@ -158,7 +124,7 @@ defmodule BeamWeaver.RateLimiter.TokenBucketTest do
         capacity: 1,
         initial_tokens: 0,
         refill_amount: 1,
-        refill_interval: 1_000
+        refill_interval: 60_000
       )
 
     started_at = System.monotonic_time(:millisecond)
@@ -166,7 +132,33 @@ defmodule BeamWeaver.RateLimiter.TokenBucketTest do
     assert {:error, %Error{type: :invalid_option}} =
              RateLimiter.acquire(limiter, 1, timeout: -1)
 
-    assert System.monotonic_time(:millisecond) - started_at < 500
+    # Waiting would mean waiting for the next refill, a minute away.
+    assert System.monotonic_time(:millisecond) - started_at < 5_000
+  end
+
+  test "named buckets share one supervisor without explicit child ids" do
+    model = :"model_limiter_#{System.unique_integer([:positive])}"
+    help_center = :"help_center_limiter_#{System.unique_integer([:positive])}"
+
+    children = [
+      {TokenBucket, name: model, capacity: 2, initial_tokens: 2},
+      {TokenBucket, name: help_center, capacity: 1, initial_tokens: 1}
+    ]
+
+    supervisor =
+      start_supervised!(%{
+        id: :buckets,
+        start: {Supervisor, :start_link, [children, [strategy: :one_for_one]]},
+        type: :supervisor
+      })
+
+    assert supervisor |> Supervisor.which_children() |> Enum.map(&elem(&1, 0)) |> Enum.sort() ==
+             Enum.sort([model, help_center])
+
+    assert :ok = RateLimiter.acquire(model, 2)
+    assert :ok = RateLimiter.acquire(help_center)
+
+    assert %{id: :limiter} = Supervisor.child_spec({TokenBucket, name: model, id: :limiter}, [])
   end
 
   defp start_bucket!(opts) do

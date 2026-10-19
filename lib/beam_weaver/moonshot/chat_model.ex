@@ -1,15 +1,29 @@
 defmodule BeamWeaver.Moonshot.ChatModel do
-  @moduledoc """
-  Moonshot/Kimi Chat Completions chat model implementation.
+  @moduledoc ~S"""
+  Moonshot chat model implementing the BeamWeaver chat contract.
+
+  Prefer `BeamWeaver.Models.init_chat_model/2` for provider-prefixed identifiers,
+  then call `BeamWeaver.Core.ChatModel` or declare the model in an agent.
+  Construction does not contact the provider. Model/profile options describe
+  local compatibility; account access is established only by a real request.
+
+  See [Moonshot](providers/moonshot.md) for endpoint-specific parameters, reasoning,
+  media and tools. Preserve complete messages for multi-turn replay. Streaming
+  consumers must enumerate once and handle terminal errors; display text is not
+  a lossless representation of a native provider turn.
   """
 
+  use BeamWeaver.Provider.RedactedInspect
+
+  alias BeamWeaver.Provider.OpenAICompatibleClient, as: Compat
   alias BeamWeaver.Core.LanguageModel
   alias BeamWeaver.Models.InvocationMetadata
   alias BeamWeaver.Moonshot.Client
-  alias BeamWeaver.Moonshot.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Moonshot.Messages
   alias BeamWeaver.Moonshot.Options
   alias BeamWeaver.Moonshot.Tools
+  alias BeamWeaver.Provider.ChatCompletionsWire
   alias BeamWeaver.Provider.ChatModel.Options, as: ChatOptions
   alias BeamWeaver.Provider.Options, as: ProviderOptions
   alias BeamWeaver.Provider.StructuredOutput
@@ -23,7 +37,7 @@ defmodule BeamWeaver.Moonshot.ChatModel do
             count_tokens_endpoint: @default_count_tokens_endpoint,
             api_key: nil,
             default_headers: [],
-            model_kwargs: %{},
+            extra_body: %{},
             temperature: nil,
             max_tokens: nil,
             max_completion_tokens: nil,
@@ -33,6 +47,10 @@ defmodule BeamWeaver.Moonshot.ChatModel do
             presence_penalty: nil,
             n: nil,
             prompt_cache_key: nil,
+            prompt_cache_options: nil,
+            logprobs: nil,
+            top_logprobs: nil,
+            prediction: nil,
             reasoning_effort: nil,
             safety_identifier: nil,
             thinking: nil,
@@ -43,6 +61,7 @@ defmodule BeamWeaver.Moonshot.ChatModel do
             profile: nil,
             tokenizer: nil,
             param_policy: nil,
+            streaming: false,
             include_response_headers: false,
             transport: nil,
             transport_opts: [],
@@ -50,12 +69,18 @@ defmodule BeamWeaver.Moonshot.ChatModel do
 
   @type t :: %__MODULE__{}
 
-  use BeamWeaver.Provider.ChatModel
+  use BeamWeaver.Provider.ChatModel, stream_source: :moonshot_chat_completions
 
   @spec new(keyword() | map()) :: t()
   def new(opts \\ []) do
     opts = ChatOptions.keyword_options(opts)
-    opts = normalize_endpoint_opts(opts)
+
+    opts =
+      Compat.expand_base_url(opts,
+        endpoint: "chat/completions",
+        count_tokens_endpoint: "tokenizers/estimate-token-count"
+      )
+
     model = Keyword.get(opts, :model, @default_model)
     profile = ChatOptions.profile_option(opts, :moonshot, model)
 
@@ -69,13 +94,12 @@ defmodule BeamWeaver.Moonshot.ChatModel do
 
   @spec request_body(t(), [BeamWeaver.Core.Message.t()], keyword()) ::
           {:ok, map()} | {:error, Error.t()}
+  @impl true
   def request_body(%__MODULE__{} = model, messages, opts \\ []) do
-    tools = Keyword.get(opts, :tools, [])
-    builder_opts = Keyword.delete(opts, :tools)
-
-    with {:ok, body} <- Options.to_body(model, messages, builder_opts),
-         {:ok, body} <- maybe_put_stream_usage(body, model, opts),
-         {:ok, body} <- maybe_put_tools(body, tools),
+    with {:ok, body} <- Options.to_body(model, messages, Keyword.delete(opts, :tools)),
+         {:ok, tools} <- render_tools(Keyword.get(opts, :tools, [])),
+         body =
+           body |> ChatCompletionsWire.put_stream_usage(model, opts) |> ProviderOptions.put_optional("tools", tools),
          :ok <- validate_dynamic_tools(body),
          :ok <- validate_required_tool_choice(body),
          :ok <- validate_web_search_thinking(body) do
@@ -84,6 +108,9 @@ defmodule BeamWeaver.Moonshot.ChatModel do
   end
 
   @spec count_tokens(t(), term(), keyword()) :: {:ok, non_neg_integer()} | {:error, term()}
+  @doc """
+  Asks Moonshot's estimate endpoint for the input token count; this is separate from inference.
+  """
   def count_tokens(%__MODULE__{} = model, input, opts \\ []) do
     with {:ok, messages} <- LanguageModel.normalize_chat_input(input),
          {:ok, body} <- token_count_body(model, messages, opts),
@@ -137,61 +164,10 @@ defmodule BeamWeaver.Moonshot.ChatModel do
     }
   end
 
-  defp normalize_endpoint_opts(opts) do
-    case {Keyword.fetch(opts, :base_url), Keyword.has_key?(opts, :endpoint)} do
-      {{:ok, base_url}, false} ->
-        opts
-        |> Keyword.delete(:base_url)
-        |> Keyword.put(:endpoint, Client.endpoint(base_url, "chat/completions"))
-        |> Keyword.put_new(
-          :count_tokens_endpoint,
-          Client.endpoint(base_url, "tokenizers/estimate-token-count")
-        )
-
-      {{:ok, _base_url}, true} ->
-        Keyword.delete(opts, :base_url)
-
-      _other ->
-        opts
-    end
-  end
-
-  defp maybe_put_tools(body, []), do: {:ok, body}
-
-  defp maybe_put_tools(body, tools) when is_list(tools) do
-    with {:ok, tools} <- render_tools(tools) do
-      {:ok, Map.put(body, "tools", tools)}
-    end
-  end
-
-  defp render_tools([]), do: {:ok, []}
-
   defp render_tools(tools) do
-    rendered = Tools.to_chat_tools(tools)
-
-    case Tools.validate_chat_tools(rendered) do
-      :ok -> {:ok, rendered}
-      {:error, _error} = error -> error
-    end
-  end
-
-  defp maybe_put_stream_usage(body, model, opts) do
-    stream? = Keyword.get(opts, :stream, false)
-    stream_usage? = Keyword.get(opts, :stream_usage, model.stream_usage)
-
-    cond do
-      not stream? ->
-        {:ok, body}
-
-      not stream_usage? ->
-        {:ok, body}
-
-      Map.has_key?(body, "stream_options") ->
-        {:ok, body}
-
-      true ->
-        {:ok, Map.put(body, "stream_options", %{"include_usage" => true})}
-    end
+    with {:ok, rendered} <- Tools.render_chat_tools(tools),
+         :ok <- Tools.validate_chat_tools(rendered),
+         do: {:ok, rendered}
   end
 
   defp validate_web_search_thinking(%{"tools" => tools} = body) when is_list(tools) do
@@ -211,12 +187,9 @@ defmodule BeamWeaver.Moonshot.ChatModel do
 
   defp validate_web_search_thinking(_body), do: :ok
 
-  defp validate_dynamic_tools(%{"messages" => messages, "model" => "kimi-k3"})
-       when is_list(messages),
-       do: :ok
+  defp validate_dynamic_tools(%{"model" => "kimi-k3"}), do: :ok
 
-  defp validate_dynamic_tools(%{"messages" => messages, "model" => model})
-       when is_list(messages) do
+  defp validate_dynamic_tools(%{"messages" => messages, "model" => model}) do
     if Enum.any?(messages, &Map.has_key?(&1, "tools")) do
       {:error,
        Error.new(
@@ -234,13 +207,11 @@ defmodule BeamWeaver.Moonshot.ChatModel do
     end
   end
 
-  defp validate_dynamic_tools(_body), do: :ok
-
   defp validate_required_tool_choice(%{"tool_choice" => "required"} = body) do
     top_level_tools? = match?([_ | _], body["tools"])
 
     dynamic_tools? =
-      Enum.any?(body["messages"] || [], fn message ->
+      Enum.any?(body["messages"], fn message ->
         match?([_ | _], message["tools"])
       end)
 
@@ -259,37 +230,31 @@ defmodule BeamWeaver.Moonshot.ChatModel do
 
   defp validate_required_tool_choice(_body), do: :ok
 
-  defp model_stream_metadata(%__MODULE__{} = model, body, opts) do
+  @impl true
+  def stream_metadata(%__MODULE__{} = model, body, opts) do
     model
     |> InvocationMetadata.provider(:moonshot, body, opts, :chat_completions)
     |> InvocationMetadata.to_metadata_map()
   end
 
-  defp runtime_adapter do
-    %ChatRuntime.Adapter{
-      request: &request_body/3,
-      invoke: fn model, body, opts -> Client.chat_completions(client(model), body, opts) end,
-      stream: fn model, body, opts ->
-        Client.chat_completions_stream(client(model), body, opts)
-      end,
-      stream_response: fn model, body, opts ->
-        Client.chat_completions_stream_response(client(model), body, opts)
-      end,
-      stream_events: fn model, body, opts ->
-        Client.chat_completions_stream_typed_events(client(model), body, opts)
-      end,
-      decode: fn
-        %BeamWeaver.Core.Message{} = message, _opts -> {:ok, message}
-        response, _opts -> Messages.chat_response_to_message(response)
-      end,
-      parse: fn message, opts ->
-        StructuredOutput.maybe_parse(message, opts,
-          error_module: Error,
-          provider_name: "Moonshot"
-        )
-      end,
-      metadata: &model_stream_metadata/3,
-      source: :moonshot_chat_completions
-    }
-  end
+  @impl true
+  def send_request(:invoke, model, body, opts), do: Client.chat_completions(client(model), body, opts)
+  def send_request(:stream, model, body, opts), do: Client.chat_completions_stream(client(model), body, opts)
+
+  def send_request(:stream_response, model, body, opts),
+    do: Client.chat_completions_stream_response(client(model), body, opts)
+
+  def send_request(:stream_events, model, body, opts),
+    do: Client.chat_completions_stream_typed_events(client(model), body, opts)
+
+  @impl true
+  def forced_tool_choice?(%__MODULE__{} = model, opts), do: Options.forced_tool_choice?(model, opts)
+
+  @impl true
+  def decode_response(%BeamWeaver.Core.Message{} = message, _opts), do: {:ok, message}
+  def decode_response(response, _opts), do: Messages.chat_response_to_message(response)
+
+  @impl true
+  def parse_response(_model, message, opts),
+    do: StructuredOutput.maybe_parse(message, opts, provider_name: "Moonshot")
 end

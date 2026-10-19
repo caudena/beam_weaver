@@ -7,7 +7,7 @@ defmodule BeamWeaver.Provider.Validation do
   @default_max_items 100_000
   @default_max_depth 64
 
-  def measure(value, opts \\ []) do
+  def measure(value, opts) do
     limits = %{
       bytes: Keyword.get(opts, :max_bytes, @default_max_bytes),
       items: Keyword.get(opts, :max_items, @default_max_items),

@@ -7,11 +7,8 @@ defmodule BeamWeaver.OpenAI.FakeTransportTest do
   alias BeamWeaver.OpenAI.ChatModel, as: ResponsesModel
 
   test "fake transport records and matches OpenAI request shape without live calls" do
-    model = %ResponsesModel{
-      model: "gpt-5.4-mini",
-      api_key: "sk-secret-test",
-      transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
-      transport_opts: [
+    model =
+      model(
         parent: self(),
         expect: %{
           method: :post,
@@ -34,8 +31,7 @@ defmodule BeamWeaver.OpenAI.FakeTransportTest do
           ],
           "usage" => %{"input_tokens" => 1, "output_tokens" => 1, "total_tokens" => 2}
         }
-      ]
-    }
+      )
 
     assert {:ok, %Message{usage_metadata: usage} = response} =
              ChatModel.invoke(model, [Message.user("hello")])
@@ -48,11 +44,8 @@ defmodule BeamWeaver.OpenAI.FakeTransportTest do
   end
 
   test "fake transport asserts OpenAI prompt cache key request shape" do
-    model = %ResponsesModel{
-      model: "gpt-5.4-mini",
-      api_key: "sk-secret-test",
-      transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
-      transport_opts: [
+    model =
+      model(
         parent: self(),
         expect: %{
           method: :post,
@@ -75,8 +68,7 @@ defmodule BeamWeaver.OpenAI.FakeTransportTest do
             }
           ]
         }
-      ]
-    }
+      )
 
     assert {:ok, response} =
              ChatModel.invoke(model, [Message.user("cache me")], prompt_cache_key: "cache-run")
@@ -87,26 +79,22 @@ defmodule BeamWeaver.OpenAI.FakeTransportTest do
   end
 
   test "fake transport reports redacted request mismatches" do
-    model = %ResponsesModel{
-      model: "gpt-5.4-mini",
-      api_key: "sk-secret-test",
-      transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
-      transport_opts: [
+    model =
+      model(
         expect: %{
           method: :post,
           path: "/responses",
           json: %{"model" => "different", "secret" => "sk-leaked"}
         },
         body: %{"id" => "unused", "output" => []}
-      ]
-    }
+      )
 
     assert {:error, error} = ChatModel.invoke(model, [Message.user("hello")])
-    assert error.type == :transport_error
-    assert error.details.reason =~ "fake_transport_mismatch"
-    refute error.details.reason =~ "sk-secret-test"
-    refute error.details.reason =~ "sk-leaked"
-    assert error.details.reason =~ BeamWeaver.Transport.Redactor.redacted()
+    assert error.type == :fake_transport_mismatch
+    details = inspect(error.details)
+    refute details =~ "sk-secret-test"
+    refute details =~ "sk-leaked"
+    assert details =~ BeamWeaver.Transport.Redactor.redacted()
   end
 
   test "fake transport supports ordered expectations for repeated calls" do
@@ -134,11 +122,8 @@ defmodule BeamWeaver.OpenAI.FakeTransportTest do
         ]
       end)
 
-    model = %ResponsesModel{
-      model: "gpt-5.4-mini",
-      api_key: "sk-secret-test",
-      transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
-      transport_opts: [
+    model =
+      model(
         expect: {:ordered, expectations},
         body: %{
           "id" => "resp_fake",
@@ -151,8 +136,7 @@ defmodule BeamWeaver.OpenAI.FakeTransportTest do
             }
           ]
         }
-      ]
-    }
+      )
 
     assert {:ok, first} = ChatModel.invoke(model, [Message.user("first")])
     assert {:ok, second} = ChatModel.invoke(model, [Message.user("second")])
@@ -162,11 +146,8 @@ defmodule BeamWeaver.OpenAI.FakeTransportTest do
   end
 
   test "fake transport mismatch details include missing and extra JSON keys without secrets" do
-    model = %ResponsesModel{
-      model: "gpt-5.4-mini",
-      api_key: "sk-secret-test",
-      transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
-      transport_opts: [
+    model =
+      model(
         expect: %{
           method: :post,
           path: "/responses",
@@ -177,28 +158,20 @@ defmodule BeamWeaver.OpenAI.FakeTransportTest do
           }
         },
         body: %{"id" => "unused", "output" => []}
-      ]
-    }
+      )
 
     assert {:error, error} = ChatModel.invoke(model, [Message.user("hello")])
-    assert error.type == :transport_error
-    assert error.details.reason =~ "required_but_missing"
-    assert error.details.reason =~ "input"
-    refute error.details.reason =~ "sk-secret-test"
+    assert error.type == :fake_transport_mismatch
+    assert error.details.json_diff.missing_keys == ["required_but_missing"]
+    assert "input" in error.details.json_diff.extra_keys
+    refute inspect(error.details) =~ "sk-secret-test"
   end
 
   test "strict profile validation fails before fake transport is called" do
-    model = %ResponsesModel{
-      model: "gpt-5.4-mini",
-      api_key: "sk-secret-test",
-      profile: Profile.new(provider: :openai, id: "strict-empty", supported_params: []),
-      transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
-      transport_opts: [
-        parent: self(),
-        expect: %{method: :post, path: "/responses"},
-        body: %{"id" => "unused", "output" => []}
-      ]
-    }
+    model =
+      model([parent: self(), expect: %{method: :post, path: "/responses"}, body: %{"id" => "unused", "output" => []}],
+        profile: Profile.new(provider: :openai, id: "strict-empty", supported_params: [])
+      )
 
     assert {:error, error} =
              ChatModel.invoke(model, [Message.user("hello")], temperature: 0.2)
@@ -208,11 +181,8 @@ defmodule BeamWeaver.OpenAI.FakeTransportTest do
   end
 
   test "fake transport can return SSE fixtures as raw bodies" do
-    model = %ResponsesModel{
-      model: "gpt-5.4-mini",
-      api_key: "sk-secret-test",
-      transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
-      transport_opts: [
+    model =
+      model(
         expect: %{
           method: :post,
           path: "/responses",
@@ -230,10 +200,21 @@ defmodule BeamWeaver.OpenAI.FakeTransportTest do
         event: response.completed
         data: {"type":"response.completed","response":{"id":"resp_fake","output":[]}}
         """
-      ]
-    }
+      )
 
     assert {:ok, stream} = ResponsesModel.stream(model, [Message.user("stream")])
     assert Enum.join(stream) == "hi"
+  end
+
+  defp model(transport_opts, fields \\ []) do
+    struct!(
+      ResponsesModel,
+      [
+        model: "gpt-5.4-mini",
+        api_key: "sk-secret-test",
+        transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+        transport_opts: transport_opts
+      ] ++ fields
+    )
   end
 end

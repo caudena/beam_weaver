@@ -2,7 +2,6 @@ defmodule BeamWeaver.Cache.ETSTest do
   use ExUnit.Case, async: true
 
   alias BeamWeaver.Cache
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.Error
 
   test "ETS cache supports namespace, metadata, delete, and clear" do
@@ -24,7 +23,6 @@ defmodule BeamWeaver.Cache.ETSTest do
   end
 
   test "ETS cache clear without namespace clears all entries" do
-    # Upstream reference:
     cache = Cache.ETS.new(visibility: :private)
 
     assert :ok = Cache.put(cache, :a, "key", "a")
@@ -35,21 +33,14 @@ defmodule BeamWeaver.Cache.ETSTest do
     assert :miss = Cache.lookup(cache, :b, "key")
   end
 
-  test "update alias and async helpers run through the public cache contract" do
+  test "update alias stores and overwrites entries through the public cache contract" do
     cache = Cache.ETS.new()
 
     assert :ok = Cache.update(cache, :async, "key", "value")
-    assert {:hit, "value", %{}} = Cache.async_lookup(cache, :async, "key") |> Async.await()
+    assert {:hit, "value", %{}} = Cache.lookup(cache, :async, "key")
 
-    assert :ok = Cache.async_update(cache, :async, "key", "new") |> Async.await()
+    assert :ok = Cache.update(cache, :async, "key", "new")
     assert {:hit, "new", %{}} = Cache.lookup(cache, :async, "key")
-
-    assert :ok = Cache.async_delete(cache, :async, "key") |> Async.await()
-    assert :miss = Cache.lookup(cache, :async, "key")
-
-    assert :ok = Cache.async_put(cache, :async, "other", "kept") |> Async.await()
-    assert :ok = Cache.async_clear(cache, :async) |> Async.await()
-    assert :miss = Cache.lookup(cache, :async, "other")
   end
 
   test "batch cache facade maps full keys to explicit adapter operations" do
@@ -58,7 +49,7 @@ defmodule BeamWeaver.Cache.ETSTest do
     key_b = {{"graph", "other"}, "b"}
     key_c = {{"graph", "node"}, "c"}
 
-    assert %{} = Cache.get_many(cache, [key_a])
+    assert Cache.get_many(cache, [key_a]) == %{}
 
     assert :ok =
              Cache.set_many(cache, %{
@@ -75,20 +66,16 @@ defmodule BeamWeaver.Cache.ETSTest do
     refute Map.has_key?(Cache.get_many(cache, [key_c]), key_c)
 
     assert :ok = Cache.clear_many(cache, [{"graph", "node"}])
-    assert %{^key_b => "value-b"} = Cache.get_many(cache, [key_a, key_b])
+    assert Cache.get_many(cache, [key_a, key_b]) == %{key_b => "value-b"}
 
     assert :ok = Cache.clear_many(cache)
-    assert %{} = Cache.get_many(cache, [key_b])
-  end
+    assert Cache.get_many(cache, [key_b]) == %{}
 
-  test "batch cache facade has Task-backed async helpers" do
-    cache = Cache.ETS.new()
-    key = {["async", "node"], "key"}
-
-    assert :ok = Cache.async_set_many(cache, %{key => {"value", nil}}) |> Async.await()
-    assert %{^key => "value"} = Cache.async_get_many(cache, [key]) |> Async.await()
-    assert :ok = Cache.async_clear_many(cache, [["async", "node"]]) |> Async.await()
-    assert %{} = Cache.get_many(cache, [key])
+    listed = {["graph", "node"], "listed"}
+    assert :ok = Cache.set_many(cache, %{listed => {"value", nil}})
+    assert Cache.get_many(cache, [listed]) == %{listed => "value"}
+    assert :ok = Cache.clear_many(cache, [["graph", "node"]])
+    assert Cache.get_many(cache, [listed]) == %{}
   end
 
   test "ETS cache expires TTL entries" do
@@ -140,6 +127,27 @@ defmodule BeamWeaver.Cache.ETSTest do
     assert :ets.info(cache.table, :size) <= 5
   end
 
+  test "reading or sweeping an expired entry never deletes a value put at the same time" do
+    cache = Cache.ETS.new()
+    expired = %{value: 0, metadata: %{}, inserted_at: 0, expires_at: 0}
+
+    readers =
+      for reader <- [:lookup, :lookup, :sweep, :sweep],
+          do: Task.async(fn -> read_until_stopped(cache, reader) end)
+
+    lost =
+      Enum.count(1..5_000, fn version ->
+        :ets.insert(cache.table, {{:race, "k"}, expired})
+        :ok = Cache.put(cache, :race, "k", version)
+        Cache.lookup(cache, :race, "k") != {:hit, version, %{}}
+      end)
+
+    Enum.each(readers, &send(&1.pid, :stop))
+    Enum.each(readers, &Task.await/1)
+
+    assert lost == 0
+  end
+
   test "cache helpers reject non-adapter globals" do
     assert {:error, %Error{type: :explicit_cache_required}} = Cache.lookup(true, :ns, :key)
     assert {:error, %Error{type: :invalid_cache}} = Cache.lookup(%{}, :ns, :key)
@@ -148,5 +156,18 @@ defmodule BeamWeaver.Cache.ETSTest do
   test "stable keys are deterministic for map order and never deserialize terms" do
     assert Cache.stable_key(%{a: 1, b: [2, 3]}) ==
              Cache.stable_key(%{b: [2, 3], a: 1})
+  end
+
+  defp read_until_stopped(cache, reader) do
+    receive do
+      :stop -> :ok
+    after
+      0 ->
+        if reader == :sweep,
+          do: Cache.sweep_expired(cache),
+          else: Cache.lookup(cache, :race, "k")
+
+        read_until_stopped(cache, reader)
+    end
   end
 end

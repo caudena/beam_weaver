@@ -6,11 +6,9 @@ defmodule BeamWeaver.Core.Messages.MessageChunk do
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages.AIChunk
   alias BeamWeaver.Core.Messages.Chunk
-  alias BeamWeaver.Core.Messages.FunctionChunk
   alias BeamWeaver.Core.Messages.InvalidToolCall
   alias BeamWeaver.Core.Messages.ToolCall
   alias BeamWeaver.Core.Messages.ToolCallChunk
-  alias BeamWeaver.Core.Messages.ToolChunk
 
   @spec merge(term(), term()) :: term()
   def merge(nil, right), do: right
@@ -48,15 +46,13 @@ defmodule BeamWeaver.Core.Messages.MessageChunk do
       metadata:
         chunk.metadata
         |> Map.put_new(:invalid_tool_calls, invalid_tool_calls)
-        |> reject_empty_metadata(),
+        |> BeamWeaver.MapShape.compact([nil, :empty_list]),
       tool_calls: tool_calls,
       tool_call_id: chunk.tool_call_id
     )
   end
 
   defp normalize(%AIChunk{} = chunk), do: struct(Chunk, Map.from_struct(chunk))
-  defp normalize(%ToolChunk{} = chunk), do: struct(Chunk, Map.from_struct(chunk))
-  defp normalize(%FunctionChunk{} = chunk), do: struct(Chunk, Map.from_struct(chunk))
   defp normalize(%Chunk{} = chunk), do: chunk
 
   defp normalize(%Message{} = message) do
@@ -80,9 +76,8 @@ defmodule BeamWeaver.Core.Messages.MessageChunk do
   defp merge_content(left, nil), do: left
 
   defp merge_content(left, right) when is_list(left) and is_list(right),
-    do: merge_content_lists(left, right)
+    do: Enum.reduce(right, left, &append_content_item(&2, &1))
 
-  defp merge_content(left, "") when is_list(left), do: left
   defp merge_content(left, right) when is_list(left), do: append_content_item(left, right)
   defp merge_content("", right) when is_list(right), do: right
   defp merge_content(left, right) when is_list(right), do: [left | right]
@@ -92,9 +87,7 @@ defmodule BeamWeaver.Core.Messages.MessageChunk do
     (left ++ right)
     |> Enum.map(&normalize_tool_call_chunk/1)
     |> Enum.reduce([], &merge_tool_chunk/2)
-    |> Enum.with_index()
-    |> Enum.sort_by(fn {chunk, order} -> {chunk.index || 0, order} end)
-    |> Enum.map(&elem(&1, 0))
+    |> Enum.sort_by(&(&1.index || 0))
   end
 
   defp normalize_tool_call_chunk(%ToolCallChunk{} = chunk), do: chunk
@@ -115,7 +108,7 @@ defmodule BeamWeaver.Core.Messages.MessageChunk do
         acc ++ [chunk]
 
       index ->
-        List.update_at(acc, index, &combine_tool_chunks([&1, chunk]))
+        List.update_at(acc, index, &combine_tool_chunks(&1, chunk))
     end
   end
 
@@ -132,20 +125,13 @@ defmodule BeamWeaver.Core.Messages.MessageChunk do
 
   defp mergeable_tool_chunks?(_left, _right), do: false
 
-  defp combine_tool_chunks(chunks) do
-    Enum.reduce(chunks, %ToolCallChunk{}, fn chunk, %ToolCallChunk{} = acc ->
-      %ToolCallChunk{
-        acc
-        | id: acc.id || chunk.id,
-          index: acc.index || chunk.index,
-          name: acc.name || chunk.name,
-          args: to_string(acc.args || "") <> to_string(chunk.args || "")
-      }
-    end)
-  end
-
-  defp merge_content_lists(left, right) do
-    Enum.reduce(right, left, &append_content_item(&2, &1))
+  defp combine_tool_chunks(left, right) do
+    %ToolCallChunk{
+      id: left.id || right.id,
+      index: left.index || right.index,
+      name: left.name || right.name,
+      args: to_string(left.args || "") <> to_string(right.args || "")
+    }
   end
 
   defp append_content_item(acc, ""), do: acc
@@ -153,7 +139,7 @@ defmodule BeamWeaver.Core.Messages.MessageChunk do
   defp append_content_item(acc, item) when is_binary(item) do
     case List.last(acc) do
       last when is_binary(last) ->
-        List.update_at(acc, -1, &(to_string(&1) <> item))
+        List.update_at(acc, -1, &(&1 <> item))
 
       _other ->
         acc ++ [item]
@@ -197,8 +183,8 @@ defmodule BeamWeaver.Core.Messages.MessageChunk do
     |> Map.merge(right)
     |> map_put_existing_key(left, :text, text)
     |> map_put_if_present(left, right, :reasoning, reasoning)
-    |> put_merged_provider_block(raw_provider_block)
-    |> maybe_preserve_content_type(left_type)
+    |> BeamWeaver.MapShape.put_present(:raw_provider_block, raw_provider_block)
+    |> BeamWeaver.MapShape.put_present(:type, left_type)
   end
 
   defp text_content_blocks?(left, right),
@@ -208,8 +194,7 @@ defmodule BeamWeaver.Core.Messages.MessageChunk do
     reasoning_block?(left) and reasoning_block?(right)
   end
 
-  defp reasoning_block?(block) when is_map(block),
-    do: Map.get(block, :type) in [:reasoning, "reasoning"]
+  defp reasoning_block?(block), do: Map.get(block, :type) in [:reasoning, "reasoning"]
 
   defp map_put_if_present(map, left, right, key, value) do
     if Map.has_key?(left, key) or Map.has_key?(right, key), do: Map.put(map, key, value), else: map
@@ -255,38 +240,20 @@ defmodule BeamWeaver.Core.Messages.MessageChunk do
     end
   end
 
-  defp put_merged_provider_block(map, nil), do: map
-  defp put_merged_provider_block(map, block), do: Map.put(map, :raw_provider_block, block)
-
   defp map_put_existing_key(map, template, key, value) do
     if Map.has_key?(template, key), do: Map.put(map, key, value), else: map
   end
 
-  defp maybe_preserve_content_type(map, nil), do: map
-
-  defp maybe_preserve_content_type(map, left_type) do
-    if Map.has_key?(map, :type), do: Map.put(map, :type, left_type), else: map
-  end
-
   defp finalized_tool_calls(%Chunk{} = chunk) do
-    explicit_invalid_keys =
-      chunk.invalid_tool_calls
-      |> List.wrap()
-      |> Enum.map(&invalid_tool_call_key/1)
-      |> MapSet.new()
+    explicit_invalid_keys = MapSet.new(List.wrap(chunk.invalid_tool_calls), &invalid_tool_call_key/1)
 
-    {tool_calls, invalid_tool_calls} =
-      (chunk.tool_call_chunks || [])
-      |> Enum.reject(&stale_tool_chunk?(&1, explicit_invalid_keys))
-      |> Enum.reduce({[], []}, fn tool_call_chunk, {valid, invalid} ->
-        case finalize_tool_call(tool_call_chunk) do
-          {:ok, tool_call} -> {[tool_call | valid], invalid}
-          {:error, invalid_call} -> {valid, [invalid_call | invalid]}
-        end
-      end)
+    results =
+      for tool_call_chunk <- chunk.tool_call_chunks || [],
+          not stale_tool_chunk?(tool_call_chunk, explicit_invalid_keys),
+          do: finalize_tool_call(tool_call_chunk)
 
-    {(chunk.tool_calls || []) ++ Enum.reverse(tool_calls),
-     (chunk.invalid_tool_calls || []) ++ Enum.reverse(invalid_tool_calls)}
+    {(chunk.tool_calls || []) ++ for({:ok, tool_call} <- results, do: tool_call),
+     (chunk.invalid_tool_calls || []) ++ for({:error, invalid_call} <- results, do: invalid_call)}
   end
 
   defp finalize_tool_call(%ToolCallChunk{} = chunk) do
@@ -316,36 +283,14 @@ defmodule BeamWeaver.Core.Messages.MessageChunk do
     Enum.any?([id, name, index], &(not is_nil(&1) and MapSet.member?(invalid_keys, &1)))
   end
 
-  defp invalid_tool_call_key(%InvalidToolCall{id: id}) when not is_nil(id), do: id
-  defp invalid_tool_call_key(%InvalidToolCall{name: name}) when not is_nil(name), do: name
   defp invalid_tool_call_key(%{id: id}) when not is_nil(id), do: id
   defp invalid_tool_call_key(%{name: name}) when not is_nil(name), do: name
   defp invalid_tool_call_key(_invalid), do: nil
 
-  defp decode_args(args) when is_map(args), do: {:ok, args}
-  defp decode_args(nil), do: {:ok, %{}}
   defp decode_args(""), do: {:ok, %{}}
 
-  defp decode_args(args) when is_binary(args) do
-    case BeamWeaver.JSON.decode(args) do
-      {:ok, decoded} when is_map(decoded) ->
-        {:ok, decoded}
-
-      {:ok, decoded} ->
-        {:error, "tool call arguments decoded to #{inspect(decoded)}, expected an object"}
-
-      {:error, error} ->
-        {:error, Exception.message(error)}
-    end
-  end
+  defp decode_args(args) when is_binary(args) or is_map(args) or is_nil(args),
+    do: BeamWeaver.Core.ToolCallParser.decode_tool_args(args)
 
   defp decode_args(args), do: {:error, "tool call arguments are not decodable: #{inspect(args)}"}
-
-  defp reject_empty_metadata(metadata) do
-    Enum.reduce(metadata, %{}, fn
-      {_key, []}, acc -> acc
-      {_key, nil}, acc -> acc
-      {key, value}, acc -> Map.put(acc, key, value)
-    end)
-  end
 end

@@ -25,7 +25,7 @@ defmodule BeamWeaver.Graph.Match do
   def match?(expected, output, state) when is_map(expected) and not is_struct(expected) do
     output_map?(output) and
       Enum.all?(expected, fn {key, expected_value} ->
-        case fetch_key(output, key) do
+        case BeamWeaver.MapAccess.fetch(output, key) do
           {:ok, value} -> value_match?(expected_value, value, state)
           :error -> false
         end
@@ -34,54 +34,10 @@ defmodule BeamWeaver.Graph.Match do
 
   def match?(expected, output, _state), do: expected == output
 
-  defp value_match?(expected, value, _state) when is_function(expected, 1),
-    do: expected.(value) == true
-
-  defp value_match?(expected, value, state) when is_function(expected, 2),
-    do: expected.(value, state) == true
-
-  defp value_match?(%Range{} = range, value, _state), do: value in range
-
-  defp value_match?([], value, _state), do: value in []
-
-  defp value_match?(expected, value, state) when is_list(expected) do
-    if Keyword.keyword?(expected),
-      do: value_match?(Map.new(expected), value, state),
-      else: value in expected
-  end
-
-  defp value_match?(expected, value, state) when is_map(expected) and not is_struct(expected),
-    do: match?(expected, value, state)
-
-  defp value_match?(expected, value, _state), do: expected == value
+  # A value of a map pattern matches as a whole pattern does, except that
+  # `nil`, `true` and `false` match only themselves.
+  defp value_match?(expected, value, _state) when is_boolean(expected) or is_nil(expected), do: expected == value
+  defp value_match?(expected, value, state), do: match?(expected, value, state)
 
   defp output_map?(output), do: is_map(output) and not is_struct(output)
-
-  defp fetch_key(map, key) when is_map(map) do
-    cond do
-      Map.has_key?(map, key) ->
-        {:ok, Map.fetch!(map, key)}
-
-      is_atom(key) and Map.has_key?(map, to_string(key)) ->
-        {:ok, Map.fetch!(map, to_string(key))}
-
-      is_binary(key) ->
-        case existing_atom(key) do
-          nil ->
-            :error
-
-          atom ->
-            if Map.has_key?(map, atom), do: {:ok, Map.fetch!(map, atom)}, else: :error
-        end
-
-      true ->
-        :error
-    end
-  end
-
-  defp existing_atom(value) do
-    String.to_existing_atom(value)
-  rescue
-    ArgumentError -> nil
-  end
 end

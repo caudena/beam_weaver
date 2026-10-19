@@ -10,6 +10,8 @@ defmodule BeamWeaver.Provider.Replay do
   alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.MapShape
+  alias BeamWeaver.Result
 
   @version 1
   @maximum_bytes 8 * 1024 * 1024
@@ -227,9 +229,11 @@ defmodule BeamWeaver.Provider.Replay do
   defp provider_fields(metadata) when is_map(metadata) do
     raw = Map.get(metadata, :raw_provider_block) || Map.get(metadata, "raw_provider_block") || metadata
 
-    ~w(type id status signature thoughtSignature thought_signature encrypted_content summary)
-    |> Enum.reduce(%{}, fn key, acc ->
-      case Map.get(raw, key) || Map.get(raw, safe_existing_atom(key)) do
+    ~w(type id status signature thoughtSignature thought_signature encrypted_content summary)a
+    |> Enum.reduce(%{}, fn atom, acc ->
+      key = Atom.to_string(atom)
+
+      case Map.get(raw, key) || Map.get(raw, atom) do
         nil -> acc
         value when is_binary(value) or is_number(value) or is_boolean(value) -> Map.put(acc, key, value)
         value when key == "summary" and is_list(value) -> Map.put(acc, key, stringify(value))
@@ -240,18 +244,7 @@ defmodule BeamWeaver.Provider.Replay do
 
   defp provider_fields(_metadata), do: %{}
 
-  defp replay_tool_calls(calls) when is_list(calls) do
-    Enum.reduce_while(calls, {:ok, []}, fn call, {:ok, projected} ->
-      case replay_tool_call(call) do
-        {:ok, value} -> {:cont, {:ok, [value | projected]}}
-        {:error, _error} = error -> {:halt, error}
-      end
-    end)
-    |> case do
-      {:ok, projected} -> {:ok, Enum.reverse(projected)}
-      {:error, _error} = error -> error
-    end
-  end
+  defp replay_tool_calls(calls) when is_list(calls), do: Result.traverse(calls, &replay_tool_call/1)
 
   defp replay_tool_calls(_calls), do: invalid_replay("provider replay tool calls must be a list")
 
@@ -276,7 +269,7 @@ defmodule BeamWeaver.Provider.Replay do
          "arguments" => stringify(arguments),
          "thought_signature" => scalar(Map.get(call, :thought_signature) || Map.get(call, "thought_signature"))
        }
-       |> reject_nil()}
+       |> MapShape.reject_nil_values()}
     else
       invalid_replay("provider replay tool call is invalid")
     end
@@ -284,18 +277,8 @@ defmodule BeamWeaver.Provider.Replay do
 
   defp replay_tool_call(_call), do: invalid_replay("provider replay tool call is invalid")
 
-  defp restore_blocks(blocks, binding_provider) when is_list(blocks) do
-    Enum.reduce_while(blocks, {:ok, []}, fn block, {:ok, restored} ->
-      case restore_block(block, binding_provider) do
-        {:ok, value} -> {:cont, {:ok, [value | restored]}}
-        {:error, _error} = error -> {:halt, error}
-      end
-    end)
-    |> case do
-      {:ok, restored} -> {:ok, Enum.reverse(restored)}
-      {:error, _error} = error -> error
-    end
-  end
+  defp restore_blocks(blocks, binding_provider) when is_list(blocks),
+    do: Result.traverse(blocks, &restore_block(&1, binding_provider))
 
   defp restore_blocks(_blocks, _provider),
     do: invalid_replay("provider replay content must be a list")
@@ -320,11 +303,9 @@ defmodule BeamWeaver.Provider.Replay do
 
   defp restore_block(%{"type" => "reasoning", "reasoning" => reasoning} = block, "openai")
        when is_binary(reasoning) do
-    with {:ok, provider_fields} <- restore_provider_fields(block) do
-      {:ok,
-       provider_fields
-       |> atomize_provider_fields()
-       |> Map.merge(%{type: :reasoning, reasoning: reasoning})}
+    with {:ok, provider_fields} <- restore_provider_fields(block),
+         {:ok, provider_fields} <- atomize_provider_fields(provider_fields) do
+      {:ok, Map.merge(provider_fields, %{type: :reasoning, reasoning: reasoning})}
     end
   end
 
@@ -359,18 +340,7 @@ defmodule BeamWeaver.Provider.Replay do
     end
   end
 
-  defp restore_tool_calls(calls) when is_list(calls) do
-    Enum.reduce_while(calls, {:ok, []}, fn call, {:ok, restored} ->
-      case restore_tool_call(call) do
-        {:ok, value} -> {:cont, {:ok, [value | restored]}}
-        {:error, _error} = error -> {:halt, error}
-      end
-    end)
-    |> case do
-      {:ok, restored} -> {:ok, Enum.reverse(restored)}
-      {:error, _error} = error -> error
-    end
-  end
+  defp restore_tool_calls(calls) when is_list(calls), do: Result.traverse(calls, &restore_tool_call/1)
 
   defp restore_tool_calls(_calls), do: invalid_replay("provider replay tool calls must be a list")
 
@@ -385,13 +355,13 @@ defmodule BeamWeaver.Provider.Replay do
 
   defp restore_tool_call(_call), do: invalid_replay("provider replay tool call is invalid")
 
-  defp atomize_tool_call(call) when is_map(call) do
+  defp atomize_tool_call(call) do
     %BeamWeaver.Core.Messages.ToolCall{
       id: call["id"],
       provider_id: call["provider_id"],
       call_id: call["call_id"],
       name: call["name"],
-      args: call["arguments"] || %{},
+      args: call["arguments"],
       thought_signature: call["thought_signature"]
     }
   end
@@ -407,7 +377,7 @@ defmodule BeamWeaver.Provider.Replay do
   defp stringify(value) when is_list(value), do: Enum.map(value, &stringify/1)
   defp stringify(value) when is_boolean(value), do: value
   defp stringify(value) when is_atom(value), do: Atom.to_string(value)
-  defp stringify(value) when is_binary(value) or is_number(value) or is_boolean(value), do: value
+  defp stringify(value) when is_binary(value) or is_number(value), do: value
   defp stringify(_value), do: nil
 
   defp scalar(nil), do: nil
@@ -415,10 +385,15 @@ defmodule BeamWeaver.Provider.Replay do
   defp scalar(value) when is_binary(value) or is_number(value) or is_boolean(value), do: value
   defp scalar(_value), do: nil
 
-  defp reject_nil(map), do: Map.reject(map, fn {_key, value} -> is_nil(value) end)
-
+  # A projection keeps only the fields below, so any other field means the
+  # stored replay is not one this module wrote.
   defp atomize_provider_fields(fields) do
-    Map.new(fields, fn {key, value} -> {provider_field_atom(key), value} end)
+    Enum.reduce_while(fields, {:ok, %{}}, fn {key, value}, {:ok, acc} ->
+      case provider_field_atom(key) do
+        nil -> {:halt, invalid_replay("provider replay provider field is unknown")}
+        atom -> {:cont, {:ok, Map.put(acc, atom, value)}}
+      end
+    end)
   end
 
   defp provider_field_atom("type"), do: :type
@@ -429,12 +404,7 @@ defmodule BeamWeaver.Provider.Replay do
   defp provider_field_atom("thought_signature"), do: :thought_signature
   defp provider_field_atom("encrypted_content"), do: :encrypted_content
   defp provider_field_atom("summary"), do: :summary
-
-  defp safe_existing_atom(key) do
-    String.to_existing_atom(key)
-  rescue
-    ArgumentError -> :__missing_replay_key__
-  end
+  defp provider_field_atom(_key), do: nil
 
   defp provider_binding?(binding, provider) do
     value = Map.get(binding, :provider) || Map.get(binding, "provider")

@@ -35,11 +35,11 @@ defmodule BeamWeaver.Compaction.Canonical do
   @doc "Returns the byte size of the canonical JSON representation."
   @spec encoded_size(term()) :: {:ok, non_neg_integer()} | {:error, term()}
   def encoded_size(value) do
-    case encode(value) do
-      {:ok, bytes} -> {:ok, byte_size(bytes)}
-      {:error, reason} -> {:error, reason}
-    end
+    with {:ok, bytes} <- encode(value), do: {:ok, byte_size(bytes)}
   end
+
+  @doc false
+  def hash?(value), do: is_binary(value) and value =~ ~r/\A[0-9a-f]{64}\z/
 
   @doc "Returns whether a value can be represented by this canonical encoder."
   @spec json_value?(term()) :: boolean()

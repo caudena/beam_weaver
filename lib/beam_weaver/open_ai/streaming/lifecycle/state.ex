@@ -1,8 +1,9 @@
 defmodule BeamWeaver.OpenAI.Streaming.Lifecycle.State do
   @moduledoc false
 
+  import BeamWeaver.MapShape, only: [reject_nil_values: 1]
+
   alias BeamWeaver.OpenAI.Streaming.Lifecycle.Content
-  alias BeamWeaver.OpenAI.Streaming.Shared
 
   def initial(parsed_events) do
     %{
@@ -22,15 +23,12 @@ defmodule BeamWeaver.OpenAI.Streaming.Lifecycle.State do
 
   def ensure_block(state, key, content) do
     case Map.get(state.blocks, key) do
-      %{finished?: true} ->
-        state
-
-      %{index: _index} ->
+      %{} ->
         state
 
       nil ->
         index = state.next_index
-        block = %{index: index, content: Shared.reject_nil_values(content), finished?: false}
+        block = %{index: index, content: reject_nil_values(content), finished?: false}
 
         state
         |> Map.put(:next_index, index + 1)
@@ -66,7 +64,7 @@ defmodule BeamWeaver.OpenAI.Streaming.Lifecycle.State do
         state
 
       %{index: index} = block ->
-        content = content |> Shared.reject_nil_values() |> merge_content(block.content)
+        content = content |> reject_nil_values() |> merge_content(block.content)
 
         state
         |> put_in([:blocks, key, :finished?], true)
@@ -84,14 +82,9 @@ defmodule BeamWeaver.OpenAI.Streaming.Lifecycle.State do
   end
 
   def close_message_parts(state, output_index) do
-    state.blocks
-    |> Enum.filter(fn
-      {{:text, ^output_index, _content_index}, %{finished?: false}} -> true
-      _block -> false
-    end)
-    |> Enum.reduce(state, fn {key, block}, acc ->
-      finish_block(acc, key, block.content)
-    end)
+    for {{:text, ^output_index, _content_index} = key, %{finished?: false} = block} <- state.blocks, reduce: state do
+      acc -> finish_block(acc, key, block.content)
+    end
   end
 
   def remember_item_index(state, id, index) when is_binary(id) and is_integer(index) do

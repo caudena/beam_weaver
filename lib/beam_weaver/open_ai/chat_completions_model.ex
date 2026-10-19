@@ -1,16 +1,29 @@
 defmodule BeamWeaver.OpenAI.ChatCompletionsModel do
-  @moduledoc """
-  OpenAI Chat Completions chat model implementation.
+  @moduledoc ~S"""
+  OpenAI Chat Completions model implementing the BeamWeaver chat contract.
+
+  Prefer `BeamWeaver.Models.init_chat_model/2` for provider-prefixed identifiers,
+  then call `BeamWeaver.Core.ChatModel` or declare the model in an agent.
+  Construction does not contact the provider. Model/profile options describe
+  local compatibility; account access is established only by a real request.
+
+  See [OpenAI](providers/openai.md) for endpoint-specific parameters, reasoning,
+  media and tools. Preserve complete messages for multi-turn replay. Streaming
+  consumers must enumerate once and handle terminal errors; display text is not
+  a lossless representation of a native provider turn.
   """
 
-  alias BeamWeaver.Core.LanguageModel
+  use BeamWeaver.Provider.RedactedInspect
+
   alias BeamWeaver.Models.InvocationMetadata
   alias BeamWeaver.OpenAI.ChatCompletions.Messages
-  alias BeamWeaver.OpenAI.ChatCompletions.Options
+  alias BeamWeaver.OpenAI.ChatCompletions.Options.Body
+  alias BeamWeaver.OpenAI.ChatModel.TokenCounter
   alias BeamWeaver.OpenAI.Client
-  alias BeamWeaver.OpenAI.Error
   alias BeamWeaver.OpenAI.ModelPolicy
+  alias BeamWeaver.OpenAI.RequestMetadata
   alias BeamWeaver.Provider.ChatModel.Options, as: ChatOptions
+  alias BeamWeaver.Provider.OpenAICompatibleClient, as: Compat
   alias BeamWeaver.Provider.StructuredOutput
 
   @default_model "gpt-5.5"
@@ -22,7 +35,7 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModel do
             api_key: nil,
             organization: nil,
             project: nil,
-            model_kwargs: %{},
+            extra_body: %{},
             temperature: nil,
             logit_bias: nil,
             reasoning_effort: nil,
@@ -52,6 +65,7 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModel do
             profile: nil,
             tokenizer: nil,
             param_policy: nil,
+            streaming: false,
             include_response_headers: false,
             transport: nil,
             transport_opts: [],
@@ -59,17 +73,16 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModel do
 
   @type t :: %__MODULE__{}
 
-  use BeamWeaver.Provider.ChatModel
+  use BeamWeaver.Provider.ChatModel, stream_source: :openai_chat_completions
 
   @doc """
   Builds a Chat Completions model from keyword options.
   """
   @spec new(keyword() | map()) :: t()
   def new(opts \\ []) do
-    opts = ChatOptions.keyword_options(opts)
+    opts = opts |> ChatOptions.keyword_options() |> Compat.expand_base_url(endpoint: "chat/completions")
 
     model = Keyword.get(opts, :model, @default_model)
-    max_completion_tokens = Keyword.get(opts, :max_completion_tokens)
     profile = ChatOptions.profile_option(opts, :openai, model)
     temperature = ModelPolicy.default_temperature(model, Keyword.get(opts, :temperature))
 
@@ -79,73 +92,42 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModel do
       |> Keyword.put(:model, model)
       |> Keyword.put(:profile, profile)
       |> Keyword.put(:temperature, temperature)
-      |> ChatOptions.put_present(
-        :max_tokens,
-        Keyword.get(opts, :max_tokens, max_completion_tokens)
-      )
     )
   end
 
+  @impl true
   def request_body(%__MODULE__{} = model, messages, opts \\ []) do
-    %Options{opts: opts}
-    |> Options.to_body(model, messages)
+    metadata = Keyword.get(opts, :metadata, model.metadata)
+
+    with :ok <- RequestMetadata.validate(metadata, Keyword.get(opts, :model, model.model)),
+         do: Body.to_body(model, messages, opts)
   end
 
-  def count_tokens(%__MODULE__{} = model, input, opts) do
-    case model.tokenizer || BeamWeaver.Models.tokenizer_for(model) do
-      {:ok, tokenizer} ->
-        LanguageModel.count_tokens({:tokenizer, tokenizer}, input, opts)
-
-      tokenizer when not is_nil(tokenizer) ->
-        LanguageModel.count_tokens({:tokenizer, tokenizer}, input, opts)
-
-      _missing ->
-        {:ok, LanguageModel.count_tokens_approximately(input)}
-    end
-  end
+  def count_tokens(%__MODULE__{} = model, input, opts), do: TokenCounter.count_text(model, input, opts)
 
   defp client(%__MODULE__{} = model) do
-    %Client{
-      endpoint: model.endpoint,
-      api_key: model.api_key,
-      organization: model.organization,
-      project: model.project,
-      transport: model.transport,
-      transport_opts: model.transport_opts,
-      timeout: model.timeout
-    }
+    fields = Map.take(model, ~w(api_key organization project transport transport_opts timeout)a)
+    struct(Client, Map.put(fields, :chat_completions_endpoint, model.endpoint))
   end
 
-  defp model_stream_metadata(%__MODULE__{} = model, body, opts, api) do
-    model
-    |> InvocationMetadata.openai(body, opts, api)
-    |> InvocationMetadata.to_metadata_map()
-  end
+  @impl true
+  def stream_metadata(%__MODULE__{} = model, body, opts),
+    do: model |> InvocationMetadata.openai(body, opts, :chat_completions) |> InvocationMetadata.to_metadata_map()
 
-  defp runtime_adapter do
-    %ChatRuntime.Adapter{
-      request: &request_body/3,
-      invoke: fn model, body, opts -> Client.chat_completions(client(model), body, opts) end,
-      stream: fn model, body, opts ->
-        Client.chat_completions_stream(client(model), body, opts)
-      end,
-      stream_response: fn model, body, opts ->
-        Client.chat_completions_stream_response(client(model), body, opts)
-      end,
-      stream_events: fn model, body, opts ->
-        Client.chat_completions_stream_typed_events(client(model), body, opts)
-      end,
-      decode: fn response, _opts -> Messages.response_to_message(response) end,
-      parse: fn message, opts ->
-        StructuredOutput.maybe_parse(message, opts,
-          error_module: Error,
-          provider_name: "OpenAI"
-        )
-      end,
-      metadata: fn model, body, opts ->
-        model_stream_metadata(model, body, opts, :chat_completions)
-      end,
-      source: :openai_chat_completions
-    }
-  end
+  @impl true
+  def send_request(:invoke, model, body, opts), do: Client.chat_completions(client(model), body, opts)
+  def send_request(:stream, model, body, opts), do: Client.chat_completions_stream(client(model), body, opts)
+
+  def send_request(:stream_response, model, body, opts),
+    do: Client.chat_completions_stream_response(client(model), body, opts)
+
+  def send_request(:stream_events, model, body, opts),
+    do: Client.chat_completions_stream_typed_events(client(model), body, opts)
+
+  @impl true
+  def decode_response(response, _opts), do: Messages.response_to_message(response)
+
+  @impl true
+  def parse_response(_model, message, opts),
+    do: StructuredOutput.maybe_parse(message, opts, provider_name: "OpenAI")
 end

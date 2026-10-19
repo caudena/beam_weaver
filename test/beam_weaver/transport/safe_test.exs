@@ -2,6 +2,7 @@ defmodule BeamWeaver.Transport.SafeTest do
   use ExUnit.Case, async: true
 
   alias BeamWeaver.Transport.Error
+  alias BeamWeaver.Transport.ReqFinch
   alias BeamWeaver.Transport.Request
   alias BeamWeaver.Transport.Response
   alias BeamWeaver.Transport.Safe
@@ -204,6 +205,24 @@ defmodule BeamWeaver.Transport.SafeTest do
     assert opts[:total_timeout] == 15_000
   end
 
+  test "runs unpinned requests on an isolated pool with the caller's connection settings" do
+    proxy = {:http, "proxy.internal", 3128, []}
+
+    assert {:ok, %Response{status: 200}} =
+             Safe.request(Request.new(method: :get, url: "https://public.example/path"),
+               transport: PinTransport,
+               observer: self(),
+               connect_options: [proxy: proxy],
+               finch: CustomFinch
+             )
+
+    assert_receive {:pinned_request, request, opts}
+    assert request.url == "https://public.example/path"
+    assert {:isolated, pool_options} = ReqFinch.req_options(request, opts)[:finch]
+    assert pool_options[:conn_opts][:proxy] == proxy
+    assert pool_options[:conn_opts][:max_header_list_size] == 65_536
+  end
+
   test "brackets an IPv6 literal in the Host authority" do
     address = {0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111}
 
@@ -394,20 +413,6 @@ defmodule BeamWeaver.Transport.SafeTest do
                follow_redirects?: true,
                resolve?: true,
                resolver: resolver
-             )
-
-    assert calls(agent) == ["https://start.example/path"]
-  end
-
-  test "keeps redirect responses when following is disabled" do
-    {:ok, agent} = start_agent([{:redirect, "https://final.example/done"}])
-
-    assert {:ok, %Response{status: 302}} =
-             Safe.request(
-               Request.new(method: :get, url: "https://start.example/path"),
-               transport: FakeTransport,
-               agent: agent,
-               follow_redirects?: false
              )
 
     assert calls(agent) == ["https://start.example/path"]

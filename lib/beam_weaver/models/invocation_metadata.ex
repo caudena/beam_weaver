@@ -1,10 +1,5 @@
 defmodule BeamWeaver.Models.InvocationMetadata do
-  @moduledoc """
-  Normalized model invocation metadata used by stream events, telemetry, and tracing.
-
-  This keeps provider-specific request maps at the provider boundary while giving
-  the rest of BeamWeaver one typed shape to consume.
-  """
+  @moduledoc false
 
   defstruct provider: nil,
             model: nil,
@@ -59,24 +54,7 @@ defmodule BeamWeaver.Models.InvocationMetadata do
         }
 
   @spec openai(term(), map(), keyword(), atom()) :: t()
-  def openai(model, body, opts, api) when is_map(body) do
-    %__MODULE__{
-      provider: :openai,
-      model: body["model"] || Map.get(model, :model),
-      api: api,
-      invocation_params: invocation_params(body),
-      tool_choice: body["tool_choice"],
-      bound_tools: tool_names(body["tools"]),
-      structured_output_mode: structured_output_mode(body),
-      usage_metadata: body["usage"],
-      request_metadata: body["metadata"],
-      param_policy: Keyword.get(opts, :param_policy, Map.get(model, :param_policy)),
-      extra: %{
-        request_id: body["id"],
-        service_tier: body["service_tier"]
-      }
-    }
-  end
+  def openai(model, body, opts, api), do: provider(model, :openai, body, opts, api)
 
   @spec provider(term(), atom(), map(), keyword(), atom()) :: t()
   def provider(model, provider, body, opts, api) when is_atom(provider) and is_map(body) do
@@ -84,7 +62,7 @@ defmodule BeamWeaver.Models.InvocationMetadata do
       provider: provider,
       model: body["model"] || Map.get(model, :model),
       api: api,
-      invocation_params: invocation_params(body),
+      invocation_params: Map.drop(body, @filtered_body_fields),
       tool_choice: body["tool_choice"],
       bound_tools: tool_names(body["tools"]),
       structured_output_mode: structured_output_mode(body),
@@ -98,18 +76,18 @@ defmodule BeamWeaver.Models.InvocationMetadata do
     }
   end
 
-  @spec fake(term(), keyword(), atom()) :: t()
-  def fake(model, opts, api \\ :fake) do
+  @spec fake(term(), keyword()) :: t()
+  def fake(model, opts) do
     %__MODULE__{
       provider: :fake,
-      model: fake_model_id(model),
-      api: api,
-      invocation_params: invocation_params_from_opts(opts),
+      model: "fake-chat",
+      api: :fake,
+      invocation_params: opts |> Keyword.drop(@filtered_opt_fields) |> Map.new(),
       tool_choice: Keyword.get(opts, :tool_choice),
       bound_tools: tool_names(Keyword.get(opts, :tools)),
       structured_output_mode: structured_output_mode_from_opts(opts),
-      usage_metadata: Map.get(model, :usage_metadata),
-      param_policy: Keyword.get(opts, :param_policy, Map.get(model, :param_policy))
+      usage_metadata: model.usage_metadata,
+      param_policy: Keyword.get(opts, :param_policy, model.param_policy)
     }
   end
 
@@ -131,18 +109,8 @@ defmodule BeamWeaver.Models.InvocationMetadata do
       param_policy: inspect(metadata.param_policy),
       invocation_metadata: metadata
     }
-    |> Map.merge(metadata.extra || %{})
-    |> reject_empty_values()
-  end
-
-  defp invocation_params(body) do
-    Map.drop(body, @filtered_body_fields)
-  end
-
-  defp invocation_params_from_opts(opts) do
-    opts
-    |> Keyword.drop(@filtered_opt_fields)
-    |> Map.new()
+    |> Map.merge(metadata.extra)
+    |> BeamWeaver.MapShape.compact([nil, :empty_list, :empty_map])
   end
 
   defp tool_names(tools) when is_list(tools) do
@@ -170,17 +138,5 @@ defmodule BeamWeaver.Models.InvocationMetadata do
       Keyword.has_key?(opts, :response_format) -> :response_format
       true -> nil
     end
-  end
-
-  defp fake_model_id(model) do
-    cond do
-      is_map(model) and Map.get(model, :model) -> Map.get(model, :model)
-      is_map(model) and Map.get(model, :id) -> Map.get(model, :id)
-      true -> "fake-chat"
-    end
-  end
-
-  defp reject_empty_values(map) do
-    Map.reject(map, fn {_key, value} -> value in [nil, [], %{}] end)
   end
 end

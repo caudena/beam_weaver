@@ -1,6 +1,14 @@
 defmodule BeamWeaver.Cache.ETS do
-  @moduledoc """
-  ETS cache adapter for local workflows, tests, and supervised applications.
+  @moduledoc ~S"""
+  Process-owned in-memory cache with optional entry-count retention.
+
+  `new/1` creates an ETS set. Reuse the returned adapter; its entries disappear
+  with the owner process. `visibility:` controls ETS visibility and
+  `max_entries:` (or `maxsize:`) bounds retained entries, evicting the oldest
+  when adding beyond the limit.
+
+  Entry TTL is milliseconds through `BeamWeaver.Cache.put/5`; hits do not
+  refresh it. Use the cache facade for operations and cleanup. See [Caching](caching.md).
   """
 
   @behaviour BeamWeaver.Cache
@@ -25,8 +33,9 @@ defmodule BeamWeaver.Cache.ETS do
   def lookup(%__MODULE__{} = cache, namespace, key, _opts) do
     case :ets.lookup(cache.table, {namespace, key}) do
       [{{^namespace, ^key}, entry}] ->
+        # Only this entry goes: a put that ran since it was read stays.
         if expired?(entry) do
-          :ets.delete(cache.table, {namespace, key})
+          :ets.delete_object(cache.table, {{namespace, key}, entry})
           :miss
         else
           {:hit, entry.value, entry.metadata}
@@ -76,6 +85,14 @@ defmodule BeamWeaver.Cache.ETS do
     end
 
     :ok
+  end
+
+  @doc false
+  @spec sweep_expired(t(), keyword()) :: {:ok, non_neg_integer()}
+  def sweep_expired(%__MODULE__{} = cache, _opts \\ []) do
+    now = System.system_time(:millisecond)
+    expired = [{{:_, %{expires_at: :"$1"}}, [{:is_integer, :"$1"}, {:"=<", :"$1", now}], [true]}]
+    {:ok, :ets.select_delete(cache.table, expired)}
   end
 
   defp expired?(%{expires_at: nil}), do: false

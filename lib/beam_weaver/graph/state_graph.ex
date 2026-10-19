@@ -1,17 +1,10 @@
 defmodule BeamWeaver.Graph.StateGraph do
-  @moduledoc """
-  Immutable graph builder.
-  """
+  @moduledoc false
 
-  alias BeamWeaver.Core.Error
   alias BeamWeaver.Graph
   alias BeamWeaver.Graph.BranchSpec
   alias BeamWeaver.Graph.Channels.BinaryOperatorAggregate
   alias BeamWeaver.Graph.Channels.NamedBarrierValue
-  alias BeamWeaver.Graph.Compiled
-  alias BeamWeaver.Graph.Compiler
-  alias BeamWeaver.Graph.EdgeSpec
-  alias BeamWeaver.Graph.Execution
   alias BeamWeaver.Graph.GuardedEdgeSpec
   alias BeamWeaver.Graph.NodeSpec
   alias BeamWeaver.Graph.StateGraph.Normalization, as: N
@@ -25,10 +18,8 @@ defmodule BeamWeaver.Graph.StateGraph do
             managed: %{},
             nodes: %{},
             edges: %{},
-            edge_specs: [],
             guarded_edges: %{},
             conditional_edges: %{},
-            branch_specs: %{},
             waiting_edges: [],
             entry_points: [],
             finish_points: MapSet.new(),
@@ -55,7 +46,7 @@ defmodule BeamWeaver.Graph.StateGraph do
         }
 
   @spec new(keyword()) :: t()
-  def new(opts \\ []) do
+  def new(opts) do
     reducers = N.normalize_reducers(Keyword.get(opts, :reducers, %{}))
     state_schema = Keyword.get(opts, :state_schema)
 
@@ -90,30 +81,13 @@ defmodule BeamWeaver.Graph.StateGraph do
   end
 
   @spec add_node(t(), Graph.node_name(), function() | module() | struct(), keyword()) :: t()
-  def add_node(%__MODULE__{} = graph, name, fun, opts \\ []) do
+  def add_node(%__MODULE__{} = graph, name, fun, opts) do
     node = N.normalize_node(name)
-    opts = Keyword.merge(graph.node_defaults, opts)
 
     spec =
-      case NodeSpec.new(node, fun, opts) do
-        {:ok, spec} ->
-          spec
-
-        {:error, error} ->
-          %NodeSpec{
-            name: node,
-            fun: fun,
-            kind: :invalid,
-            metadata: %{error: error},
-            retry: 0,
-            retry_policy: BeamWeaver.RetryPolicy.new!(max_attempts: 1),
-            timeout: 5_000,
-            execution_policy: BeamWeaver.ExecutionPolicy.new!(timeout: 5_000),
-            cache: false,
-            deps: [],
-            condition: nil,
-            triggers: Keyword.get(opts, :triggers, []) |> Execution.normalize_channels()
-          }
+      case NodeSpec.new(node, fun, Keyword.merge(graph.node_defaults, opts)) do
+        {:ok, spec} -> spec
+        {:error, error} -> %NodeSpec{name: node, fun: fun, kind: :invalid, metadata: %{error: error}, deps: []}
       end
 
     graph
@@ -128,7 +102,7 @@ defmodule BeamWeaver.Graph.StateGraph do
   end
 
   @spec add_sequence(t(), list(), keyword()) :: t()
-  def add_sequence(%__MODULE__{} = graph, sequence, opts \\ []) when is_list(sequence) do
+  def add_sequence(%__MODULE__{} = graph, sequence, opts) when is_list(sequence) do
     {graph, names} =
       Enum.reduce(sequence, {graph, []}, fn
         {name, callable}, {acc, names} ->
@@ -154,15 +128,10 @@ defmodule BeamWeaver.Graph.StateGraph do
     end_node = N.normalize_node(end_node)
 
     graph
-    |> maybe_record_duplicate(
-      :edge,
-      {start_node, end_node},
-      edge_exists?(graph, start_node, end_node)
-    )
+    |> maybe_record_duplicate(:edge, {start_node, end_node}, end_node in Map.get(graph.edges, start_node, []))
     |> maybe_add_entry(start_node, end_node)
     |> maybe_add_finish(start_node, end_node)
     |> put_edge(start_node, end_node)
-    |> put_edge_spec(start_node, end_node)
   end
 
   @spec add_edge(t(), Graph.node_name(), Graph.node_name(), keyword()) :: t()
@@ -175,12 +144,7 @@ defmodule BeamWeaver.Graph.StateGraph do
   end
 
   @spec add_join(t(), [Graph.node_name()], Graph.node_name(), keyword()) :: t()
-  def add_join(%__MODULE__{} = graph, upstream_nodes, downstream_node, opts \\ []) do
-    put_waiting_edge(graph, upstream_nodes, downstream_node, opts)
-  end
-
-  @spec put_waiting_edge(t(), [Graph.node_name()], Graph.node_name(), keyword()) :: t()
-  defp put_waiting_edge(%__MODULE__{} = graph, upstream_nodes, downstream_node, opts \\ []) do
+  def add_join(%__MODULE__{} = graph, upstream_nodes, downstream_node, opts) do
     upstream = upstream_nodes |> List.wrap() |> Enum.map(&N.normalize_node/1) |> Enum.uniq()
     target = N.normalize_node(downstream_node)
     id = Keyword.get(opts, :id, waiting_edge_id(upstream, target))
@@ -194,50 +158,38 @@ defmodule BeamWeaver.Graph.StateGraph do
       metadata: Keyword.get(opts, :metadata, %{})
     }
 
+    # The join's channel is internal: hidden from nodes and results, but saved
+    # with the thread so that a join survives a failed step that is retried.
     graph
-    |> add_channel(channel, NamedBarrierValue.new(upstream, key: channel),
-      visibility: :private,
-      subscribers: [target]
-    )
+    |> add_channel(channel, NamedBarrierValue.new(upstream, key: channel), subscribers: [target])
     |> then(&%{&1 | waiting_edges: &1.waiting_edges ++ [spec]})
   end
 
   @doc false
-  @spec put_branch_routes(t(), Graph.node_name(), function(), map() | keyword(), keyword()) ::
-          t()
-  def put_branch_routes(%__MODULE__{} = graph, source, router, path_map \\ %{}, opts \\ []) do
+  # The writes that record `node` finishing, for every join it is upstream of.
+  @spec join_writes(t(), Graph.node_name()) :: [map()]
+  def join_writes(%__MODULE__{waiting_edges: waiting_edges}, node) do
+    node = N.normalize_node(node)
+
+    for %WaitingEdgeSpec{channel: channel, upstream: upstream} <- waiting_edges,
+        node in upstream,
+        do: %{channel => node}
+  end
+
+  @doc false
+  @spec put_branch_routes(t(), Graph.node_name(), function(), map() | keyword()) :: t()
+  def put_branch_routes(%__MODULE__{} = graph, source, router, path_map \\ %{}) do
     source = N.normalize_node(source)
-    then_node = opts |> Keyword.get(:then) |> N.maybe_normalize_node()
 
     spec = %BranchSpec{
       source: source,
       router: router,
-      path_map: Map.new(path_map, fn {key, value} -> {key, N.normalize_node(value)} end),
-      then: then_node,
-      metadata: Keyword.get(opts, :metadata, %{})
+      path_map: Map.new(path_map, fn {key, value} -> {key, N.normalize_node(value)} end)
     }
 
-    graph =
-      graph
-      |> maybe_record_duplicate(:branch, source, Map.has_key?(graph.conditional_edges, source))
-      |> then(
-        &%{
-          &1
-          | conditional_edges: Map.put(&1.conditional_edges, source, spec),
-            branch_specs: Map.put(&1.branch_specs, source, spec)
-        }
-      )
-
-    if then_node do
-      spec.path_map
-      |> Map.values()
-      |> Enum.uniq()
-      |> Enum.reduce(graph, fn target, acc ->
-        if target == "__end__", do: acc, else: add_edge(acc, target, then_node)
-      end)
-    else
-      graph
-    end
+    graph
+    |> maybe_record_duplicate(:branch, source, Map.has_key?(graph.conditional_edges, source))
+    |> then(&%{&1 | conditional_edges: Map.put(&1.conditional_edges, source, spec)})
   end
 
   @spec add_reducer(t(), atom() | String.t(), function()) :: t()
@@ -252,7 +204,7 @@ defmodule BeamWeaver.Graph.StateGraph do
   end
 
   @spec add_channel(t(), atom() | String.t(), term(), keyword()) :: t()
-  def add_channel(%__MODULE__{} = graph, key, channel, opts \\ []) do
+  def add_channel(%__MODULE__{} = graph, key, channel, opts) do
     key = N.state_key(key)
 
     subscribers =
@@ -274,60 +226,13 @@ defmodule BeamWeaver.Graph.StateGraph do
     }
   end
 
-  @spec put_entry_point(t(), Graph.node_name()) :: t()
-  defp put_entry_point(%__MODULE__{} = graph, node) do
-    node = N.normalize_node(node)
-    %{graph | entry_points: Enum.uniq(graph.entry_points ++ [node])}
-  end
-
-  @spec put_finish_point(t(), Graph.node_name()) :: t()
-  defp put_finish_point(%__MODULE__{} = graph, node) do
-    %{graph | finish_points: MapSet.put(graph.finish_points, N.normalize_node(node))}
-  end
-
-  @spec compile(t(), keyword()) :: {:ok, Compiled.t()} | {:error, Error.t()}
-  def compile(%__MODULE__{} = graph, opts \\ []) do
-    Compiler.compile(graph, opts)
-  end
-
-  @spec compile!(t(), keyword()) :: Compiled.t()
-  def compile!(%__MODULE__{} = graph, opts \\ []) do
-    case compile(graph, opts) do
-      {:ok, compiled} -> compiled
-      {:error, error} -> raise ArgumentError, error.message
-    end
-  end
-
-  @spec validate(t(), boolean()) :: :ok | {:error, Error.t()}
-  def validate(%__MODULE__{} = graph, validate_static? \\ false) do
-    BeamWeaver.Graph.Validation.validate(graph, validate_static: validate_static?)
-  end
-
-  @spec validation_report(t(), boolean()) :: BeamWeaver.Graph.Validation.Report.t()
-  def validation_report(%__MODULE__{} = graph, validate_static? \\ false) do
-    BeamWeaver.Graph.Validation.report(graph, validate_static: validate_static?)
-  end
-
-  defp put_edge(graph, start_node, end_node) when start_node in ["__start__", "__end__"] do
-    if start_node == "__start__", do: put_entry_point(graph, end_node), else: graph
-  end
-
-  defp put_edge(graph, start_node, end_node) when end_node == "__end__" do
-    put_finish_point(graph, start_node)
-  end
+  defp put_edge(graph, start_node, end_node)
+       when start_node in ["__start__", "__end__"] or end_node == "__end__",
+       do: graph
 
   defp put_edge(graph, start_node, end_node) do
     edges = Map.update(graph.edges, start_node, [end_node], &Enum.uniq(&1 ++ [end_node]))
     %{graph | edges: edges}
-  end
-
-  defp put_edge_spec(graph, start_node, end_node)
-       when start_node in ["__start__", "__end__"] or end_node in ["__start__", "__end__"],
-       do: graph
-
-  defp put_edge_spec(graph, start_node, end_node) do
-    spec = %EdgeSpec{source: start_node, target: end_node}
-    %{graph | edge_specs: graph.edge_specs ++ [spec]}
   end
 
   defp add_guarded_edge(graph, start_node, end_node, opts) do
@@ -340,20 +245,13 @@ defmodule BeamWeaver.Graph.StateGraph do
       target: end_node,
       match: Keyword.get(opts, :when),
       max_runs: Keyword.get(opts, :max_runs),
-      default?: Keyword.get(opts, :default, false) == true,
-      metadata: Keyword.get(opts, :metadata, %{})
+      default?: Keyword.get(opts, :default, false) == true
     }
 
     graph
     |> maybe_add_entry(start_node, end_node)
     |> maybe_add_finish(start_node, end_node)
-    |> then(fn graph ->
-      %{
-        graph
-        | guarded_edges: Map.update(graph.guarded_edges, start_node, [spec], fn specs -> specs ++ [spec] end),
-          edge_specs: graph.edge_specs ++ [spec]
-      }
-    end)
+    |> then(&%{&1 | guarded_edges: Map.update(&1.guarded_edges, start_node, [spec], fn specs -> specs ++ [spec] end)})
   end
 
   defp add_dependency_edges(graph, %NodeSpec{deps: []}), do: graph
@@ -365,17 +263,17 @@ defmodule BeamWeaver.Graph.StateGraph do
     do: add_edge(graph, dep, node)
 
   defp add_dependency_edges(graph, %NodeSpec{name: node, deps: deps}),
-    do: put_waiting_edge(graph, deps, node)
+    do: add_join(graph, deps, node, [])
 
-  defp maybe_add_entry(graph, "__start__", end_node), do: put_entry_point(graph, end_node)
+  defp maybe_add_entry(graph, "__start__", end_node),
+    do: %{graph | entry_points: Enum.uniq(graph.entry_points ++ [end_node])}
+
   defp maybe_add_entry(graph, _start_node, _end_node), do: graph
 
-  defp maybe_add_finish(graph, start_node, "__end__"), do: put_finish_point(graph, start_node)
-  defp maybe_add_finish(graph, _start_node, _end_node), do: graph
+  defp maybe_add_finish(graph, start_node, "__end__"),
+    do: %{graph | finish_points: MapSet.put(graph.finish_points, start_node)}
 
-  defp edge_exists?(graph, start_node, end_node) do
-    end_node in Map.get(graph.edges, start_node, [])
-  end
+  defp maybe_add_finish(graph, _start_node, _end_node), do: graph
 
   defp maybe_record_duplicate(graph, _kind, _value, false), do: graph
 

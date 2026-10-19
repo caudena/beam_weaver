@@ -8,7 +8,6 @@ defmodule BeamWeaver.Cache do
   """
 
   alias BeamWeaver.Adapter.Dispatch
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Telemetry.AdapterEvent
   alias BeamWeaver.Telemetry.AdapterHelpers
@@ -18,44 +17,53 @@ defmodule BeamWeaver.Cache do
   @type metadata :: map()
   @type lookup_result :: {:hit, term(), metadata()} | :miss | {:error, Error.t()}
 
+  @doc """
+  Read one entry, preserving miss versus adapter failure.
+  """
   @callback lookup(term(), namespace(), key(), keyword()) :: lookup_result()
+  @doc """
+  Store a value; ttl options use milliseconds.
+  """
   @callback put(term(), namespace(), key(), term(), keyword()) :: :ok | {:error, Error.t()}
+  @doc """
+  Remove one entry, returning an error if storage fails.
+  """
   @callback delete(term(), namespace(), key(), keyword()) :: :ok | {:error, Error.t()}
+  @doc """
+  Clear one namespace or all entries when namespace is nil.
+  """
   @callback clear(term(), namespace() | nil, keyword()) :: :ok | {:error, Error.t()}
 
+  @doc """
+  Returns {:hit, value, metadata}, :miss or an adapter error. Expired entries are misses.
+  """
   @spec lookup(term(), namespace(), key(), keyword()) :: lookup_result()
   def lookup(cache, namespace, key, opts \\ []) do
     emit(cache, :lookup, %{count: 1}, %{namespace: namespace, key: key})
 
-    case adapter(cache, :lookup) do
-      {:ok, module} ->
-        case module.lookup(cache, namespace, key, opts) do
-          {:hit, _value, _metadata} = hit ->
-            emit(cache, :hit, %{count: 1}, %{namespace: namespace, key: key, result: :hit})
-            hit
+    with {:ok, module} <- adapter(cache, :lookup) do
+      case module.lookup(cache, namespace, key, opts) do
+        {:hit, _value, _metadata} = hit ->
+          emit(cache, :hit, %{count: 1}, %{namespace: namespace, key: key, result: :hit})
+          hit
 
-          :miss ->
-            emit(cache, :miss, %{count: 1}, %{namespace: namespace, key: key, result: :miss})
-            :miss
+        :miss ->
+          emit(cache, :miss, %{count: 1}, %{namespace: namespace, key: key, result: :miss})
+          :miss
 
-          {:error, %Error{type: type}} = error ->
-            emit(cache, :error, %{count: 1}, %{namespace: namespace, key: key, error: type})
-            error
-        end
-
-      {:error, %Error{} = error} ->
-        {:error, error}
+        {:error, %Error{type: type}} = error ->
+          emit(cache, :error, %{count: 1}, %{namespace: namespace, key: key, error: type})
+          error
+      end
     end
   end
 
+  @doc """
+  Stores a namespaced value with optional metadata and TTL in milliseconds.
+  """
   @spec put(term(), namespace(), key(), term(), keyword()) :: :ok | {:error, Error.t()}
-  def put(cache, namespace, key, value, opts \\ []) do
-    with {:ok, module} <- adapter(cache, :put),
-         :ok <- module.put(cache, namespace, key, value, opts) do
-      emit(cache, :put, %{count: 1}, %{namespace: namespace, key: key, result: :ok})
-      :ok
-    end
-  end
+  def put(cache, namespace, key, value, opts \\ []),
+    do: write(cache, :put, [namespace, key, value, opts], %{namespace: namespace, key: key})
 
   @doc """
   Alias for `put/5` matching cache update terminology.
@@ -64,29 +72,25 @@ defmodule BeamWeaver.Cache do
   def update(cache, namespace, key, value, opts \\ []),
     do: put(cache, namespace, key, value, opts)
 
+  @doc """
+  Removes one namespaced entry through the adapter.
+  """
   @spec delete(term(), namespace(), key(), keyword()) :: :ok | {:error, Error.t()}
-  def delete(cache, namespace, key, opts \\ []) do
-    with {:ok, module} <- adapter(cache, :delete),
-         :ok <- module.delete(cache, namespace, key, opts) do
-      emit(cache, :delete, %{count: 1}, %{namespace: namespace, key: key, result: :ok})
-      :ok
-    end
-  end
-
-  @spec clear(term(), namespace() | nil, keyword()) :: :ok | {:error, Error.t()}
-  def clear(cache, namespace \\ nil, opts \\ []) do
-    with {:ok, module} <- adapter(cache, :clear),
-         :ok <- module.clear(cache, namespace, opts) do
-      emit(cache, :clear, %{count: 1}, %{namespace: namespace, result: :ok})
-      :ok
-    end
-  end
+  def delete(cache, namespace, key, opts \\ []),
+    do: write(cache, :delete, [namespace, key, opts], %{namespace: namespace, key: key})
 
   @doc """
-  Looks up multiple `{namespace, key}` entries and returns a map of cache hits.
+  Clears one namespace, or the entire cache when namespace is nil.
+  """
+  @spec clear(term(), namespace() | nil, keyword()) :: :ok | {:error, Error.t()}
+  def clear(cache, namespace \\ nil, opts \\ []), do: write(cache, :clear, [namespace, opts], %{namespace: namespace})
 
-  Missing or expired entries are omitted. This is the native batch equivalent of
-  LangGraph's `BaseCache.get/1` contract.
+  @doc """
+  Looks up multiple `{namespace, key}` entries and returns a map of cache hits
+  keyed by `{namespace, key}`.
+
+  Missing or expired entries are omitted. An adapter error stops the lookup and
+  is returned as `{:error, error}`.
   """
   @spec get_many(term(), [{namespace(), key()}], keyword()) ::
           %{optional({namespace(), key()}) => term()} | {:error, Error.t()}
@@ -104,9 +108,8 @@ defmodule BeamWeaver.Cache do
   @doc """
   Stores multiple `{namespace, key}` entries.
 
-  Pair values may be raw values or `{value, ttl_seconds}` tuples. TTLs use
-  seconds here to mirror LangGraph cache policy data; the underlying adapter
-  still receives BeamWeaver's millisecond `:ttl` option.
+  Pair values may be raw values or `{value, ttl_seconds}` tuples. TTLs here are
+  whole seconds; they are converted to the adapter's millisecond `:ttl` option.
   """
   @spec set_many(term(), map() | list(), keyword()) :: :ok | {:error, Error.t()}
   def set_many(cache, pairs, opts \\ []) when is_map(pairs) or is_list(pairs) do
@@ -140,61 +143,9 @@ defmodule BeamWeaver.Cache do
     end)
   end
 
-  @doc "Starts a Task-backed cache lookup."
-  @spec async_lookup(term(), namespace(), key(), keyword()) :: Async.handle()
-  def async_lookup(cache, namespace, key, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> lookup(cache, namespace, key, call_opts) end, async_opts)
-  end
-
-  @doc "Starts a Task-backed cache update."
-  @spec async_put(term(), namespace(), key(), term(), keyword()) :: Async.handle()
-  def async_put(cache, namespace, key, value, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> put(cache, namespace, key, value, call_opts) end, async_opts)
-  end
-
-  @doc "Starts a Task-backed cache update."
-  @spec async_update(term(), namespace(), key(), term(), keyword()) :: Async.handle()
-  def async_update(cache, namespace, key, value, opts \\ []) do
-    async_put(cache, namespace, key, value, opts)
-  end
-
-  @doc "Starts a Task-backed cache delete."
-  @spec async_delete(term(), namespace(), key(), keyword()) :: Async.handle()
-  def async_delete(cache, namespace, key, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> delete(cache, namespace, key, call_opts) end, async_opts)
-  end
-
-  @doc "Starts a Task-backed cache clear."
-  @spec async_clear(term(), namespace() | nil, keyword()) :: Async.handle()
-  def async_clear(cache, namespace \\ nil, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> clear(cache, namespace, call_opts) end, async_opts)
-  end
-
-  @doc "Starts a Task-backed batch cache lookup."
-  @spec async_get_many(term(), [{namespace(), key()}], keyword()) :: Async.handle()
-  def async_get_many(cache, full_keys, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> get_many(cache, full_keys, call_opts) end, async_opts)
-  end
-
-  @doc "Starts a Task-backed batch cache update."
-  @spec async_set_many(term(), map() | list(), keyword()) :: Async.handle()
-  def async_set_many(cache, pairs, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> set_many(cache, pairs, call_opts) end, async_opts)
-  end
-
-  @doc "Starts a Task-backed batch namespace clear."
-  @spec async_clear_many(term(), [namespace()] | nil, keyword()) :: Async.handle()
-  def async_clear_many(cache, namespaces \\ nil, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> clear_many(cache, namespaces, call_opts) end, async_opts)
-  end
-
+  @doc """
+  Removes expired entries through the optional sweep capability.
+  """
   @spec sweep_expired(term(), keyword()) :: {:ok, non_neg_integer()} | :ok | {:error, Error.t()}
   def sweep_expired(cache, opts \\ []) do
     result = BeamWeaver.Adapter.Sweepable.sweep_expired(cache, opts)
@@ -208,6 +159,9 @@ defmodule BeamWeaver.Cache do
     result
   end
 
+  @doc """
+  Applies adapter retention; unsupported retention remains an explicit error.
+  """
   @spec prune(term(), keyword()) :: {:ok, non_neg_integer()} | {:error, Error.t()}
   def prune(cache, opts \\ []) do
     result = BeamWeaver.Adapter.Retainable.prune(cache, opts)
@@ -242,15 +196,20 @@ defmodule BeamWeaver.Cache do
     |> then(&:crypto.hash(:sha256, &1))
   end
 
-  defp adapter(nil, _callback), do: {:error, explicit_required_error()}
-  defp adapter(false, _callback), do: {:error, explicit_required_error()}
-  defp adapter(true, _callback), do: {:error, explicit_required_error()}
+  defp write(cache, operation, args, metadata) do
+    with {:ok, module} <- adapter(cache, operation),
+         :ok <- apply(module, operation, [cache | args]) do
+      emit(cache, operation, %{count: 1}, Map.put(metadata, :result, :ok))
+      :ok
+    end
+  end
+
+  defp adapter(cache, _callback) when cache in [nil, false, true], do: {:error, explicit_required_error()}
 
   defp adapter(%{__struct__: _module} = cache, callback) do
     Dispatch.module(cache, callback, callback_arity(callback),
       error_type: :invalid_cache,
-      missing_message: "cache adapter does not implement BeamWeaver.Cache",
-      invalid_message: "cache must be an explicit BeamWeaver.Cache adapter"
+      missing_message: "cache adapter does not implement BeamWeaver.Cache"
     )
   end
 
@@ -268,8 +227,6 @@ defmodule BeamWeaver.Cache do
 
   defp split_value_ttl({value, ttl}) when is_integer(ttl) or is_nil(ttl), do: {value, ttl}
   defp split_value_ttl(value), do: {value, nil}
-
-  defp maybe_put_ttl(opts, nil), do: opts
 
   defp maybe_put_ttl(opts, ttl_seconds) when is_integer(ttl_seconds) and ttl_seconds > 0,
     do: Keyword.put(opts, :ttl, ttl_seconds * 1_000)

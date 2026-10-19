@@ -2,15 +2,15 @@ defmodule BeamWeaver.Compaction.Policy do
   @moduledoc """
   Validated limits and thresholds for application-owned compaction.
 
-  The default `:portable` mode uses the BeamWeaver semantic compactor. The
-  `:native` value is reserved for an application-selected provider contract;
-  the current engine rejects it with `:native_compaction_unsupported` rather
-  than guessing provider behavior.
+  The supported `:portable` mode uses the BeamWeaver semantic compactor.
+  Provider-native compaction uses its separate provider API contract.
 
   Timeout and retry fields are policy inputs for the owning application. The
   pure engine bounds its own summary/repair work but cannot enforce timeouts or
   retry a provider callback on the application's behalf.
   """
+
+  import BeamWeaver.MapShape, only: [put_present: 3]
 
   alias BeamWeaver.Compaction.Fields
   alias BeamWeaver.Core.Error
@@ -100,8 +100,8 @@ defmodule BeamWeaver.Compaction.Policy do
          {:ok, model} <- normalize_model(Map.get(attrs, :model)) do
       {:ok,
        attrs
-       |> maybe_put(:mode, mode)
-       |> maybe_put(:model, model)}
+       |> put_present(:mode, mode)
+       |> put_present(:model, model)}
     end
   end
 
@@ -111,15 +111,10 @@ defmodule BeamWeaver.Compaction.Policy do
   defp normalize_mode("native"), do: {:ok, :native}
   defp normalize_mode(_mode), do: {:error, Error.new(:invalid_compaction_policy, "invalid mode")}
 
-  defp normalize_model(nil), do: {:ok, nil}
-  defp normalize_model(:current_task_model), do: {:ok, :current_task_model}
   defp normalize_model("current_task_model"), do: {:ok, :current_task_model}
   defp normalize_model(model) when is_atom(model), do: {:ok, model}
   defp normalize_model(model) when is_binary(model) and byte_size(model) in 1..200, do: {:ok, model}
   defp normalize_model(_model), do: {:error, Error.new(:invalid_compaction_policy, "invalid model")}
-
-  defp maybe_put(attrs, _key, nil), do: attrs
-  defp maybe_put(attrs, key, value), do: Map.put(attrs, key, value)
 
   @doc "Validates ratios, ranges, modes, and positive work limits."
   @spec validate(t()) :: {:ok, t()} | {:error, Error.t()}

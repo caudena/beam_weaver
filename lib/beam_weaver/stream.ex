@@ -1,16 +1,51 @@
 defprotocol BeamWeaver.Stream.IntoEvent do
+  @moduledoc false
   @fallback_to_any true
   def into_event(value)
 end
 
 defprotocol BeamWeaver.Stream.Finalize do
+  @moduledoc """
+  Turns what a stream collected into its final value.
+
+  A list of message chunks, such as the `chunk` of each
+  `BeamWeaver.Stream.Events.MessageChunk`, becomes one finished message with
+  its text and tool calls. Other values come back unchanged. See
+  [Streaming](streaming.md).
+  """
+
   @fallback_to_any true
   def finalize(value)
 end
 
 defmodule BeamWeaver.Stream do
-  @moduledoc """
-  Typed stream event helpers.
+  @moduledoc ~S"""
+  Typed event envelopes for model, agent and graph execution.
+
+  A live stream is lazy: each enumeration starts work. The consuming process
+  owns the run; stopping consumption cancels it. Collect once if several
+  consumers need to inspect the same events.
+
+  ```elixir
+  defmodule MyApp.StreamedGreeting do
+    use BeamWeaver.Agent
+    model "openai:gpt-5.4-mini", stream: true, max_tokens: 128, timeout: 60_000
+  end
+
+  {:ok, stream} = MyApp.StreamedGreeting.stream_events(%{messages: ["Say hello briefly."]}, live: true)
+  events = Enum.to_list(stream)
+  false = Enum.any?(events, &match?(%{event: %BeamWeaver.Stream.Events.Error{}}, &1))
+  text = for %{event: %BeamWeaver.Stream.Events.Token{text: text}} <- events, into: "", do: text
+  true = byte_size(text) > 0
+  ```
+
+  Configure OpenAI as in [Installation](installation.md). `Done` ends a model
+  call, not necessarily an agent run. Tokens from a failed/retried attempt are
+  provisional. Handle interrupts and failures before declaring completion.
+
+  `event/2` constructs typed event data; `envelope/2` adds source identity.
+  `event_mode/1` classifies channels used by stream-mode filtering. See
+  [Streaming](streaming.md) for final messages, task ownership and nested runs.
   """
 
   alias BeamWeaver.Core.Error
@@ -110,23 +145,36 @@ defmodule BeamWeaver.Stream do
   def mode?(_modes, _mode), do: false
 
   @spec event_mode(term()) :: atom()
-  def event_mode(event), do: stream_mode(event)
+  def event_mode(event), do: event_spec(event).mode
 
   @spec format(Envelope.t(), MapSet.t(atom()) | [atom()] | atom()) :: term()
-  def format(%Envelope{} = envelope, modes) do
-    _modes = modes
+  def format(%Envelope{} = envelope, _modes) do
     emit(:event, %{count: 1}, telemetry_metadata(envelope))
     envelope
   end
 
   @spec emit(atom(), map(), map()) :: :ok
-  def emit(event, measurements, metadata) do
-    if Code.ensure_loaded?(:telemetry) do
-      :telemetry.execute([:beam_weaver, :stream, event], measurements, metadata)
-    end
+  def emit(event, measurements, metadata),
+    do: :telemetry.execute([:beam_weaver, :stream, event], measurements, metadata)
 
-    :ok
+  @doc false
+  def run_producer(producer) do
+    producer.()
+  rescue
+    exception ->
+      {:error, Error.new(:stream_error, Exception.message(exception), %{exception: inspect(exception.__struct__)})}
+  catch
+    kind, reason ->
+      {:error, Error.new(:stream_error, "stream producer exited", %{kind: kind, reason: inspect(reason)})}
   end
+
+  @doc false
+  def producer_result({:error, %Error{} = error}), do: {:error, error}
+
+  def producer_result({:error, reason}),
+    do: {:error, Error.new(:stream_error, "stream producer failed", %{reason: inspect(reason)})}
+
+  def producer_result(_result), do: :ok
 
   @doc """
   Builds a producer-backed stream that cancels the producer when the consumer halts.
@@ -148,22 +196,9 @@ defmodule BeamWeaver.Stream do
         task =
           start_live_resource_task(producer_supervisor, fn ->
             result =
-              try do
+              run_producer(fn ->
                 producer.(fn item -> send(parent, {:beam_weaver_stream_item, self(), item}) end)
-              rescue
-                exception ->
-                  {:error,
-                   Error.new(:stream_error, Exception.message(exception), %{
-                     exception: inspect(exception.__struct__)
-                   })}
-              catch
-                kind, reason ->
-                  {:error,
-                   Error.new(:stream_error, "stream producer exited", %{
-                     kind: kind,
-                     reason: inspect(reason)
-                   })}
-              end
+              end)
 
             send(
               parent,
@@ -231,18 +266,11 @@ defmodule BeamWeaver.Stream do
     end)
   end
 
-  defp normalize_live_resource_result(result) when result in [:ok, nil], do: :ok
-  defp normalize_live_resource_result({:ok, _value}), do: :ok
-  defp normalize_live_resource_result({:error, %Error{} = error}), do: {:error, error}
-
   defp normalize_live_resource_result({:error, %{__struct__: _module, type: type, message: message} = error})
        when is_atom(type) and is_binary(message),
        do: {:error, error}
 
-  defp normalize_live_resource_result({:error, reason}),
-    do: {:error, Error.new(:stream_error, "stream producer failed", %{reason: inspect(reason)})}
-
-  defp normalize_live_resource_result(_result), do: :ok
+  defp normalize_live_resource_result(result), do: producer_result(result)
 
   @doc """
   Multiplexes one or more live producers into a lazy stream of typed envelopes.
@@ -250,9 +278,6 @@ defmodule BeamWeaver.Stream do
   def mux(producers, opts \\ []) when is_list(producers) do
     BeamWeaver.Stream.Mux.stream(producers, opts)
   end
-
-  defp stream_mode(event), do: event |> event_spec() |> Map.fetch!(:mode)
-  defp event_name(event), do: event |> event_spec() |> Map.fetch!(:name)
 
   defp event_spec(%{__struct__: module}), do: Map.get(@event_specs, module, @custom_event_spec)
   defp event_spec(_event), do: @custom_event_spec
@@ -269,7 +294,7 @@ defmodule BeamWeaver.Stream do
       task_id: envelope.task_id,
       step: envelope.step,
       namespace: envelope.namespace,
-      event: event_name(envelope.event)
+      event: event_spec(envelope.event).name
     }
     |> MapShape.compact()
   end

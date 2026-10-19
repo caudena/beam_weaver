@@ -39,32 +39,43 @@ defmodule BeamWeaver.Checkpoint.ETSTest do
              first_config["configurable"]["checkpoint_id"]
   end
 
-  test "stores pending writes and supports thread copy/delete" do
+  test "a thread's tuples and history hold only its own checkpoints and pending writes" do
     saver = ETS.new()
 
-    {:ok, config} =
-      Checkpoint.put(
-        saver,
-        %{"configurable" => %{"thread_id" => "source"}},
-        %{"channel_values" => %{answer: 41}},
-        %{source: "loop"},
-        %{answer: 1}
-      )
+    for thread_id <- ["thread-a", "thread-b"] do
+      config = %{"configurable" => %{"thread_id" => thread_id}}
+      {:ok, first} = Checkpoint.put(saver, config, %{"channel_values" => %{}}, %{source: "input"}, %{})
+      assert :ok = Checkpoint.put_writes(saver, first, [{"__tasks__", "#{thread_id}-send"}], "task-1")
+      {:ok, second} = Checkpoint.put(saver, first, %{"channel_values" => %{}}, %{source: "loop"}, %{})
+      assert :ok = Checkpoint.put_writes(saver, second, [{"notes", "#{thread_id}-note"}], "task-2")
+    end
 
-    assert :ok = Checkpoint.put_writes(saver, config, [{"answer", 42}], "task-1", "node:answer")
+    config = %{"configurable" => %{"thread_id" => "thread-a"}}
 
-    assert %{
-             pending_writes: [{"task-1", "answer", 42}],
-             pending_write_paths: [{"task-1", "answer", "node:answer"}]
-           } =
+    assert %{checkpoint: checkpoint, pending_writes: [{"task-2", "notes", "thread-a-note"}]} =
              Checkpoint.get_tuple(saver, config)
 
-    assert :ok = Checkpoint.copy_thread(saver, "source", "target")
+    assert checkpoint["channel_values"]["__tasks__"] == ["thread-a-send"]
 
-    assert %{checkpoint: %{"channel_values" => %{answer: 41}}} =
-             Checkpoint.get_tuple(saver, %{"configurable" => %{"thread_id" => "target"}})
+    assert [latest, first] = Checkpoint.list(saver, config)
+    assert latest.pending_writes == [{"task-2", "notes", "thread-a-note"}]
+    assert latest.checkpoint["channel_values"]["__tasks__"] == ["thread-a-send"]
+    assert first.pending_writes == [{"task-1", "__tasks__", "thread-a-send"}]
+  end
 
-    assert :ok = Checkpoint.delete_thread(saver, "source")
-    assert Checkpoint.get_tuple(saver, %{"configurable" => %{"thread_id" => "source"}}) == nil
+  test "delta channel history ends at a parent it already read" do
+    saver = ETS.new()
+    config = %{"configurable" => %{"thread_id" => "looped"}}
+    {:ok, first} = Checkpoint.put(saver, config, %{"channel_deltas" => %{"items" => ["a"]}}, %{}, %{})
+    {:ok, second} = Checkpoint.put(saver, first, %{"channel_deltas" => %{"items" => ["b"]}}, %{}, %{})
+
+    # A checkpoint saved again under its child, as earlier versions saved it,
+    # makes the two each other's parent.
+    key = {"looped", "", first["configurable"]["checkpoint_id"]}
+    [{^key, record}] = :ets.lookup(saver.checkpoints, key)
+    :ets.insert(saver.checkpoints, {key, %{record | parent_config: second}})
+
+    assert %{"items" => %{writes: writes}} = Checkpoint.get_delta_channel_history(saver, second, ["items"])
+    assert Enum.map(writes, & &1.value) == ["a", "b"]
   end
 end

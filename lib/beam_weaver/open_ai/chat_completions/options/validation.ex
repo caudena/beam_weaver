@@ -1,17 +1,23 @@
 defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Validation do
   @moduledoc false
 
+  alias BeamWeaver.Provider.Options
   alias BeamWeaver.Models.ParamPolicy
-  alias BeamWeaver.OpenAI.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.OpenAI.ModelPolicy
 
   def validate(model, opts) do
+    model_name = Keyword.get(opts, :model, Map.get(model, :model))
+    effort = Keyword.get(opts, :reasoning_effort, Map.get(model, :reasoning_effort))
+
     params =
       model
       |> Map.from_struct()
       |> Map.take([
         :audio,
+        :extra_body,
         :frequency_penalty,
+        :guidelines,
         :function_call,
         :functions,
         :logit_bias,
@@ -21,7 +27,6 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Validation do
         :metadata,
         :modalities,
         :moderation,
-        :model_kwargs,
         :parallel_tool_calls,
         :presence_penalty,
         :prompt_cache_key,
@@ -29,7 +34,6 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Validation do
         :prompt_cache_retention,
         :reasoning_effort,
         :safety_identifier,
-        :search_parameters,
         :seed,
         :service_tier,
         :store,
@@ -41,25 +45,18 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Validation do
       ])
       |> Map.merge(Map.new(opts))
 
-    with :ok <- validate_function_tools(model, opts),
-         :ok <-
-           ParamPolicy.validate(
-             Map.get(model, :profile),
-             params,
-             Keyword.get(opts, :param_policy, Map.get(model, :param_policy)),
-             api: :chat_completions,
-             metadata: Keyword.get(opts, :metadata, %{})
-           ),
-         :ok <- validate_gpt6_reasoning_effort(model, opts),
-         :ok <- validate_gpt6_sampling(model, opts) do
-      :ok
+    sampling = Enum.reject([:temperature, :top_p, :top_logprobs, :logprobs], &is_nil(Options.option(model, opts, &1)))
+
+    with :ok <- validate_function_tools(model, opts, model_name, effort),
+         policy = Options.option(model, opts, :param_policy),
+         :ok <- ParamPolicy.validate(Map.get(model, :profile), params, policy, api: :chat_completions),
+         :ok <- ModelPolicy.validate_gpt6_effort(model_name, effort, effort),
+         :ok <- ModelPolicy.validate_reasoning_effort(Map.get(model, :profile), effort) do
+      ModelPolicy.validate_gpt6_sampling(model_name, effort, sampling)
     end
   end
 
-  defp validate_function_tools(model, opts) do
-    model_name = Keyword.get(opts, :model, Map.get(model, :model))
-    reasoning_effort = Keyword.get(opts, :reasoning_effort, Map.get(model, :reasoning_effort))
-
+  defp validate_function_tools(model, opts, model_name, reasoning_effort) do
     cond do
       ModelPolicy.responses_tools_only?(model_name) and function_tools?(model, opts) ->
         {:error,
@@ -89,71 +86,12 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Validation do
     end
   end
 
-  defp validate_gpt6_reasoning_effort(model, opts) do
-    model_name = Keyword.get(opts, :model, Map.get(model, :model))
-    reasoning_effort = Keyword.get(opts, :reasoning_effort, Map.get(model, :reasoning_effort))
-
-    if ModelPolicy.reasoning_effort_supported?(model_name, reasoning_effort) do
-      :ok
-    else
-      {:error,
-       Error.new(
-         :invalid_model_option,
-         "GPT-6 reasoning effort is not supported by this model",
-         %{
-           model: model_name,
-           reasoning_effort: reasoning_effort,
-           supported:
-             if(ModelPolicy.responses_tools_only?(model_name),
-               do: [:low, :medium, :high, :xhigh, :max],
-               else: [:none, :low, :medium, :high, :xhigh, :max]
-             )
-         }
-       )}
-    end
-  end
-
-  defp validate_gpt6_sampling(model, opts) do
-    model_name = Keyword.get(opts, :model, Map.get(model, :model))
-    effort = Keyword.get(opts, :reasoning_effort, Map.get(model, :reasoning_effort))
-
-    unsupported =
-      if ModelPolicy.gpt6_sol_or_luna?(model_name) and not ModelPolicy.none_reasoning?(effort) do
-        Enum.filter([:temperature, :top_p, :top_logprobs, :logprobs], fn param ->
-          not is_nil(Keyword.get(opts, param, Map.get(model, param)))
-        end)
-      else
-        []
-      end
-
-    case unsupported do
-      [] ->
-        :ok
-
-      params ->
-        {:error,
-         Error.new(:invalid_model_option, "GPT-6 sampling controls require reasoning effort none", %{
-           model: model_name,
-           params: params,
-           expected_reasoning_effort: :none
-         })}
-    end
-  end
-
   defp function_tools?(model, opts) do
-    model_kwargs = Keyword.get(opts, :model_kwargs, Map.get(model, :model_kwargs, %{})) || %{}
+    extra_body = Options.extra_body(model, opts)
 
-    non_empty_list?(Keyword.get(opts, :tools) || map_option(model_kwargs, :tools)) or
-      non_empty_list?(
-        Keyword.get(opts, :functions, Map.get(model, :functions)) ||
-          map_option(model_kwargs, :functions)
-      )
+    non_empty_list?(Keyword.get(opts, :tools) || extra_body["tools"]) or
+      non_empty_list?(Keyword.get(opts, :functions, Map.get(model, :functions)) || extra_body["functions"])
   end
-
-  defp map_option(map, key) when is_map(map),
-    do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
-
-  defp map_option(_map, _key), do: nil
 
   defp non_empty_list?([_first | _rest]), do: true
   defp non_empty_list?(_value), do: false

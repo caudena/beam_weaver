@@ -3,6 +3,8 @@ defmodule BeamWeaver.Memory.ETSTest do
 
   alias BeamWeaver.Memory
   alias BeamWeaver.Memory.ETS
+  alias BeamWeaver.Memory.GetOp
+  alias BeamWeaver.Memory.Item
   alias BeamWeaver.Memory.ListNamespacesOp
   alias BeamWeaver.Memory.MatchCondition
 
@@ -33,6 +35,18 @@ defmodule BeamWeaver.Memory.ETSTest do
     assert Memory.get(store, [:users, "u1"], :preference) == :error
   end
 
+  test "get_many returns a stored {:error, _} value instead of reporting a failed read" do
+    store = ETS.new()
+    assert {:ok, _item} = Memory.put(store, ["kv"], "odd", {:error, :stored})
+    assert [{:error, :stored}, nil] = Memory.get_many(store, ["kv"], ["odd", "missing"])
+  end
+
+  test "a filter on a field of a stored struct with no JSON form matches nothing" do
+    store = ETS.new()
+    assert {:ok, _item} = Memory.put(store, ["links"], "home", %{"a" => URI.parse("http://x")})
+    assert [] = Memory.search(store, ["links"], filter: %{"a.host" => "x"})
+  end
+
   test "list_namespaces batch op ignores unknown match-condition types instead of crashing" do
     store = ETS.new()
 
@@ -47,5 +61,69 @@ defmodule BeamWeaver.Memory.ETSTest do
     }
 
     assert [[["users", "u1"], ["users", "u2"]]] = Memory.batch(store, [op])
+  end
+
+  test "a read that refreshes a record never reverts a put that runs at the same time" do
+    store = ETS.new(default_ttl: 60, refresh_ttl: true)
+    assert {:ok, _item} = Memory.put(store, ["notes"], "k", %{"v" => 0})
+
+    readers = for _reader <- 1..4, do: Task.async(fn -> read_until_stopped(store) end)
+
+    reverted =
+      Enum.count(1..5_000, fn version ->
+        {:ok, _item} = Memory.put(store, ["notes"], "k", %{"v" => version})
+        [%{value: %{"v" => stored}}] = Memory.batch(store, [%GetOp{namespace: ["notes"], key: "k", refresh_ttl: false}])
+        stored != version
+      end)
+
+    Enum.each(readers, &send(&1.pid, :stop))
+    Enum.each(readers, &Task.await/1)
+
+    assert reverted == 0
+    assert {:ok, %{value: %{"v" => 5_000}}} = Memory.get(store, ["notes"], "k")
+  end
+
+  test "reading an expired record never deletes a value put at the same time" do
+    store = ETS.new()
+    expired = %Item{namespace: ["notes"], key: "k", value: %{"v" => 0}, expires_at: DateTime.from_unix!(0)}
+
+    readers = for _reader <- 1..4, do: Task.async(fn -> get_until_stopped(store) end)
+
+    lost =
+      Enum.count(1..5_000, fn version ->
+        :ets.insert(store.items, {{["notes"], "k"}, expired})
+        {:ok, _item} = Memory.put(store, ["notes"], "k", %{"v" => version})
+        not match?({:ok, %{value: %{"v" => ^version}}}, Memory.get(store, ["notes"], "k"))
+      end)
+
+    Enum.each(readers, &send(&1.pid, :stop))
+    Enum.each(readers, &Task.await/1)
+
+    assert lost == 0
+  end
+
+  test "refresh_ttl: nil is the default, false, and other values raise" do
+    assert %ETS{refresh_ttl: false} = ETS.new(refresh_ttl: nil)
+    assert_raise ArgumentError, ~r/:refresh_ttl/, fn -> ETS.new(refresh_ttl: "yes") end
+  end
+
+  defp get_until_stopped(store) do
+    receive do
+      :stop -> :ok
+    after
+      0 ->
+        Memory.get(store, ["notes"], "k")
+        get_until_stopped(store)
+    end
+  end
+
+  defp read_until_stopped(store) do
+    receive do
+      :stop -> :ok
+    after
+      0 ->
+        {:ok, _item} = Memory.get(store, ["notes"], "k")
+        read_until_stopped(store)
+    end
   end
 end

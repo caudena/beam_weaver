@@ -4,7 +4,7 @@ defmodule BeamWeaver.OpenAI.Messages do
   """
 
   alias BeamWeaver.Core.Message
-  alias BeamWeaver.OpenAI.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.OpenAI.Messages.Request
   alias BeamWeaver.OpenAI.Messages.Response
 

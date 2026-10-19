@@ -1,6 +1,17 @@
 defmodule BeamWeaver.Agent.StructuredOutput do
-  @moduledoc """
-  Structured response strategies for agent model calls.
+  @moduledoc ~S"""
+  Construct and resolve final-answer strategies for agents.
+
+  `auto/2` prefers a compatible native provider response and otherwise uses a
+  schema tool. `provider/2` expresses a native preference, with compatibility
+  fallback during strategy selection. `tool/2` requests the answer as tool
+  arguments and can feed validation failures back to the model.
+
+  Schemas can be BeamWeaver schema modules or supported JSON Schema forms.
+  Normalized answers use string keys. Local validation checks required top-level
+  keys and basic types, not every nested constraint or business rule.
+  Use the [Schema DSL guide](structured_output.md) for executable real-provider
+  examples, option precedence and retry behavior.
   """
 
   alias BeamWeaver.Agent.StructuredOutput.AutoStrategy
@@ -15,28 +26,54 @@ defmodule BeamWeaver.Agent.StructuredOutput do
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
 
-  @auto_opts [:name, :description, :strict, :tool_message_content, :handle_errors]
+  @auto_opts [:name, :description, :strict, :tool_message_content, :handle_errors, :max_retries]
 
+  @doc """
+  Builds an automatic strategy; compatibility selection occurs against the actual model and tools.
+  """
   @spec auto(term(), keyword()) :: AutoStrategy.t()
   def auto(schema, opts \\ []),
     do: %AutoStrategy{schema: schema, opts: opts |> List.wrap() |> Keyword.take(@auto_opts)}
 
+  @doc """
+  The tool strategy: the model answers by calling a tool named after the
+  schema.
+
+  Options: `:tool_message_content`, the text of the tool message that records
+  the answer; `:handle_errors` (default `true`), which sends an answer that
+  fails the schema back to the model as an error tool message, or `false` to
+  return the error; and `:max_retries` (default 2), how many times the model
+  may answer again before the error is returned.
+  """
   @spec tool(term(), keyword()) :: ToolStrategy.t()
   def tool(schema, opts \\ []) do
+    max_retries = Keyword.get(opts, :max_retries, 2)
+
+    unless is_integer(max_retries) and max_retries >= 0 do
+      raise ArgumentError, "max_retries must be a non-negative integer, got: #{inspect(max_retries)}"
+    end
+
     %ToolStrategy{
       schema: schema,
       tool_message_content: Keyword.get(opts, :tool_message_content),
       handle_errors: Keyword.get(opts, :handle_errors, true),
+      max_retries: max_retries,
       schema_specs: Schema.schema_specs(schema)
     }
   end
 
+  @doc """
+  Builds a provider-native preference with optional name, description and strict settings.
+  """
   @spec provider(term(), keyword()) :: ProviderStrategy.t()
   def provider(schema, opts \\ []) do
     spec = Schema.schema_spec(schema, Keyword.take(opts, [:name, :description, :strict]))
     %ProviderStrategy{schema: schema, schema_spec: spec, strict: Keyword.get(opts, :strict)}
   end
 
+  @doc """
+  Normalizes a schema or strategy; nil disables structured output.
+  """
   @spec normalize(term()) :: nil | AutoStrategy.t() | ToolStrategy.t() | ProviderStrategy.t()
   def normalize(nil), do: nil
   def normalize(%AutoStrategy{} = strategy), do: strategy
@@ -47,6 +84,9 @@ defmodule BeamWeaver.Agent.StructuredOutput do
   def normalize(%ProviderStrategy{} = strategy), do: strategy
   def normalize(schema), do: auto(schema)
 
+  @doc """
+  Selects the effective strategy for the model profile and whether ordinary tools are present.
+  """
   @spec effective_strategy(term(), term(), [term()]) :: term()
   def effective_strategy(response_format, model, tools) do
     response_format
@@ -54,10 +94,16 @@ defmodule BeamWeaver.Agent.StructuredOutput do
     |> elem(0)
   end
 
-  @spec effective_strategy_info(term(), term(), [term()]) :: {term(), Policy.t()}
+  @doc """
+  Returns the selected strategy together with its compatibility-policy details.
+  """
+  @spec effective_strategy_info(term(), term(), [term()]) :: {term(), struct()}
   def effective_strategy_info(response_format, model, tools),
     do: Policy.choose(response_format, model, tools)
 
+  @doc """
+  Builds schema-answer tools for tool strategies; provider strategies add no such tools.
+  """
   @spec setup_tools(term()) :: [Tool.t()]
   def setup_tools(%AutoStrategy{schema: schema}), do: setup_tools(tool(schema))
 
@@ -90,10 +136,15 @@ defmodule BeamWeaver.Agent.StructuredOutput do
     ]
   end
 
-  @doc "Handles a model message according to a structured-output strategy."
-  @spec handle_model_output(Message.t(), term()) ::
+  @doc """
+  Handles a model message according to a structured-output strategy.
+
+  `history` is the conversation the model answered; the tool strategy counts
+  the answers that already failed in it against `max_retries`.
+  """
+  @spec handle_model_output(Message.t(), term(), [Message.t()]) ::
           {:ok, BeamWeaver.Agent.ModelResponse.t()} | {:error, Error.t()}
-  defdelegate handle_model_output(message, strategy), to: ResultHandler
+  defdelegate handle_model_output(message, strategy, history \\ []), to: ResultHandler
 
   @doc "Returns schema specs for a supported structured-output schema."
   @spec schema_specs(term()) :: [SchemaSpec.t()]

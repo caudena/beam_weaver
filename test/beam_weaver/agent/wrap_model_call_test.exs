@@ -1,17 +1,20 @@
 defmodule BeamWeaver.Agent.WrapModelCallTest do
   use ExUnit.Case, async: true
 
-  # Upstream behavioral evidence:
-
   alias BeamWeaver.Agent
   alias BeamWeaver.Agent.ExtendedModelResponse
   alias BeamWeaver.Agent.ModelRequest
   alias BeamWeaver.Agent.ModelResponse
+  alias BeamWeaver.Agent.ProviderProfile
   alias BeamWeaver.Core.ChatModel
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
+  alias BeamWeaver.Core.Tool
   alias BeamWeaver.Graph.Command
   alias BeamWeaver.Graph.Overwrite
+  alias BeamWeaver.Models
+  alias BeamWeaver.Stream.Envelope
+  alias BeamWeaver.Stream.Events
 
   defmodule RecordingModel do
     @behaviour ChatModel
@@ -72,11 +75,11 @@ defmodule BeamWeaver.Agent.WrapModelCallTest do
   end
 
   defmodule LoggingMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :logging
 
-    def wrap_model_call(request, handler) do
+    def wrap_model_call(_middleware, request, handler) do
       send(request.runtime.context.parent, :outer_before)
       response = handler.(request)
       send(request.runtime.context.parent, :outer_after)
@@ -85,11 +88,11 @@ defmodule BeamWeaver.Agent.WrapModelCallTest do
   end
 
   defmodule InnerLoggingMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :inner_logging
 
-    def wrap_model_call(request, handler) do
+    def wrap_model_call(_middleware, request, handler) do
       send(request.runtime.context.parent, :inner_before)
       response = handler.(request)
       send(request.runtime.context.parent, :inner_after)
@@ -98,11 +101,11 @@ defmodule BeamWeaver.Agent.WrapModelCallTest do
   end
 
   defmodule UppercaseMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :uppercase
 
-    def wrap_model_call(request, handler) do
+    def wrap_model_call(_middleware, request, handler) do
       with {:ok, %ModelResponse{messages: [%Message{} = message]}} <- handler.(request) do
         Message.assistant(String.upcase(message.content))
       end
@@ -110,23 +113,35 @@ defmodule BeamWeaver.Agent.WrapModelCallTest do
   end
 
   defmodule SystemPromptMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :system_prompt
 
-    def wrap_model_call(request, handler) do
+    def wrap_model_call(_middleware, request, handler) do
       request
       |> ModelRequest.override(system_message: Message.system("native system prompt"))
       |> handler.()
     end
   end
 
+  defmodule ModelOverrideMiddleware do
+    use BeamWeaver.Agent.Middleware
+
+    def name(_middleware), do: :model_override
+
+    def wrap_model_call(_middleware, request, handler) do
+      request
+      |> ModelRequest.override(model: request.runtime.context.model)
+      |> handler.()
+    end
+  end
+
   defmodule RecoverNetworkMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :recover_network
 
-    def wrap_model_call(request, handler) do
+    def wrap_model_call(_middleware, request, handler) do
       case handler.(request) do
         {:error, %Error{type: :network_error}} ->
           Message.assistant("Network issue, try again later")
@@ -138,11 +153,11 @@ defmodule BeamWeaver.Agent.WrapModelCallTest do
   end
 
   defmodule InnerCommandMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :inner_command
 
-    def wrap_model_call(request, handler) do
+    def wrap_model_call(_middleware, request, handler) do
       with {:ok, %ModelResponse{} = response} <- handler.(request) do
         [message | _] = response.messages
 
@@ -160,11 +175,11 @@ defmodule BeamWeaver.Agent.WrapModelCallTest do
   end
 
   defmodule OuterCommandMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :outer_command
 
-    def wrap_model_call(request, handler) do
+    def wrap_model_call(_middleware, request, handler) do
       with {:ok, %ModelResponse{} = response} <- handler.(request) do
         %ExtendedModelResponse{
           model_response: response,
@@ -180,22 +195,22 @@ defmodule BeamWeaver.Agent.WrapModelCallTest do
   end
 
   defmodule RetryOuterMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :retry_outer
 
-    def wrap_model_call(request, handler) do
+    def wrap_model_call(_middleware, request, handler) do
       _discarded = handler.(request)
       handler.(request)
     end
   end
 
   defmodule StructuredConflictMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :structured_conflict
 
-    def wrap_model_call(request, handler) do
+    def wrap_model_call(_middleware, request, handler) do
       with {:ok, %ModelResponse{} = response} <- handler.(request) do
         %ExtendedModelResponse{
           model_response: %{response | structured_response: %{from: "model"}},
@@ -206,11 +221,11 @@ defmodule BeamWeaver.Agent.WrapModelCallTest do
   end
 
   defmodule MessageOverwriteMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :message_overwrite
 
-    def wrap_model_call(request, handler) do
+    def wrap_model_call(_middleware, request, handler) do
       with {:ok, %ModelResponse{} = response} <- handler.(request) do
         %ExtendedModelResponse{
           model_response: response,
@@ -224,11 +239,64 @@ defmodule BeamWeaver.Agent.WrapModelCallTest do
     end
   end
 
+  defmodule OrderStatus do
+    use BeamWeaver.Tool
+
+    name "order_status"
+    description "Read an order's status."
+
+    schema do
+      field :order_id, :string
+    end
+
+    @impl true
+    def invoke(_tool, _args, _opts), do: {:ok, "Shipped."}
+  end
+
+  defmodule RefundOrder do
+    use BeamWeaver.Tool
+
+    name "refund_order"
+    description "Refund an order."
+
+    schema do
+      field :order_id, :string
+    end
+
+    @impl true
+    def invoke(_tool, _args, _opts), do: {:ok, "Refunded."}
+  end
+
+  defmodule HideRefundsMiddleware do
+    use BeamWeaver.Agent.Middleware
+
+    def name(_middleware), do: :hide_refunds
+
+    # Hides refund_order the way the context says: through override/2, or by
+    # assigning the request's tools.
+    def wrap_model_call(_middleware, request, handler) do
+      tools = Enum.reject(request.tools, &(Tool.name(&1) == "refund_order"))
+
+      case request.runtime.context.hide_with do
+        :override -> request |> ModelRequest.override(tools: tools) |> handler.()
+        :assignment -> handler.(%{request | tools: tools})
+      end
+    end
+  end
+
   defmodule OrderAgent do
     use BeamWeaver.Agent
 
     model(%RecordingModel{parent: :context, reply: "ok"})
     middleware([LoggingMiddleware, InnerLoggingMiddleware])
+  end
+
+  defmodule HideRefundsAgent do
+    use BeamWeaver.Agent
+
+    model(%RecordingModel{parent: :context, reply: "ok"})
+    tools([OrderStatus, RefundOrder])
+    middleware([HideRefundsMiddleware])
   end
 
   defmodule RewriteAgent do
@@ -243,6 +311,13 @@ defmodule BeamWeaver.Agent.WrapModelCallTest do
 
     model(%RecordingModel{parent: :context, reply: "ok"})
     middleware([SystemPromptMiddleware])
+  end
+
+  defmodule ModelOverrideAgent do
+    use BeamWeaver.Agent
+
+    model(%RecordingModel{reply: "from the agent's model"})
+    middleware([ModelOverrideMiddleware])
   end
 
   defmodule ErrorRecoveryAgent do
@@ -334,6 +409,58 @@ defmodule BeamWeaver.Agent.WrapModelCallTest do
     assert_receive {:model_call, [%Message{role: :system, content: "native system prompt"} | _], _opts}
   end
 
+  test "a wrapper changes the tools the model sees with ModelRequest.override/2, not by assigning them" do
+    for {hide_with, offered} <- [override: ["order_status"], assignment: ["order_status", "refund_order"]] do
+      assert {:ok, _state} =
+               Agent.invoke(HideRefundsAgent, %{messages: [Message.user("hi")]},
+                 context: %{parent: self(), hide_with: hide_with}
+               )
+
+      assert_receive {:model_call, _messages, opts}
+      assert Enum.map(opts[:tools], &Tool.name/1) == offered
+    end
+  end
+
+  test "a model string that middleware puts on the request is created for the call" do
+    model = scripted_fake_model("from the override")
+
+    assert {:ok, %{messages: [_user, %Message{content: "from the override"}]}} =
+             Agent.invoke(ModelOverrideAgent, %{messages: [Message.user("hi")]}, context: %{model: model})
+  end
+
+  test "a streamed call goes to the model string that middleware puts on the request" do
+    model = scripted_fake_model("streamed from the override")
+
+    assert {:ok, events} =
+             ModelOverrideAgent.stream_events(%{messages: [Message.user("hi")]},
+               context: %{model: model},
+               model_opts: [stream: true]
+             )
+
+    events = Enum.to_list(events)
+    tokens = for %Envelope{event: %Events.Token{text: text}} <- events, do: text
+
+    assert Enum.join(tokens) == "streamed from the override"
+    refute Enum.any?(events, &match?(%Envelope{event: %Events.Error{}}, &1))
+  end
+
+  test "an invalid model that middleware puts on the request fails with :invalid_agent_model" do
+    for model <- [fn -> :model end, %{api_key: "sk-secret"}] do
+      assert {:error, %Error{type: :invalid_agent_model} = error} =
+               Agent.invoke(ModelOverrideAgent, %{messages: [Message.user("hi")]}, context: %{model: model})
+
+      assert %{model_request: %{messages: [%{role: :user, content: "hi"}]}} = error.details
+      refute inspect(error) =~ "sk-secret"
+    end
+  end
+
+  test "a model string from middleware that can't be resolved returns its error with the request" do
+    assert {:error, %Error{type: :unsupported_provider} = error} =
+             Agent.invoke(ModelOverrideAgent, %{messages: [Message.user("hi")]}, context: %{model: "nope:model"})
+
+    assert error.details.model_request.model == "nope:model"
+  end
+
   test "extended responses propagate inner and outer graph updates through composition" do
     assert {:ok, state} = Agent.invoke(CommandAgent, %{messages: [Message.user("hi")]})
 
@@ -371,5 +498,16 @@ defmodule BeamWeaver.Agent.WrapModelCallTest do
              {:user, "Compacted input"},
              {:assistant, "model"}
            ]
+  end
+
+  # A "fake:..." model string of its own, whose provider profile scripts the
+  # reply, so the reply shows which model answered. It takes the model profile
+  # of "fake:chat", which streams.
+  defp scripted_fake_model(reply) do
+    model = "fake:override-#{System.unique_integer([:positive])}"
+    %{profile: profile} = Models.init_chat_model!("fake:chat")
+    init_kwargs = [responses: [reply], profile: profile]
+    :ok = ProviderProfile.register_provider_profile(model, ProviderProfile.new(init_kwargs: init_kwargs))
+    model
   end
 end

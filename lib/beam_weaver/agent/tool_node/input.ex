@@ -1,0 +1,171 @@
+defmodule BeamWeaver.Agent.ToolNode.Input do
+  @moduledoc false
+
+  alias BeamWeaver.Core.Error
+  alias BeamWeaver.Core.Message
+  alias BeamWeaver.Core.ToolRuntime
+
+  @spec condition(term(), atom() | String.t()) :: :tools | :end
+  def condition(input, messages_key) when is_map(input) do
+    case fetch_messages(input, messages_key) do
+      {:ok, _key, messages} -> condition(messages, messages_key)
+      :error -> :end
+    end
+  end
+
+  def condition(messages, _messages_key) when is_list(messages) do
+    case extract(messages, :messages) do
+      {:ok, [], _shape} -> :end
+      {:ok, _tool_calls, _shape} -> :tools
+      _error -> :end
+    end
+  end
+
+  def condition(_input, _messages_key), do: :end
+
+  @spec extract(term(), atom() | String.t()) ::
+          {:ok, [map()], :list | {:state, atom() | String.t()}} | {:error, Error.t()}
+  def extract(input, messages_key) do
+    cond do
+      sent_call?(input) ->
+        {:ok, [get_value(input, :tool_call)], {:state, messages_key}}
+
+      match?([%Message{} | _rest], input) ->
+        extract_from_messages(input, :list)
+
+      raw_tool_call_list?(input) ->
+        {:ok, input, :list}
+
+      true ->
+        case is_map(input) and fetch_messages(input, messages_key) do
+          {:ok, key, messages} when is_list(messages) -> extract_from_messages(messages, {:state, key})
+          _other -> {:error, Error.new(:invalid_tool_node_input, "tool node expected messages or tool calls")}
+        end
+    end
+  end
+
+  @spec request_state(term(), term()) :: term()
+  def request_state(input, runtime) do
+    cond do
+      sent_call?(input) ->
+        get_value(input, :state) || ToolRuntime.runtime_value(runtime, :previous_state)
+
+      raw_tool_call_list?(input) and ToolRuntime.runtime_value(runtime, :previous_state) != nil ->
+        ToolRuntime.runtime_value(runtime, :previous_state)
+
+      true ->
+        input
+    end
+  end
+
+  @spec normalize_call(map()) :: %{
+          id: term(),
+          name: term(),
+          args: map(),
+          call_id: term(),
+          provider_id: term(),
+          index: term()
+        }
+  def normalize_call(call) do
+    %{
+      id: tool_call_id(call),
+      name: tool_call_name(call),
+      args: tool_call_args(call),
+      call_id: get_value(call, :call_id),
+      provider_id: get_value(call, :provider_id),
+      index: get_value(call, :index)
+    }
+  end
+
+  defp fetch_messages(input, key) when is_map(input) do
+    cond do
+      Map.has_key?(input, key) ->
+        {:ok, key, Map.fetch!(input, key)}
+
+      Map.has_key?(input, to_string(key)) ->
+        {:ok, to_string(key), Map.fetch!(input, to_string(key))}
+
+      true ->
+        :error
+    end
+  end
+
+  # The calls of the latest assistant message that no tool message after it
+  # answers.
+  defp extract_from_messages(messages, shape) do
+    {following, earlier} = messages |> Enum.reverse() |> Enum.split_while(&(not match?(%Message{role: :assistant}, &1)))
+
+    case earlier do
+      [%Message{tool_calls: tool_calls} | _rest] when is_list(tool_calls) ->
+        answered = for %Message{role: :tool, tool_call_id: id} <- following, into: MapSet.new(), do: id
+        {:ok, Enum.reject(tool_calls, &MapSet.member?(answered, tool_call_id(&1))), shape}
+
+      _other ->
+        {:ok, [], shape}
+    end
+  end
+
+  defp tool_call?(call) do
+    is_map(call) and not is_nil(tool_call_name(call))
+  end
+
+  defp raw_tool_call_list?(input) when is_list(input), do: Enum.all?(input, &tool_call?/1)
+  defp raw_tool_call_list?(_input), do: false
+
+  # One tool call sent to the tools node as a task of its own, with the state
+  # it runs in, or without it to run in the step's state.
+  @doc false
+  def sent_call?(input) when is_map(input) do
+    type = get_value(input, :__type)
+    tool_call = get_value(input, :tool_call)
+    state = get_value(input, :state)
+
+    type in [:tool_call_with_context, "tool_call_with_context"] and tool_call?(tool_call) and
+      (is_nil(state) or is_map(state))
+  end
+
+  def sent_call?(_input), do: false
+
+  @doc false
+  def tool_call_id(call) do
+    get_value(call, :call_id) || get_value(call, :tool_call_id) || get_value(call, :id)
+  end
+
+  @doc false
+  def tool_call_name(call) do
+    get_value(call, :name) ||
+      nested_value(call, :function, :name) ||
+      nested_value(call, "function", "name")
+  end
+
+  @doc false
+  def tool_call_args(call) do
+    args =
+      get_value(call, :args) ||
+        get_value(call, :arguments) ||
+        nested_value(call, :function, :arguments) ||
+        nested_value(call, "function", "arguments") ||
+        %{}
+
+    decode_args(args)
+  end
+
+  defp get_value(map, key), do: Map.get(map, key) || Map.get(map, to_string(key))
+
+  defp nested_value(map, outer, inner) do
+    case Map.get(map, outer) do
+      nested when is_map(nested) -> Map.get(nested, inner) || Map.get(nested, to_string(inner))
+      _other -> nil
+    end
+  end
+
+  defp decode_args(args) when is_binary(args) do
+    case BeamWeaver.JSON.decode(args) do
+      {:ok, decoded} when is_map(decoded) -> decoded
+      _other -> %{"input" => args}
+    end
+  end
+
+  defp decode_args(args) when is_map(args), do: args
+  defp decode_args(_args), do: %{}
+end

@@ -5,20 +5,10 @@ defmodule BeamWeaver.Provider.Options do
   def put_optional(map, key, value), do: BeamWeaver.MapShape.put_optional(map, key, value)
 
   @doc false
-  def put_explicit_optional(map, key, opts, opt_key) when is_list(opts) do
-    if Keyword.has_key?(opts, opt_key) do
-      Map.put(map, key, Keyword.get(opts, opt_key))
-    else
-      map
-    end
-  end
-
-  @doc false
   def option(model, opts, key), do: Keyword.get(opts, key, Map.get(model, key))
 
   @doc false
-  def default_transport(nil), do: BeamWeaver.Transport.ReqFinch
-  def default_transport(transport), do: transport
+  defdelegate default_transport(transport), to: BeamWeaver.Transport, as: :default
 
   @doc false
   def merge_optional_map(map, nil), do: map
@@ -29,6 +19,18 @@ defmodule BeamWeaver.Provider.Options do
   @doc false
   def empty_to_nil(map) when is_map(map) and map_size(map) == 0, do: nil
   def empty_to_nil(map), do: map
+
+  # The raw request-body fields for one call: the model's `extra_body` with the
+  # call's `:extra_body` option merged over it, key by key. Builders merge the
+  # result into the request body last (see `merge_extra_body/3`).
+  @doc false
+  def extra_body(model, opts) do
+    model
+    |> Map.get(:extra_body)
+    |> Kernel.||(%{})
+    |> stringify_keys()
+    |> Map.merge(stringify_keys(Keyword.get(opts, :extra_body) || %{}))
+  end
 
   @doc false
   def merge_extra_body(body, nil), do: body
@@ -59,11 +61,9 @@ defmodule BeamWeaver.Provider.Options do
   end
 
   @doc false
-  def stringify_value(value), do: BeamWeaver.MapShape.normalize_value(value)
-
-  @doc false
   def normalize_option_map(nil), do: nil
   def normalize_option_map(value) when is_map(value), do: stringify_keys(value)
+  def normalize_option_map(value), do: value
 
   @doc false
   def normalize_option_list(nil), do: nil
@@ -71,4 +71,10 @@ defmodule BeamWeaver.Provider.Options do
 
   @doc false
   def normalize_value(value), do: BeamWeaver.MapShape.normalize_value(value)
+
+  # Whether a string is longer than `max` characters as provider APIs count
+  # them (a JSON Schema `maxLength`): in code points, not bytes or graphemes.
+  @doc false
+  def longer_than?(string, max) when is_binary(string) and is_integer(max),
+    do: byte_size(string) > max and length(String.codepoints(string)) > max
 end

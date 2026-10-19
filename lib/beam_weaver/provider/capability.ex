@@ -1,11 +1,5 @@
 defmodule BeamWeaver.Provider.Capability do
-  @moduledoc """
-  Provider and model capability helpers.
-
-  Profiles remain the source of truth. This module gives the rest of
-  BeamWeaver a feature-oriented vocabulary and a fail-fast validator for
-  requested model behavior.
-  """
+  @moduledoc false
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Models.Profile
@@ -62,12 +56,7 @@ defmodule BeamWeaver.Provider.Capability do
     profile = model_profile(model)
     provider = profile_value(profile, :provider) || provider_value(model)
     model_id = profile_value(profile, :id) || model_id(model)
-    requested = requested_features(model, opts)
-
-    unsupported =
-      requested
-      |> Enum.reject(&supports?(profile, &1))
-      |> Enum.uniq()
+    unsupported = model |> requested_features(opts) |> Enum.reject(&supports?(profile, &1))
 
     with {:ok, policy} <- unsupported_policy(opts) do
       case {policy, unsupported} do
@@ -78,7 +67,7 @@ defmodule BeamWeaver.Provider.Capability do
           :ok
 
         {:warn, features} ->
-          emit_warning(provider, model_id, features, opts)
+          emit_warning(provider, model_id, features)
           :ok
 
         {_policy, [feature | _rest] = features} ->
@@ -94,20 +83,11 @@ defmodule BeamWeaver.Provider.Capability do
     end
   end
 
-  @doc """
-  Returns supported feature names for a profile.
-  """
-  @spec supported_features(Profile.t() | nil) :: [atom()]
-  def supported_features(%Profile{} = profile) do
-    @feature_fields
-    |> Enum.flat_map(fn {feature, field} ->
-      if Map.get(profile, field) == true, do: [feature], else: []
-    end)
-    |> Enum.uniq()
-    |> Enum.sort()
+  defp supported_features(%Profile{} = profile) do
+    Enum.sort(for {feature, field} <- @feature_fields, Map.get(profile, field) == true, do: feature)
   end
 
-  def supported_features(_profile), do: []
+  defp supported_features(_profile), do: []
 
   defp requested_features(model, opts) do
     params = model_params(model) |> Keyword.merge(opts)
@@ -179,16 +159,13 @@ defmodule BeamWeaver.Provider.Capability do
     end
   end
 
-  defp emit_warning(provider, model, features, opts) do
+  # The event names the features only: the call's options, such as its
+  # `metadata`, which can carry a user id, stay out of telemetry.
+  defp emit_warning(provider, model, features) do
     :telemetry.execute(
       [:beam_weaver, :provider, :unsupported_feature],
       %{count: length(features)},
-      %{
-        provider: provider,
-        model: model,
-        features: features,
-        metadata: Keyword.get(opts, :metadata, %{})
-      }
+      %{provider: provider, model: model, features: features}
     )
   end
 

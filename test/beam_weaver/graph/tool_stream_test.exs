@@ -1,6 +1,7 @@
 defmodule BeamWeaver.Graph.ToolStreamTest do
   use ExUnit.Case, async: true
 
+  alias BeamWeaver.Agent.ToolNode
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
@@ -8,7 +9,6 @@ defmodule BeamWeaver.Graph.ToolStreamTest do
   alias BeamWeaver.Graph
   alias BeamWeaver.Graph.Compiled
   alias BeamWeaver.Graph.Messages
-  alias BeamWeaver.Graph.Nodes.ToolNode
   alias BeamWeaver.Stream.Envelope
   alias BeamWeaver.Stream.Events
   alias BeamWeaver.Stream.Transformers
@@ -95,13 +95,7 @@ defmodule BeamWeaver.Graph.ToolStreamTest do
   end
 
   test "event stream exposes tool lifecycle events and graph updates" do
-    tool =
-      Tool.from_function!(
-        name: "echo",
-        description: "Echo",
-        input_schema: %{"required" => ["text"]},
-        handler: fn %{"text" => text}, _opts -> text end
-      )
+    tool = echo_tool()
 
     graph =
       graph_for_tools(
@@ -126,13 +120,7 @@ defmodule BeamWeaver.Graph.ToolStreamTest do
   end
 
   test "projection helpers can select graph values without tool lifecycle events" do
-    tool =
-      Tool.from_function!(
-        name: "echo",
-        description: "Echo",
-        input_schema: %{"required" => ["text"]},
-        handler: fn %{"text" => text}, _opts -> text end
-      )
+    tool = echo_tool()
 
     graph =
       graph_for_tools(
@@ -149,13 +137,7 @@ defmodule BeamWeaver.Graph.ToolStreamTest do
       |> Transformers.stream(:values)
       |> Enum.map(fn {_mode, event} -> event end)
 
-    refute Enum.any?(values, fn
-             %Envelope{event: %Events.ToolStart{}} -> true
-             %Envelope{event: %Events.ToolDelta{}} -> true
-             %Envelope{event: %Events.ToolFinish{}} -> true
-             %Envelope{event: %Events.ToolError{}} -> true
-             _other -> false
-           end)
+    assert tool_events(values) == []
 
     assert Enum.any?(values, &match?(%Envelope{event: %Events.GraphValue{}}, &1))
   end
@@ -221,7 +203,7 @@ defmodule BeamWeaver.Graph.ToolStreamTest do
              &match?(
                %Envelope{
                  event: %Events.ToolStart{tool_call_id: "tc1", tool_name: "echo"},
-                 node: nil,
+                 node: "tools",
                  namespace: []
                },
                &1
@@ -240,13 +222,7 @@ defmodule BeamWeaver.Graph.ToolStreamTest do
   end
 
   test "typed tool events from subgraphs include child namespace metadata" do
-    tool =
-      Tool.from_function!(
-        name: "echo",
-        description: "Echo",
-        input_schema: %{"required" => ["text"]},
-        handler: fn %{"text" => text}, _opts -> text end
-      )
+    tool = echo_tool()
 
     child =
       graph_for_tools(
@@ -286,6 +262,15 @@ defmodule BeamWeaver.Graph.ToolStreamTest do
                &1
              )
            )
+  end
+
+  defp echo_tool do
+    Tool.from_function!(
+      name: "echo",
+      description: "Echo",
+      input_schema: %{"required" => ["text"]},
+      handler: fn %{"text" => text}, _opts -> text end
+    )
   end
 
   defp graph_for_tools(tool_calls, tools) do

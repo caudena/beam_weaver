@@ -4,16 +4,9 @@ defmodule BeamWeaver.Policy do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.MapAccess
 
-  @type normalize_fun :: (atom(), term() -> term())
   @type validate_fun :: (struct() -> {:ok, struct()} | {:error, Error.t()})
 
-  @spec build(
-          module(),
-          keyword() | map() | struct(),
-          [atom()] | MapSet.t(atom()),
-          validate_fun(),
-          keyword()
-        ) ::
+  @spec build(module(), keyword() | map() | struct(), [atom()], validate_fun(), keyword()) ::
           {:ok, struct()} | {:error, Error.t()}
   def build(module, opts, fields, validate, build_opts \\ [])
 
@@ -45,73 +38,17 @@ defmodule BeamWeaver.Policy do
   def duration_to_ms(value), do: value
 
   defp normalize_keys(map, fields, opts) do
-    fields = fields_list(fields)
+    normalize = Keyword.get(opts, :normalize, fn _key, value -> value end)
+    attrs = MapAccess.normalize_keys(map, fields)
+    unknown = if Keyword.get(opts, :unknown) == :error, do: Enum.reject(Map.keys(attrs), &(&1 in fields)), else: []
 
-    case Keyword.get(opts, :unknown, :ignore) do
-      :error -> normalize_strict_keys(map, fields, opts)
-      :ignore -> {:ok, normalize_known_keys(map, fields, opts)}
+    case unknown do
+      [] ->
+        {:ok, Map.new(attrs, fn {key, value} -> {key, if(key in fields, do: normalize.(key, value), else: value)} end)}
+
+      [key | _rest] ->
+        message = Keyword.get(opts, :unknown_message, "unknown policy option")
+        {:error, Error.new(Keyword.fetch!(opts, :error_type), message, %{option: inspect(key)})}
     end
   end
-
-  defp normalize_known_keys(map, fields, opts) do
-    normalize = Keyword.get(opts, :normalize, &default_normalize/2)
-
-    map
-    |> MapAccess.normalize_keys(fields)
-    |> Map.new(fn {key, value} ->
-      value = if key in fields, do: normalize.(key, value), else: value
-      {key, value}
-    end)
-  end
-
-  defp normalize_strict_keys(map, fields, opts) do
-    field_set = MapSet.new(fields)
-
-    Enum.reduce_while(map, {:ok, %{}}, fn {key, value}, {:ok, acc} ->
-      case normalize_strict_option(key, value, field_set, opts) do
-        {:ok, normalized_key, normalized_value} ->
-          {:cont, {:ok, Map.put(acc, normalized_key, normalized_value)}}
-
-        {:error, %Error{} = error} ->
-          {:halt, {:error, error}}
-      end
-    end)
-  end
-
-  defp normalize_strict_option(key, value, field_set, opts) do
-    normalize = Keyword.get(opts, :normalize, &default_normalize/2)
-
-    case strict_key(key, field_set) do
-      {:ok, normalized_key} ->
-        {:ok, normalized_key, normalize.(normalized_key, value)}
-
-      :error ->
-        invalid(
-          Keyword.fetch!(opts, :error_type),
-          Keyword.get(opts, :unknown_message, "unknown policy option"),
-          %{option: inspect(key)}
-        )
-    end
-  end
-
-  defp strict_key(key, field_set) when is_atom(key) do
-    if MapSet.member?(field_set, key), do: {:ok, key}, else: :error
-  end
-
-  defp strict_key(key, field_set) when is_binary(key) do
-    Enum.find_value(field_set, :error, fn field ->
-      if Atom.to_string(field) == key, do: {:ok, field}
-    end)
-  end
-
-  defp strict_key(_key, _field_set), do: :error
-
-  defp fields_list(%MapSet{} = fields), do: MapSet.to_list(fields)
-  defp fields_list(fields), do: fields
-
-  defp default_normalize(_key, value), do: value
-
-  @spec invalid(atom(), String.t(), map()) :: {:error, Error.t()}
-  def invalid(type, message, details \\ %{}),
-    do: {:error, Error.new(type, message, details)}
 end

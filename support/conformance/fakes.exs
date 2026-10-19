@@ -22,22 +22,7 @@ defmodule BeamWeaver.TestSupport.Conformance.Fakes.ChatModel do
             error: nil,
             parent: nil
 
-  def from_config(opts \\ []) do
-    %__MODULE__{
-      reply:
-        BeamWeaver.Config.get(
-          [:test_support, Keyword.get(opts, :reply_config_key, :fake_chat_reply)],
-          "env"
-        ),
-      usage_metadata: Keyword.get(opts, :usage_metadata),
-      profile: Keyword.get(opts, :profile),
-      tokenizer: Keyword.get(opts, :tokenizer),
-      param_policy: Keyword.get(opts, :param_policy),
-      parent: Keyword.get(opts, :parent)
-    }
-  end
-
-  def from_env(opts \\ []), do: from_config(opts)
+  def from_config, do: %__MODULE__{reply: BeamWeaver.Config.get([:test_support, :fake_chat_reply], "env")}
 
   def lifecycle_stream_events(text \\ "stream") do
     [
@@ -52,12 +37,7 @@ defmodule BeamWeaver.TestSupport.Conformance.Fakes.ChatModel do
 
   @impl true
   def invoke(%__MODULE__{} = model, messages, opts) do
-    with :ok <-
-           ParamPolicy.validate(
-             model.profile,
-             opts,
-             Keyword.get(opts, :param_policy, model.param_policy)
-           ) do
+    with :ok <- validate_params(model, opts) do
       if model.parent, do: send(model.parent, {:fake_chat_model_call, messages, opts})
 
       last_user_text =
@@ -75,45 +55,30 @@ defmodule BeamWeaver.TestSupport.Conformance.Fakes.ChatModel do
 
   @impl true
   def stream(%__MODULE__{} = model, messages, opts) do
-    with :ok <-
-           ParamPolicy.validate(
-             model.profile,
-             opts,
-             Keyword.get(opts, :param_policy, model.param_policy)
-           ) do
+    with :ok <- validate_params(model, opts) do
       if model.parent, do: send(model.parent, {:fake_chat_model_stream, messages, opts})
 
-      cond do
-        model.stream_chunks ->
-          {:ok, model.stream_chunks}
-
-        true ->
-          with {:ok, message} <- invoke(%{model | parent: nil}, messages, opts),
-               do: {:ok, [message]}
+      if model.stream_chunks do
+        {:ok, model.stream_chunks}
+      else
+        with {:ok, message} <- invoke(%{model | parent: nil}, messages, opts), do: {:ok, [message]}
       end
     end
   end
 
   @impl true
   def stream_events(%__MODULE__{} = model, messages, opts) do
-    with :ok <-
-           ParamPolicy.validate(
-             model.profile,
-             opts,
-             Keyword.get(opts, :param_policy, model.param_policy)
-           ) do
-      cond do
-        model.stream_events ->
-          {:ok, model.stream_events}
-
-        true ->
-          with {:ok, message} <- invoke(%{model | parent: nil}, messages, opts) do
-            {:ok,
-             [
-               Stream.envelope(%Events.Message{message: message}, metadata: %{provider: :fake}),
-               Stream.envelope(%Events.Done{}, metadata: %{provider: :fake})
-             ]}
-          end
+    with :ok <- validate_params(model, opts) do
+      if model.stream_events do
+        {:ok, model.stream_events}
+      else
+        with {:ok, message} <- invoke(%{model | parent: nil}, messages, opts) do
+          {:ok,
+           [
+             Stream.envelope(%Events.Message{message: message}, metadata: %{provider: :fake}),
+             Stream.envelope(%Events.Done{}, metadata: %{provider: :fake})
+           ]}
+        end
       end
     end
   end
@@ -130,21 +95,15 @@ defmodule BeamWeaver.TestSupport.Conformance.Fakes.ChatModel do
 
   defp response_message(%__MODULE__{structured_response: response} = model, text, opts)
        when not is_nil(response) do
-    cond do
-      Keyword.has_key?(opts, :response_format) or Keyword.has_key?(opts, :structured_output) ->
-        Message.assistant(BeamWeaver.JSON.encode!(response),
-          metadata: %{"parsed" => stringify_keys(response)},
-          response_metadata: response_metadata(model),
-          usage_metadata: model.usage_metadata,
-          tool_calls: []
-        )
-
-      true ->
-        Message.assistant(text,
-          response_metadata: response_metadata(model),
-          usage_metadata: model.usage_metadata,
-          tool_calls: normalize_tool_calls(model.tool_calls, opts)
-        )
+    if Keyword.has_key?(opts, :response_format) or Keyword.has_key?(opts, :structured_output) do
+      Message.assistant(BeamWeaver.JSON.encode!(response),
+        metadata: %{"parsed" => BeamWeaver.MapShape.stringify_keys(response)},
+        response_metadata: response_metadata(model),
+        usage_metadata: model.usage_metadata,
+        tool_calls: []
+      )
+    else
+      response_message(%{model | structured_response: nil}, text, opts)
     end
   end
 
@@ -234,13 +193,8 @@ defmodule BeamWeaver.TestSupport.Conformance.Fakes.ChatModel do
     ]
   end
 
-  defp stringify_keys(map) when is_map(map) do
-    Map.new(map, fn {key, value} -> {to_string(key), stringify_value(value)} end)
-  end
-
-  defp stringify_value(value) when is_map(value), do: stringify_keys(value)
-  defp stringify_value(value) when is_list(value), do: Enum.map(value, &stringify_value/1)
-  defp stringify_value(value), do: value
+  defp validate_params(model, opts),
+    do: ParamPolicy.validate(model.profile, opts, Keyword.get(opts, :param_policy, model.param_policy))
 end
 
 defmodule BeamWeaver.TestSupport.Conformance.Fakes.InvalidChatModel do
@@ -260,33 +214,16 @@ defmodule BeamWeaver.TestSupport.Conformance.Fakes.EmbeddingModel do
 
   defstruct dimensions: 3, profile: nil, param_policy: nil, error: nil, parent: nil
 
-  def from_config(opts \\ []) do
-    dimensions =
-      [:test_support, Keyword.get(opts, :dimensions_config_key, :fake_embedding_dimensions)]
-      |> BeamWeaver.Config.get()
-      |> case do
-        nil -> Keyword.get(opts, :dimensions, 3)
-        value -> String.to_integer(value)
-      end
-
-    %__MODULE__{
-      dimensions: dimensions,
-      profile: Keyword.get(opts, :profile),
-      param_policy: Keyword.get(opts, :param_policy),
-      parent: Keyword.get(opts, :parent)
-    }
+  def from_config do
+    case BeamWeaver.Config.get([:test_support, :fake_embedding_dimensions]) do
+      nil -> %__MODULE__{}
+      value -> %__MODULE__{dimensions: String.to_integer(value)}
+    end
   end
-
-  def from_env(opts \\ []), do: from_config(opts)
 
   @impl true
   def embed_documents(%__MODULE__{} = model, documents, opts) do
-    with :ok <-
-           ParamPolicy.validate(
-             model.profile,
-             opts,
-             Keyword.get(opts, :param_policy, model.param_policy)
-           ) do
+    with :ok <- validate_params(model, opts) do
       if model.parent, do: send(model.parent, {:fake_embedding_documents, documents, opts})
       maybe_error(model) || {:ok, Enum.map(documents, &vector(&1, model.dimensions))}
     end
@@ -294,12 +231,7 @@ defmodule BeamWeaver.TestSupport.Conformance.Fakes.EmbeddingModel do
 
   @impl true
   def embed_query(%__MODULE__{} = model, query, opts) do
-    with :ok <-
-           ParamPolicy.validate(
-             model.profile,
-             opts,
-             Keyword.get(opts, :param_policy, model.param_policy)
-           ) do
+    with :ok <- validate_params(model, opts) do
       if model.parent, do: send(model.parent, {:fake_embedding_query, query, opts})
       maybe_error(model) || {:ok, vector(query, model.dimensions)}
     end
@@ -312,6 +244,9 @@ defmodule BeamWeaver.TestSupport.Conformance.Fakes.EmbeddingModel do
     seed = byte_size(text)
     Enum.map(1..dimensions, &(seed + &1 / 10))
   end
+
+  defp validate_params(model, opts),
+    do: ParamPolicy.validate(model.profile, opts, Keyword.get(opts, :param_policy, model.param_policy))
 end
 
 defmodule BeamWeaver.TestSupport.Conformance.Fakes.BadCountEmbeddingModel do
@@ -336,85 +271,6 @@ defmodule BeamWeaver.TestSupport.Conformance.Fakes.BadVectorEmbeddingModel do
 
   @impl true
   def embed_query(_model, _query, _opts), do: {:ok, ["not numeric"]}
-end
-
-defmodule BeamWeaver.TestSupport.Conformance.Fakes.LLM do
-  @behaviour BeamWeaver.Core.LLM
-
-  alias BeamWeaver.Core.LanguageModel
-  alias BeamWeaver.Models.ParamPolicy
-
-  defstruct prefix: "completion",
-            stream_chunks: nil,
-            profile: nil,
-            tokenizer: nil,
-            param_policy: nil,
-            error: nil,
-            parent: nil
-
-  def from_config(opts \\ []) do
-    %__MODULE__{
-      prefix:
-        BeamWeaver.Config.get(
-          [:test_support, Keyword.get(opts, :prefix_config_key, :fake_llm_prefix)],
-          "env"
-        ),
-      stream_chunks: Keyword.get(opts, :stream_chunks),
-      profile: Keyword.get(opts, :profile),
-      tokenizer: Keyword.get(opts, :tokenizer),
-      param_policy: Keyword.get(opts, :param_policy),
-      parent: Keyword.get(opts, :parent)
-    }
-  end
-
-  def from_env(opts \\ []), do: from_config(opts)
-
-  @impl true
-  def complete(%__MODULE__{} = model, prompt, opts) do
-    with :ok <-
-           ParamPolicy.validate(
-             model.profile,
-             opts,
-             Keyword.get(opts, :param_policy, model.param_policy)
-           ) do
-      if model.parent, do: send(model.parent, {:fake_llm_call, prompt, opts})
-      maybe_error(model) || {:ok, "#{model.prefix}: #{prompt}"}
-    end
-  end
-
-  def stream(%__MODULE__{stream_chunks: chunks} = model, prompt, opts) when is_list(chunks) do
-    with :ok <-
-           ParamPolicy.validate(
-             model.profile,
-             opts,
-             Keyword.get(opts, :param_policy, model.param_policy)
-           ) do
-      if model.parent, do: send(model.parent, {:fake_llm_stream, prompt, opts})
-      {:ok, chunks}
-    end
-  end
-
-  def stream(%__MODULE__{} = model, prompt, opts) do
-    with {:ok, text} <- complete(model, prompt, opts), do: {:ok, [text]}
-  end
-
-  def count_tokens(%__MODULE__{tokenizer: nil}, input, _opts),
-    do: {:ok, LanguageModel.count_tokens_approximately(input)}
-
-  def count_tokens(%__MODULE__{tokenizer: tokenizer}, input, opts),
-    do: LanguageModel.count_tokens({:tokenizer, tokenizer}, input, opts)
-
-  defp maybe_error(%__MODULE__{error: nil}), do: nil
-  defp maybe_error(%__MODULE__{error: error}), do: {:error, error}
-end
-
-defmodule BeamWeaver.TestSupport.Conformance.Fakes.BadLLM do
-  @behaviour BeamWeaver.Core.LLM
-
-  defstruct []
-
-  @impl true
-  def complete(_model, _prompt, _opts), do: {:ok, %{text: "not a string"}}
 end
 
 defmodule BeamWeaver.TestSupport.Conformance.Fakes.Tools do

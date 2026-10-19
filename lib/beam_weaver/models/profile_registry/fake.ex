@@ -12,6 +12,10 @@ defmodule BeamWeaver.Models.ProfileRegistry.Fake do
         name: "Fake chat model",
         responses_api: true,
         chat_completions_api: true,
+        # A scripted model takes any input.
+        image_inputs: true,
+        image_url_inputs: true,
+        pdf_inputs: true,
         tool_calling: true,
         tool_choice: true,
         parallel_tool_calls: true,
@@ -35,13 +39,6 @@ defmodule BeamWeaver.Models.ProfileRegistry.Fake do
       })
   }
 
-  def profiles_map, do: @profiles
   def profiles, do: Map.values(@profiles)
-
-  def resolve(model) do
-    case Map.fetch(@profiles, {:fake, model}) do
-      {:ok, profile} -> {:ok, profile}
-      :error -> {:fallback, :fake, model}
-    end
-  end
+  def resolve(model), do: BeamWeaver.Models.ProfileRegistry.fetch_or_fallback(@profiles, :fake, model)
 end

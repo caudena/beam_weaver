@@ -9,6 +9,8 @@ defmodule BeamWeaver.Checkpoint.Ecto.Listing do
   alias BeamWeaver.Checkpoint.Ecto.Query
   alias BeamWeaver.Checkpoint.Ecto.Rows
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Serialization
+  alias BeamWeaver.Serialization.JSON.Encoder
 
   @checkpoint_fields [
     :thread_id,
@@ -50,15 +52,12 @@ defmodule BeamWeaver.Checkpoint.Ecto.Listing do
             [checkpoint],
             checkpoint.checkpoint_ns == ^Map.get(configurable, "checkpoint_ns", "")
           )
-          |> maybe_checkpoint_id(configurable["checkpoint_id"])
+          |> maybe_equal(:checkpoint_id, configurable["checkpoint_id"])
           |> order_by([checkpoint], desc: checkpoint.commit_order)
           |> limit(1)
           |> with_pending_writes(saver)
 
-        case Query.all(saver, query) do
-          {:ok, rows} -> {:ok, Rows.tuple_from_rows(saver, rows)}
-          {:error, _reason} = error -> error
-        end
+        with {:ok, rows} <- Query.all(saver, query), do: {:ok, Rows.tuple_from_rows(saver, rows)}
 
       _other ->
         {:ok, nil}
@@ -74,9 +73,9 @@ defmodule BeamWeaver.Checkpoint.Ecto.Listing do
 
   def list_result(saver, config, opts) do
     configurable = if config, do: Checkpoint.configurable(config), else: %{}
-    filter = Config.stringify_keys(Keyword.get(opts, :filter, %{}) || %{})
+    limit = Keyword.get(opts, :limit)
 
-    with {:ok, stored_filter} <- EctoSaver.dump_json_value(saver, filter),
+    with {:ok, filter} <- metadata_filter(saver, Keyword.get(opts, :filter)),
          {:ok, before_order} <- before_commit_order(saver, Keyword.get(opts, :before)) do
       query =
         saver
@@ -84,7 +83,7 @@ defmodule BeamWeaver.Checkpoint.Ecto.Listing do
         |> maybe_equal(:thread_id, configurable["thread_id"])
         |> maybe_equal(:checkpoint_ns, configurable["checkpoint_ns"])
         |> maybe_before(before_order)
-        |> maybe_filter(stored_filter)
+        |> maybe_filter(filter)
         |> order_by(
           [checkpoint],
           desc: checkpoint.commit_order,
@@ -92,33 +91,69 @@ defmodule BeamWeaver.Checkpoint.Ecto.Listing do
           asc: checkpoint.checkpoint_ns,
           asc: checkpoint.checkpoint_id
         )
-        |> maybe_limit(Keyword.get(opts, :limit))
+        |> maybe_limit(filter, limit)
         |> with_pending_writes(saver)
 
-      case Query.all(saver, query) do
-        {:ok, rows} -> {:ok, Rows.tuples_from_rows(saver, rows)}
-        {:error, _reason} = error -> error
-      end
+      with {:ok, rows} <- Query.all(saver, query),
+           do: {:ok, saver |> Rows.tuples_from_rows(rows) |> filter_decoded(saver, filter, limit)}
     end
   end
 
-  def resolve_checkpoint_id(_saver, _thread_id, _namespace, checkpoint_id)
-      when is_binary(checkpoint_id),
-      do: {:ok, checkpoint_id}
+  # The JSON codec stores metadata as plain JSON that SQL can read. Other
+  # codecs, such as the encrypted one, store an opaque payload, so metadata is
+  # matched after each row is decoded.
+  def queryable_metadata?(saver), do: saver.serialization.codec == BeamWeaver.Serialization.JSON
 
-  def resolve_checkpoint_id(saver, thread_id, namespace, _checkpoint_id) do
-    case latest_checkpoint_id(saver, thread_id, namespace) do
-      nil -> :error
-      checkpoint_id -> {:ok, checkpoint_id}
+  # Decoded metadata as the JSON codec stores it.
+  defp plain_metadata(saver, metadata) do
+    Serialization.dump_value(metadata, serialization: [registry: saver.serialization.registry])
+  end
+
+  # A filter is the list of `{json_path, json_value}` leaves of the filter as
+  # the JSON codec stores it. SQL compares them with the stored metadata when
+  # it can read it; otherwise they are compared after each row is decoded.
+  # The note naming a map's atom keys is left out, so a nested map matches
+  # whether its keys are atoms or strings.
+  defp metadata_filter(_saver, filter) when filter in [nil, []] or filter == %{}, do: {:ok, nil}
+
+  defp metadata_filter(saver, filter) do
+    filter = Config.stringify_keys(filter)
+
+    if queryable_metadata?(saver) do
+      with {:ok, stored} <- EctoSaver.dump_json_value(saver, filter), do: {:ok, {:sql, filter_leaves(stored)}}
+    else
+      with {:ok, plain} <- plain_metadata(saver, filter), do: {:ok, {:decoded, filter_leaves(plain)}}
     end
   end
 
-  def latest_checkpoint_id(saver, thread_id, namespace) do
-    case latest_checkpoint_id_result(saver, thread_id, namespace) do
-      {:ok, checkpoint_id} -> checkpoint_id
-      {:error, error} -> raise_read_error!(error)
+  defp filter_decoded(tuples, saver, {:decoded, leaves}, limit) do
+    tuples
+    |> Enum.filter(&metadata_matches?(saver, &1.metadata, leaves))
+    |> take(limit)
+  end
+
+  defp filter_decoded(tuples, _saver, _filter, _limit), do: tuples
+
+  defp metadata_matches?(saver, metadata, leaves) do
+    case plain_metadata(saver, metadata) do
+      {:ok, plain} -> Enum.all?(leaves, fn {path, value} -> json_at(plain, path) == {:ok, value} end)
+      {:error, _error} -> false
     end
   end
+
+  defp json_at(value, []), do: {:ok, value}
+
+  defp json_at(%{} = map, [key | path]) do
+    case Map.fetch(map, key) do
+      {:ok, value} -> json_at(value, path)
+      :error -> :error
+    end
+  end
+
+  defp json_at(_value, _path), do: :error
+
+  defp take(tuples, limit) when is_integer(limit) and limit >= 0, do: Enum.take(tuples, limit)
+  defp take(tuples, _limit), do: tuples
 
   def latest_checkpoint_id_result(saver, thread_id, namespace) do
     query =
@@ -157,12 +192,6 @@ defmodule BeamWeaver.Checkpoint.Ecto.Listing do
     )
   end
 
-  defp maybe_checkpoint_id(query, nil), do: query
-
-  defp maybe_checkpoint_id(query, checkpoint_id) do
-    where(query, [checkpoint], checkpoint.checkpoint_id == ^checkpoint_id)
-  end
-
   defp maybe_equal(query, _field, nil), do: query
 
   defp maybe_equal(query, field, value) do
@@ -189,15 +218,13 @@ defmodule BeamWeaver.Checkpoint.Ecto.Listing do
     Query.one(saver, query)
   end
 
-  defp maybe_filter(query, filter) when filter in [%{}, nil], do: query
-
-  defp maybe_filter(query, filter) do
-    filter
-    |> filter_leaves()
-    |> Enum.reduce(query, fn {path, value}, query ->
+  defp maybe_filter(query, {:sql, leaves}) do
+    Enum.reduce(leaves, query, fn {path, value}, query ->
       where(query, [checkpoint], json_extract_path(checkpoint.metadata, ^path) == ^value)
     end)
   end
+
+  defp maybe_filter(query, _filter), do: query
 
   defp filter_leaves(filter) do
     filter
@@ -208,13 +235,20 @@ defmodule BeamWeaver.Checkpoint.Ecto.Listing do
   defp filter_leaves(map, path) when map_size(map) == 0 and path != [], do: [{path, %{}}]
 
   defp filter_leaves(map, path) when is_map(map) do
-    Enum.flat_map(map, fn {key, value} -> filter_leaves(value, [to_string(key) | path]) end)
+    atom_keys_tag = Encoder.atom_keys_tag()
+
+    Enum.flat_map(map, fn
+      {^atom_keys_tag, _names} -> []
+      {key, value} -> filter_leaves(value, [to_string(key) | path])
+    end)
   end
 
   defp filter_leaves(value, path), do: [{path, value}]
 
-  defp maybe_limit(query, limit) when is_integer(limit) and limit >= 0, do: limit(query, ^limit)
-  defp maybe_limit(query, _limit), do: query
+  # Rows filtered after decoding are limited after the filter.
+  defp maybe_limit(query, {:decoded, _leaves}, _limit), do: query
+  defp maybe_limit(query, _filter, limit) when is_integer(limit) and limit >= 0, do: limit(query, ^limit)
+  defp maybe_limit(query, _filter, _limit), do: query
 
   defp raise_read_error!(%Error{} = error), do: raise(RuntimeError, error.message)
 end

@@ -1,17 +1,20 @@
 defmodule BeamWeaver.OpenAI.Streaming.Messages do
   @moduledoc false
 
+  import BeamWeaver.MapShape, only: [reject_nil_values: 1]
+
   alias BeamWeaver.Core.ContentBlock
-  alias BeamWeaver.Core.Error, as: CoreError
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Messages
   alias BeamWeaver.OpenAI.Streaming.Lifecycle
+  alias BeamWeaver.Provider.OpenAICompatibleStreaming
   alias BeamWeaver.Stream
   alias BeamWeaver.Stream.Events
 
   @spec message_chunks(binary() | [map()] | term()) :: [term()]
   def message_chunks(body) when is_binary(body) do
     body
-    |> BeamWeaver.OpenAI.Streaming.SSE.events()
+    |> BeamWeaver.Provider.SSE.events()
     |> message_chunks()
   end
 
@@ -26,41 +29,28 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
   @spec typed_events(binary() | [map()] | term()) :: [BeamWeaver.Stream.Envelope.t()]
   def typed_events(body) when is_binary(body) do
     body
-    |> BeamWeaver.OpenAI.Streaming.SSE.events()
+    |> BeamWeaver.Provider.SSE.events()
     |> typed_events()
   end
 
   def typed_events(parsed_events) when is_list(parsed_events) do
-    message_events =
+    chunks =
       parsed_events
       |> positioned_message_chunks()
-      |> Enum.flat_map(fn {position, chunk} ->
-        chunk
-        |> chunk_to_events()
-        |> Enum.map(&{position, &1})
-      end)
+      |> Enum.group_by(fn {position, _chunk} -> position end, fn {_position, chunk} -> chunk end)
 
-    {event_groups, _remaining_message_events} =
+    # A Chat Completions stream can send the finish reason and the usage in
+    # separate chunks, each with its `Done`; the events end with one.
+    {done, events} =
       parsed_events
       |> Enum.with_index()
-      |> Enum.map_reduce(message_events, fn {event, position}, pending_message_events ->
-        {current_message_events, remaining_message_events} =
-          Enum.split_while(pending_message_events, fn {event_position, _event} ->
-            event_position == position
-          end)
-
-        events =
-          Enum.map(current_message_events, fn {_position, event} -> event end) ++
-            custom_events(event) ++ done_event(event)
-
-        {events, remaining_message_events}
+      |> Enum.flat_map(fn {event, position} ->
+        Enum.flat_map(Map.get(chunks, position, []), &chunk_to_events/1) ++ custom_events(event) ++ done_event(event)
       end)
+      |> Enum.map(&Stream.envelope(&1, metadata: %{provider: :openai}))
+      |> Enum.split_with(&match?(%Stream.Envelope{event: %Events.Done{}}, &1))
 
-    event_groups
-    |> List.flatten()
-    |> Enum.map(fn event ->
-      Stream.envelope(event, metadata: %{provider: :openai})
-    end)
+    events ++ OpenAICompatibleStreaming.merge_done(done)
   end
 
   def typed_events(_body), do: []
@@ -93,13 +83,7 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
     state
     |> put_in([:item_call_ids, item_id], call_id)
     |> put_in([:item_names, item_id], name)
-    |> emit_message_chunk(
-      Messages.ai_chunk("",
-        tool_call_chunks: [
-          Messages.tool_call_chunk(id: call_id, index: data["output_index"], name: name, args: "")
-        ]
-      )
-    )
+    |> emit_tool_call_chunk(call_id, data["output_index"], name, "")
   end
 
   defp apply_message_chunk_event(
@@ -122,19 +106,7 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
     call_id = Map.get(state.item_call_ids, item_id)
     name = Map.get(state.item_names, item_id, data["name"])
 
-    emit_message_chunk(
-      state,
-      Messages.ai_chunk("",
-        tool_call_chunks: [
-          Messages.tool_call_chunk(
-            id: call_id,
-            index: data["output_index"],
-            name: name,
-            args: delta
-          )
-        ]
-      )
-    )
+    emit_tool_call_chunk(state, call_id, data["output_index"], name, delta)
   end
 
   defp apply_message_chunk_event(
@@ -151,36 +123,10 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
     emit_message_chunk(state, Messages.ai_chunk(delta, id: item_id))
   end
 
-  defp apply_message_chunk_event(
-         %{
-           "data" => %{
-             "type" => type,
-             "item_id" => item_id,
-             "delta" => delta
-           }
-         },
-         state
-       )
+  defp apply_message_chunk_event(%{"data" => %{"type" => type, "delta" => delta} = data}, state)
        when type in ["response.reasoning_summary_text.delta", "response.reasoning_text.delta"] and
               is_binary(delta) do
-    emit_message_chunk(
-      state,
-      Messages.ai_chunk([ContentBlock.reasoning(delta)], id: item_id)
-    )
-  end
-
-  defp apply_message_chunk_event(
-         %{
-           "data" => %{
-             "type" => type,
-             "delta" => delta
-           }
-         },
-         state
-       )
-       when type in ["response.reasoning_summary_text.delta", "response.reasoning_text.delta"] and
-              is_binary(delta) do
-    emit_message_chunk(state, Messages.ai_chunk([ContentBlock.reasoning(delta)]))
+    emit_message_chunk(state, Messages.ai_chunk([ContentBlock.reasoning(delta)], id: data["item_id"]))
   end
 
   defp apply_message_chunk_event(%{"data" => %{"choices" => choices}}, state)
@@ -199,20 +145,7 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
       |> Map.get("tool_calls", [])
       |> Enum.reduce(acc, fn call, acc ->
         function = call["function"] || %{}
-
-        emit_message_chunk(
-          acc,
-          Messages.ai_chunk("",
-            tool_call_chunks: [
-              Messages.tool_call_chunk(
-                id: call["id"],
-                index: call["index"],
-                name: function["name"],
-                args: function["arguments"] || ""
-              )
-            ]
-          )
-        )
+        emit_tool_call_chunk(acc, call["id"], call["index"], function["name"], function["arguments"] || "")
       end)
       |> maybe_emit_unknown_chat_delta(delta)
     end)
@@ -222,6 +155,11 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
 
   defp emit_message_chunk(state, chunk) do
     Map.update!(state, :chunks, &[{state.event_index, chunk} | &1])
+  end
+
+  defp emit_tool_call_chunk(state, id, index, name, args) do
+    chunk = Messages.tool_call_chunk(id: id, index: index, name: name, args: args)
+    emit_message_chunk(state, Messages.ai_chunk("", tool_call_chunks: [chunk]))
   end
 
   defp maybe_emit_unknown_chat_delta(state, delta) when is_map(delta) do
@@ -240,13 +178,10 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
         do: [%Events.Token{text: chunk.content}],
         else: []
 
-    tool_call_events =
-      Enum.map(chunk.tool_call_chunks || [], &%Events.ToolCallChunk{chunk: &1})
+    tool_call_events = Enum.map(chunk.tool_call_chunks, &%Events.ToolCallChunk{chunk: &1})
 
     token_events ++ tool_call_events ++ [%Events.MessageChunk{chunk: chunk}]
   end
-
-  defp chunk_to_events(chunk), do: [%Events.MessageChunk{chunk: chunk}]
 
   defp custom_events(%{"data" => data} = event) when is_map(data) do
     if Lifecycle.typed_custom_event?(data) do
@@ -294,7 +229,7 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
     message = provider_error["message"] || "Model response failed"
 
     error =
-      CoreError.new(:response_failed, message, %{
+      Error.new(:response_failed, message, %{
         event: data,
         response: response,
         status: metadata.status,
@@ -338,6 +273,4 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
     }
     |> reject_nil_values()
   end
-
-  defp reject_nil_values(map), do: Map.reject(map, fn {_key, value} -> is_nil(value) end)
 end

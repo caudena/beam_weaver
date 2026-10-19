@@ -8,12 +8,7 @@ defmodule BeamWeaver.Provider.CapabilityResponseTest do
   alias BeamWeaver.Provider.Response
 
   test "unsupported rich features fail before a transport call by default" do
-    assert {:ok, model} =
-             Models.init_chat_model("xai:grok-4.20-0309-non-reasoning",
-               reasoning_effort: "high",
-               transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
-               transport_opts: [parent: self()]
-             )
+    assert {:ok, model} = reasoning_model()
 
     assert {:error, error} = ChatModel.invoke(model, "think")
     assert error.type == :unsupported_feature
@@ -24,26 +19,21 @@ defmodule BeamWeaver.Provider.CapabilityResponseTest do
 
   test "unsupported rich features can warn or be ignored explicitly" do
     assert {:ok, model} =
-             Models.init_chat_model("xai:grok-4.20-0309-non-reasoning",
-               reasoning_effort: "high",
-               transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
-               transport_opts: [
-                 parent: self(),
-                 expect: %{method: :post, path: "/v1/responses"},
-                 body: %{
-                   "id" => "resp_warn",
-                   "model" => "grok-4.20-0309-non-reasoning",
-                   "status" => "completed",
-                   "output" => [
-                     %{
-                       "type" => "message",
-                       "role" => "assistant",
-                       "content" => [%{"type" => "output_text", "text" => "ok"}]
-                     }
-                   ],
-                   "usage" => %{"input_tokens" => 1, "output_tokens" => 1, "total_tokens" => 2}
-                 }
-               ]
+             reasoning_model(
+               expect: %{method: :post, path: "/v1/responses"},
+               body: %{
+                 "id" => "resp_warn",
+                 "model" => "grok-4.20-0309-non-reasoning",
+                 "status" => "completed",
+                 "output" => [
+                   %{
+                     "type" => "message",
+                     "role" => "assistant",
+                     "content" => [%{"type" => "output_text", "text" => "ok"}]
+                   }
+                 ],
+                 "usage" => %{"input_tokens" => 1, "output_tokens" => 1, "total_tokens" => 2}
+               }
              )
 
     assert {:ok, response} = ChatModel.invoke(model, "think", unsupported: :warn)
@@ -52,12 +42,7 @@ defmodule BeamWeaver.Provider.CapabilityResponseTest do
   end
 
   test "unsupported policy rejects string enum values" do
-    assert {:ok, model} =
-             Models.init_chat_model("xai:grok-4.20-0309-non-reasoning",
-               reasoning_effort: "high",
-               transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
-               transport_opts: [parent: self()]
-             )
+    assert {:ok, model} = reasoning_model()
 
     assert {:error, error} = ChatModel.invoke(model, "think", unsupported: "warn")
     assert error.type == :invalid_provider_option
@@ -144,5 +129,15 @@ defmodule BeamWeaver.Provider.CapabilityResponseTest do
     assert normalized.response_metadata.transport.request_id == "req_anthropic"
     assert normalized.response_metadata.limits.remaining_requests == "49"
     assert normalized.response_metadata.limits.remaining_tokens == "999"
+  end
+
+  # A model without reasoning, asked for a reasoning effort.
+  defp reasoning_model(transport_opts \\ []) do
+    Models.init_chat_model("xai:grok-4.20-0309-non-reasoning",
+      reasoning_effort: "high",
+      api_key: "test-key",
+      transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+      transport_opts: [parent: self()] ++ transport_opts
+    )
   end
 end

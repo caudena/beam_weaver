@@ -1,54 +1,82 @@
 defmodule BeamWeaver.Agent.Middleware.Filesystem do
-  @moduledoc "Middleware that contributes DeepAgents filesystem tools."
+  @moduledoc """
+  Middleware that gives an agent the filesystem tools from
+  `BeamWeaver.Tools.Filesystem` and a system prompt describing them.
 
-  @behaviour BeamWeaver.Agent.Middleware
+  It also writes oversized tool results and user messages to files and shows
+  the model a short preview with the file path instead. The preview tells the
+  model to read the file with `read_file` only when the call offers that
+  tool.
+  """
+
+  use BeamWeaver.Agent.Middleware
 
   alias BeamWeaver.Agent.ExtendedModelResponse
+  alias BeamWeaver.Agent.Middleware.Helpers
   alias BeamWeaver.Agent.Middleware.Offload
   alias BeamWeaver.Agent.ModelRequest
   alias BeamWeaver.Agent.ModelResponse
   alias BeamWeaver.Agent.ToolCallRequest
+  alias BeamWeaver.Agent.ToolSet
   alias BeamWeaver.Core.ID
   alias BeamWeaver.Core.Message
+  alias BeamWeaver.Core.Tool
   alias BeamWeaver.Filesystem
-  alias BeamWeaver.Filesystem.Executable
+  alias BeamWeaver.Filesystem.Path, as: FsPath
   alias BeamWeaver.Filesystem.State
   alias BeamWeaver.Graph
   alias BeamWeaver.Graph.Channels.BinaryOperatorAggregate
   alias BeamWeaver.Graph.Command
   alias BeamWeaver.Graph.Overwrite
+  alias BeamWeaver.MapAccess
+  alias BeamWeaver.MapShape
   alias BeamWeaver.Tools.Filesystem, as: FilesystemTools
 
   import BeamWeaver.Agent.Middleware.Helpers,
-    only: [append_prompt: 2, artifact_prefix: 2, maybe_put_files_update: 3]
+    only: [append_prompt: 2, artifact_prefix: 2, last_role_index: 2, runtime_store: 1, tool_call_id: 1]
 
   @chars_per_token 4
   @tool_token_limit_before_evict 20_000
   @human_message_token_limit_before_evict 50_000
   @tools_excluded_from_evict ~w(ls glob grep read_file edit_file write_file)
+  @file_change_tools ~w(write_file edit_file)
 
-  @filesystem_system_prompt """
+  @conventions_prompt """
   ## Following Conventions
 
   - Read files before editing - understand existing content before making changes
   - Mimic existing style, naming conventions, and patterns
+  """
 
-  ## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
+  @file_tools [
+    {"ls", "list files in a directory (requires absolute path)"},
+    {"read_file", "read a file from the filesystem"},
+    {"write_file", "create a file, or replace one, in the filesystem"},
+    {"edit_file", "edit a file in the filesystem"},
+    {"glob", ~s|find files matching a pattern (e.g., "**/*.ex")|},
+    {"grep", "search files for literal text, not a regex"}
+  ]
+
+  @file_tools_prompt """
+  ## Filesystem Tools %{tool_names}
 
   You have access to a filesystem which you can interact with using these tools.
   All file paths must start with a /. Follow the tool docs for the available tools, and use pagination (offset/limit) when reading large files.
 
-  - ls: list files in a directory (requires absolute path)
-  - read_file: read a file from the filesystem
-  - write_file: write to a file in the filesystem
-  - edit_file: edit a file in the filesystem
-  - glob: find files matching a pattern (e.g., "**/*.ex")
-  - grep: search for text within files
+  %{tool_lines}
+  """
 
+  @large_tool_results_prompt """
   ## Large Tool Results
 
-  When a tool result is too large, it may be offloaded into the filesystem instead of being returned inline. In those cases, use `read_file` to inspect the saved result in chunks, or use `grep` within `%{large_tool_results_prefix}/` if you need to search across offloaded tool results and do not know the exact file path. Offloaded tool results are stored under `%{large_tool_results_prefix}/<tool_call_id>`.
+  When a tool result is too large, it may be offloaded into the filesystem instead of being returned inline. In those cases, %{how_to_read}. Offloaded tool results are stored under `%{large_tool_results_prefix}/<tool_call_id>`.
   """
+
+  @offloaded_result_readers [
+    {"read_file", "use `read_file` to inspect the saved result in chunks"},
+    {"grep",
+     "use `grep` within `%{large_tool_results_prefix}/` if you need to search across offloaded tool results and do not know the exact file path"}
+  ]
 
   @execution_system_prompt """
   ## Execute Tool `execute`
@@ -56,29 +84,21 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
   You have access to an `execute` tool for running shell commands in a sandboxed environment.
   Use this tool to run commands, scripts, tests, builds, and other shell operations.
 
-  - execute: run a shell command in the sandbox (returns output and exit code)
-  """
-
-  @too_large_tool_msg """
-  Tool result too large, the result of this tool call %{tool_call_id} was saved in the filesystem at this path: %{file_path}
-
-  You can read the result from the filesystem by using the read_file tool, but make sure to only read part of the result at a time.
-
-  You can do this by specifying an offset and limit in the read_file tool call. For example, to read the first 100 lines, you can use the read_file tool with offset=0 and limit=100.
-
-  Here is a preview showing the head and tail of the result (lines of the form `... [N lines truncated] ...` indicate omitted lines in the middle of the content):
-
-  %{content_sample}
+  - execute: run a shell command in the sandbox. It returns the command's output followed by a line with its exit code, such as `[Command failed with exit code 1]`.
+  - A command that runs longer than its `timeout` (in seconds, at most 3600) is stopped and returns an error instead; pass a larger `timeout` for long builds or tests.
   """
 
   @too_large_human_msg """
   Message content too large and was saved to the filesystem at: %{file_path}
 
-  You can read the full content using the read_file tool with pagination (offset and limit parameters).
-
-  Here is a preview showing the head and tail of the content:
+  %{how_to_read}Here is a preview showing the head and tail of the content%{preview_notes}:
 
   %{content_sample}
+  """
+
+  @read_saved_message """
+  You can read the full content using the read_file tool with pagination (offset and limit parameters).
+
   """
 
   defstruct backend: State.new(),
@@ -136,34 +156,99 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
     )
   end
 
+  @impl true
   def wrap_model_call(%__MODULE__{} = middleware, %ModelRequest{} = request, handler) do
     {messages, command} = evict_and_truncate_human_messages(middleware, request)
 
     request =
-      ModelRequest.override(request,
+      request
+      |> ModelRequest.override(
         messages: messages,
-        system_message: append_prompt(request.system_message, system_prompt(middleware))
+        system_message: append_prompt(request.system_message, system_prompt(middleware, request))
       )
+      |> with_grep_description()
 
     request
     |> handler.()
     |> maybe_attach_command(command)
   end
 
-  def wrap_tool_call(%__MODULE__{} = middleware, %ToolCallRequest{} = request, handler) do
-    result = handler.(request)
+  # grep's description points to `execute` for a real regex only while the
+  # call offers `execute`. A description set with `tool_descriptions` stays.
+  defp with_grep_description(%ModelRequest{tools: tools} = request) when is_list(tools) do
+    execute? = "execute" in Helpers.tool_names(tools)
+    described = Enum.map(tools, &describe_grep(&1, execute?))
 
-    if evict_tool_result?(middleware, request) do
-      intercept_large_tool_result(middleware, result, request)
+    if described == tools, do: request, else: ModelRequest.override(request, tools: described)
+  end
+
+  defp with_grep_description(request), do: request
+
+  defp describe_grep(%Tool{name: "grep", description: description} = tool, execute?) do
+    if description in [FilesystemTools.grep_description(true), FilesystemTools.grep_description(false)],
+      do: %{tool | description: FilesystemTools.grep_description(execute?)},
+      else: tool
+  end
+
+  defp describe_grep(tool, _execute?), do: tool
+
+  @impl true
+  def wrap_tool_call(%__MODULE__{} = middleware, %ToolCallRequest{} = request, handler) do
+    if same_file_changed_earlier?(request) do
+      same_file_error(request)
     else
-      result
+      result = handler.(request)
+
+      if evict_tool_result?(middleware, request),
+        do: intercept_large_tool_result(middleware, result, request),
+        else: result
     end
+  end
+
+  # The calls of one model reply run at the same time, so two changes to one
+  # file would race: only the first of them runs.
+  defp same_file_changed_earlier?(%ToolCallRequest{tool_call: call, state: state}) do
+    with true <- file_change?(call),
+         %Message{tool_calls: [_ | _] = calls} <- last_assistant_message(state) do
+      path = changed_path(call)
+
+      calls
+      |> Enum.take_while(&(Helpers.tool_call_id(&1) != Helpers.tool_call_id(call)))
+      |> Enum.any?(&(file_change?(&1) and changed_path(&1) == path))
+    else
+      _other -> false
+    end
+  end
+
+  defp file_change?(call),
+    do: tool_name(call) in @file_change_tools and match?({:ok, _path}, changed_path(call))
+
+  defp changed_path(call), do: call |> MapAccess.get(:args, %{}) |> MapAccess.get(:file_path) |> clean_path()
+
+  defp clean_path(path) when is_binary(path), do: FsPath.clean_path(path)
+  defp clean_path(_path), do: :error
+
+  defp last_assistant_message(state) do
+    state
+    |> MapAccess.get(:messages, [])
+    |> List.wrap()
+    |> Enum.reverse()
+    |> Enum.find(&match?(%Message{role: :assistant}, &1))
+  end
+
+  defp same_file_error(%ToolCallRequest{tool_call: call}) do
+    Message.tool(
+      "Error: parallel file changes to the same path are not allowed; change the file again in a later turn.",
+      tool_call_id: Helpers.tool_call_id(call),
+      name: tool_name(call),
+      metadata: %{status: "error", error_type: :parallel_file_changes}
+    )
   end
 
   defp evict_tool_result?(%__MODULE__{tool_token_limit_before_evict: nil}, _request), do: false
 
-  defp evict_tool_result?(%__MODULE__{}, %ToolCallRequest{} = request),
-    do: tool_name(request) not in @tools_excluded_from_evict
+  defp evict_tool_result?(%__MODULE__{}, %ToolCallRequest{tool_call: call}),
+    do: tool_name(call) not in @tools_excluded_from_evict
 
   defp intercept_large_tool_result(
          %__MODULE__{} = middleware,
@@ -211,7 +296,7 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
       update =
         update
         |> Map.put(messages_key, Enum.reverse(processed))
-        |> maybe_put_files_update(middleware.state_key, files_update)
+        |> MapShape.put_present(middleware.state_key, files_update)
 
       %{command | update: update}
     end
@@ -230,8 +315,10 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
     end
   end
 
+  # A result without a call id gets a name of its own, so the next one doesn't
+  # find the path taken and stay inline.
   defp offload_tool_message(middleware, message, content, request, state_files_override) do
-    tool_call_id = message.tool_call_id || tool_call_id(request) || "unknown"
+    tool_call_id = message.tool_call_id || tool_call_id(request.tool_call) || ID.uuidv7()
 
     file_path =
       middleware.large_tool_results_prefix <> "/" <> Offload.sanitize_tool_call_id(tool_call_id)
@@ -243,13 +330,7 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
 
     case Filesystem.write(middleware.backend, file_path, content, opts) do
       %Filesystem.WriteResult{error: nil, files_update: files_update} ->
-        replacement =
-          Offload.format_notice(@too_large_tool_msg,
-            tool_call_id: tool_call_id,
-            file_path: file_path,
-            content_sample: Offload.content_preview(content)
-          )
-
+        replacement = Offload.tool_result_notice(tool_call_id, file_path, content, read_file_offered?(request))
         {:ok, %{message | content: Offload.evicted_content(message, replacement)}, files_update}
 
       _error ->
@@ -266,14 +347,12 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
   defp evict_and_truncate_human_messages(%__MODULE__{} = middleware, %ModelRequest{} = request) do
     messages = request.messages || []
     threshold = @chars_per_token * middleware.human_message_token_limit_before_evict
-    last_index = last_human_message_index(messages)
+    last_index = last_role_index(messages, :user)
 
     newly_evicted =
       if is_integer(last_index) do
         message = Enum.at(messages, last_index)
-
-        user_message?(message) and evicted_to(message) in [nil, ""] and
-          String.length(Message.text(message)) > threshold
+        evicted_to(message) in [nil, ""] and String.length(Message.text(message)) > threshold
       else
         false
       end
@@ -282,8 +361,8 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
       newly_evicted ->
         evict_latest_human_message(middleware, request, messages, last_index)
 
-      Enum.any?(messages, &(user_message?(&1) and evicted_to(&1) not in [nil, ""])) ->
-        {Enum.map(messages, &truncate_evicted_human_message/1), nil}
+      Enum.any?(messages, &(match?(%Message{role: :user}, &1) and evicted_to(&1) not in [nil, ""])) ->
+        {Enum.map(messages, &truncate_evicted_human_message(&1, read_file_offered?(request))), nil}
 
       true ->
         {messages, nil}
@@ -295,20 +374,14 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
     file_path = middleware.conversation_history_prefix <> "/" <> ID.uuidv7() <> ".md"
     content = Message.text(message)
 
-    case Filesystem.write(
-           middleware.backend,
-           file_path,
-           content,
-           backend_opts_from_model_request(request)
-         ) do
+    case Filesystem.write(middleware.backend, file_path, content, backend_opts(request)) do
       %Filesystem.WriteResult{error: nil, files_update: files_update} ->
         tagged = tag_evicted_human_message(message, file_path)
         tagged_messages = List.replace_at(messages, index, tagged)
-        model_messages = Enum.map(tagged_messages, &truncate_evicted_human_message/1)
+        model_messages = Enum.map(tagged_messages, &truncate_evicted_human_message(&1, read_file_offered?(request)))
 
         update =
-          %{messages: Overwrite.new(tagged_messages)}
-          |> maybe_put_files_update(middleware.state_key, files_update)
+          MapShape.put_present(%{messages: Overwrite.new(tagged_messages)}, middleware.state_key, files_update)
 
         {model_messages, %Command{update: update}}
 
@@ -317,13 +390,17 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
     end
   end
 
-  defp truncate_evicted_human_message(%Message{role: :user} = message) do
+  defp truncate_evicted_human_message(%Message{role: :user} = message, read_file?) do
     case evicted_to(message) do
       path when is_binary(path) and path != "" ->
+        {sample, notes} = message |> Message.text() |> Offload.preview()
+
         replacement =
           Offload.format_notice(@too_large_human_msg,
+            how_to_read: if(read_file?, do: @read_saved_message, else: ""),
             file_path: path,
-            content_sample: Offload.content_preview(Message.text(message))
+            preview_notes: notes,
+            content_sample: sample
           )
 
         %{message | content: Offload.evicted_content(message, replacement)}
@@ -333,28 +410,15 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
     end
   end
 
-  defp truncate_evicted_human_message(message), do: message
+  defp truncate_evicted_human_message(message, _read_file?), do: message
 
-  defp tag_evicted_human_message(%Message{} = message, file_path) do
-    metadata =
-      message.metadata
-      |> Map.put(:offloaded_to, file_path)
+  # Whether the model is offered `read_file`, which the notices for saved
+  # results and messages then tell it to read them with.
+  defp read_file_offered?(%ModelRequest{tools: tools}), do: "read_file" in Helpers.tool_names(tools || [])
+  defp read_file_offered?(%ToolCallRequest{tool_set: tool_set}), do: "read_file" in ToolSet.names(tool_set)
 
-    %{message | id: message.id || ID.uuidv7(), metadata: metadata}
-  end
-
-  defp last_human_message_index(messages) do
-    messages
-    |> Enum.with_index()
-    |> Enum.reverse()
-    |> Enum.find_value(fn
-      {%Message{role: :user}, index} -> index
-      _other -> nil
-    end)
-  end
-
-  defp user_message?(%Message{role: :user}), do: true
-  defp user_message?(_message), do: false
+  defp tag_evicted_human_message(%Message{} = message, file_path),
+    do: %{message | id: message.id || ID.uuidv7(), metadata: Map.put(message.metadata, :offloaded_to, file_path)}
 
   defp evicted_to(%Message{metadata: metadata}) when is_map(metadata),
     do: Map.get(metadata, :offloaded_to)
@@ -363,23 +427,18 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
 
   defp maybe_attach_command(result, nil), do: result
 
-  defp maybe_attach_command({:ok, %ModelResponse{} = response}, %Command{} = command),
-    do: %ExtendedModelResponse{model_response: response, command: command}
+  defp maybe_attach_command({:ok, response}, command)
+       when is_struct(response, ModelResponse) or is_struct(response, ExtendedModelResponse),
+       do: maybe_attach_command(response, command)
 
   defp maybe_attach_command(%ModelResponse{} = response, %Command{} = command),
     do: %ExtendedModelResponse{model_response: response, command: command}
 
-  defp maybe_attach_command({:ok, %ExtendedModelResponse{} = response}, %Command{} = command),
-    do: %{response | command: merge_commands(response.command, command)}
-
   defp maybe_attach_command(%ExtendedModelResponse{} = response, %Command{} = command),
     do: %{response | command: merge_commands(response.command, command)}
 
-  defp maybe_attach_command(%Message{} = message, %Command{} = command),
-    do: %ExtendedModelResponse{
-      model_response: %ModelResponse{messages: [message]},
-      command: command
-    }
+  defp maybe_attach_command(%Message{} = message, command),
+    do: maybe_attach_command(%ModelResponse{messages: [message]}, command)
 
   defp maybe_attach_command(result, _command), do: result
 
@@ -394,17 +453,47 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
     }
   end
 
-  defp system_prompt(%__MODULE__{system_prompt: prompt}) when is_binary(prompt), do: prompt
+  defp system_prompt(%__MODULE__{system_prompt: prompt}, _request) when is_binary(prompt), do: prompt
 
-  defp system_prompt(%__MODULE__{} = middleware) do
-    prompt =
-      @filesystem_system_prompt
-      |> String.trim()
-      |> String.replace("%{large_tool_results_prefix}", middleware.large_tool_results_prefix)
+  # The sections describe the tools this call offers, which `exclude_tools`
+  # and other tool filters may have narrowed.
+  defp system_prompt(%__MODULE__{} = middleware, %ModelRequest{} = request) do
+    offered = Helpers.tool_names(request.tools || [])
+    file_tools = Enum.filter(@file_tools, fn {name, _description} -> name in offered end)
+    execute? = "execute" in offered
 
-    if Executable.executable?(middleware.backend),
-      do: prompt <> "\n\n" <> String.trim(@execution_system_prompt),
-      else: prompt
+    sections = [
+      (file_tools != [] or execute?) && @conventions_prompt,
+      file_tools_prompt(file_tools),
+      large_tool_results_prompt(middleware, offered),
+      execute? && @execution_system_prompt
+    ]
+
+    case Enum.filter(sections, &is_binary/1) do
+      [] -> nil
+      sections -> Enum.map_join(sections, "\n\n", &String.trim/1)
+    end
+  end
+
+  defp file_tools_prompt([]), do: nil
+
+  defp file_tools_prompt(file_tools) do
+    Offload.format_notice(@file_tools_prompt,
+      tool_names: Enum.map_join(file_tools, ", ", fn {name, _description} -> "`#{name}`" end),
+      tool_lines: Enum.map_join(file_tools, "\n", fn {name, description} -> "- #{name}: #{description}" end)
+    )
+  end
+
+  # Only the tools that can read a saved result are named, and without one
+  # there is nothing to say.
+  defp large_tool_results_prompt(middleware, offered) do
+    ways = for {name, how} <- @offloaded_result_readers, name in offered, do: how
+
+    if ways != [] do
+      @large_tool_results_prompt
+      |> Offload.format_notice(how_to_read: Enum.join(ways, ", or "))
+      |> Offload.format_notice(large_tool_results_prefix: middleware.large_tool_results_prefix)
+    end
   end
 
   defp command_messages(update) when is_map(update) do
@@ -415,32 +504,11 @@ defmodule BeamWeaver.Agent.Middleware.Filesystem do
     end
   end
 
-  defp backend_opts(%ToolCallRequest{} = request) do
-    [
-      state: request.state || %{},
-      store: runtime_value(request.runtime, :store),
-      runtime: request.runtime
-    ]
-    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+  defp backend_opts(request) do
+    Enum.reject([state: request.state || %{}, store: runtime_store(request.runtime), runtime: request.runtime], fn
+      {_key, value} -> is_nil(value)
+    end)
   end
 
-  defp backend_opts_from_model_request(%ModelRequest{} = request) do
-    [
-      state: request.state || %{},
-      store: runtime_value(request.runtime, :store),
-      runtime: request.runtime
-    ]
-    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-  end
-
-  defp runtime_value(%{store: store}, :store), do: store
-  defp runtime_value(_runtime, _key), do: nil
-
-  defp tool_name(%ToolCallRequest{tool_call: %{name: name}}), do: to_string(name)
-  defp tool_name(%ToolCallRequest{tool_call: %{"name" => name}}), do: to_string(name)
-  defp tool_name(_request), do: ""
-
-  defp tool_call_id(%ToolCallRequest{tool_call: %{id: id}}), do: id
-  defp tool_call_id(%ToolCallRequest{tool_call: %{"id" => id}}), do: id
-  defp tool_call_id(_request), do: nil
+  defp tool_name(call), do: to_string(MapAccess.get(call, :name))
 end

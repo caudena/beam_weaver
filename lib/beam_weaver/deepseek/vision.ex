@@ -1,7 +1,7 @@
 defmodule BeamWeaver.DeepSeek.Vision do
   @moduledoc false
 
-  alias BeamWeaver.DeepSeek.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Models.ProfileRegistry.DeepSeek
 
   @image_types ~w(input_image image_url file)
@@ -26,12 +26,7 @@ defmodule BeamWeaver.DeepSeek.Vision do
         invalid("DeepSeek image requests must fit within 48 MiB", api)
 
       true ->
-        Enum.reduce_while(images, :ok, fn {part, role}, :ok ->
-          case validate_image(part, role, api) do
-            :ok -> {:cont, :ok}
-            error -> {:halt, error}
-          end
-        end)
+        Enum.find_value(images, :ok, fn {part, role} -> with :ok <- validate_image(part, role, api), do: nil end)
     end
   end
 

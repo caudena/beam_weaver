@@ -34,6 +34,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
     :top_logprobs,
     :top_p,
     :truncation,
+    :use_previous_response_id,
     :user,
     :verbosity
   ]
@@ -96,6 +97,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
     :mcp_servers,
     :output_config,
     :parallel_tool_calls,
+    :reasoning_effort,
     :response_format,
     :service_tier,
     :speed,
@@ -116,18 +118,20 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
 
   @xai_responses_params [
     :context_management,
+    :guidelines,
     :include,
     :instructions,
     :max_output_tokens,
     :max_tokens,
     :max_turns,
+    :min_p,
     :parallel_tool_calls,
     :previous_response_id,
     :prompt_cache_key,
     :reasoning,
     :reasoning_effort,
     :response_format,
-    :search_parameters,
+    :safety_identifier,
     :service_tier,
     :store,
     :stream,
@@ -136,6 +140,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
     :text,
     :tool_choice,
     :tools,
+    :top_k,
     :top_p,
     :truncation,
     :use_previous_response_id,
@@ -146,14 +151,16 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
   @xai_chat_completions_params [
     :deferred,
     :frequency_penalty,
+    :guidelines,
     :max_completion_tokens,
     :max_tokens,
     :n,
     :parallel_tool_calls,
     :presence_penalty,
+    :prompt_cache_key,
     :reasoning_effort,
     :response_format,
-    :search_parameters,
+    :safety_identifier,
     :seed,
     :service_tier,
     :stop,
@@ -170,14 +177,14 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
     :x_grok_conv_id
   ]
 
-  @xai_embedding_params [:dimensions, :encoding_format, :preview, :user]
-
   @moonshot_params [
     :frequency_penalty,
+    :logprobs,
     :max_completion_tokens,
     :max_output_tokens,
     :max_tokens,
     :n,
+    :prediction,
     :presence_penalty,
     :prompt_cache_key,
     :response_format,
@@ -191,16 +198,16 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
     :thinking,
     :tool_choice,
     :tools,
+    :top_logprobs,
     :top_p
   ]
 
   @zai_params [
     :do_sample,
+    :extra_body,
     :max_completion_tokens,
     :max_output_tokens,
     :max_tokens,
-    :metadata,
-    :model_kwargs,
     :reasoning_effort,
     :request_id,
     :response_format,
@@ -219,11 +226,11 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
   ]
 
   @deepseek_chat_completions_params [
+    :extra_body,
     :logprobs,
     :max_completion_tokens,
     :max_output_tokens,
     :max_tokens,
-    :model_kwargs,
     :reasoning_effort,
     :response_format,
     :stop,
@@ -241,11 +248,11 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
   ]
 
   @deepseek_responses_params [
+    :extra_body,
     :instructions,
     :max_completion_tokens,
     :max_output_tokens,
     :max_tokens,
-    :model_kwargs,
     :reasoning,
     :reasoning_effort,
     :response_format,
@@ -275,7 +282,6 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
     :logprobs,
     :max_output_tokens,
     :media_resolution,
-    :model_kwargs,
     :presence_penalty,
     :response_format,
     :response_format_config,
@@ -310,7 +316,6 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
   def anthropic, do: @anthropic_params
   def xai_responses, do: @xai_responses_params
   def xai_chat_completions, do: @xai_chat_completions_params
-  def xai_embedding, do: @xai_embedding_params
   def moonshot, do: @moonshot_params
   def zai, do: @zai_params
   def deepseek_chat_completions, do: @deepseek_chat_completions_params
@@ -320,4 +325,6 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
   def google_latest_flash do
     @google_params -- [:candidate_count, :temperature, :thinking_budget, :top_k, :top_p]
   end
+
+  def google_argon, do: [:continuation_token | google_latest_flash()] -- [:cached_content]
 end

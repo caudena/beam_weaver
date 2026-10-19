@@ -1,9 +1,50 @@
 defmodule BeamWeaver.Core.Tool do
-  @moduledoc """
-  Tool contract and helper struct for executable model tools.
+  @moduledoc ~S"""
+  Execute and inspect tools through a common application-code contract.
+
+  Use BeamWeaver.Tool for module declarations or from_function/1 for runtime
+  handlers. Model-facing arguments use string keys; injected runtime data is
+  supplied separately under declared atom keys and excluded from public schemas.
+
+  For a module tool whose schema is computed, which `BeamWeaver.Tool`'s
+  declarations can't express, `use BeamWeaver.Core.Tool` implements this
+  behaviour. Define `name/1`, `description/1`, `input_schema/1` and
+  `invoke/3`; every other callback gets a default unless the module defines
+  it. Each callback's first argument is the tool: the struct, or the module.
+  See [Tools](tools.md#tools-with-a-computed-schema).
+
+      defmodule MyApp.Tools.SectionSearch do
+        use BeamWeaver.Core.Tool
+
+        defstruct sections: ["billing", "returns"]
+
+        @impl true
+        def name(_tool), do: "search_section"
+
+        @impl true
+        def description(_tool), do: "Search one section of the help center."
+
+        @impl true
+        def input_schema(%__MODULE__{sections: sections}) do
+          %{
+            "type" => "object",
+            "properties" => %{"section" => %{"type" => "string", "enum" => sections}},
+            "required" => ["section"]
+          }
+        end
+
+        @impl true
+        def invoke(_tool, %{"section" => section}, _opts), do: {:ok, "Searched #{section}."}
+      end
+
+  invoke/3 parses/validates input before dispatch. A tool-call input carries
+  correlation identity so the result can answer the right model request.
+  Application authorization and idempotency remain inside the tool/data layer.
+  See [Tools](tools.md) for live execution, artifacts and state updates.
   """
 
-  alias BeamWeaver.Core.Async
+  import BeamWeaver.MapShape, only: [put_present: 3]
+
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Tool.Injected
   alias BeamWeaver.Core.Tool.Invocation
@@ -13,36 +54,112 @@ defmodule BeamWeaver.Core.Tool do
   alias BeamWeaver.Tracing.Options, as: TraceOptions
   alias BeamWeaver.Tracing.Runner, as: TraceRunner
 
+  @doc """
+  Returns the model-visible action name.
+  """
   @callback name(term()) :: String.t()
+  @doc """
+  Explains when to call the action and what its result means.
+  """
   @callback description(term()) :: String.t()
+  @doc """
+  Returns the input contract used for tool validation and provider rendering.
+  """
   @callback input_schema(term()) :: map()
+  @doc """
+  Maps application-only argument names to runtime injection sources.
+  """
   @callback injected(term()) :: map()
+  @doc """
+  Reports whether successful execution can end the agent loop without another model turn.
+  """
   @callback return_direct(term()) :: boolean()
+  @doc """
+  Selects ordinary content or content-plus-artifact handling.
+  """
   @callback response_format(term()) :: atom() | map() | nil
+  @doc """
+  Optionally describes structured action output; it is separate from an agent response schema.
+  """
   @callback output_schema(term()) :: map() | nil
+  @doc """
+  Optionally customizes action-error presentation.
+  """
   @callback handle_tool_error(term()) :: boolean() | String.t() | (Error.t() -> term()) | nil
+  @doc """
+  Optionally customizes invalid-input presentation.
+  """
   @callback handle_validation_error(term()) ::
               boolean() | String.t() | (Error.t() -> term()) | nil
+  @doc """
+  Parses raw arguments before normal schema validation.
+  """
   @callback parse_args(term(), map()) :: :ok | {:ok, map()} | {:error, term()}
+  @doc """
+  Controls scheduling beside adjacent tool calls; it is not a cross-run database lock.
+  """
   @callback concurrent?(term()) :: boolean()
+  @doc """
+  Sets the model-visible text truncation limit.
+  """
   @callback max_result_chars(term()) :: pos_integer() | :unlimited
+  @doc """
+  Returns tool-selection/trace tags.
+  """
   @callback tags(term()) :: [atom() | String.t()]
+  @doc """
+  Returns application/tool-selection metadata.
+  """
   @callback metadata(term()) :: map()
+  @doc """
+  Returns native declaration fields for provider rendering.
+  """
   @callback provider_opts(term()) :: keyword() | map()
-  @callback invoke(term(), map(), keyword()) :: {:ok, term()} | {:error, Error.t()}
+  @doc """
+  Executes normalized model arguments and supplied injected values. Return {:ok, value} or {:error, reason}.
+  """
+  @callback invoke(term(), map(), keyword()) :: {:ok, term()} | {:error, Error.t() | term()}
 
-  @optional_callbacks injected: 1,
-                      return_direct: 1,
-                      response_format: 1,
-                      output_schema: 1,
-                      handle_tool_error: 1,
-                      handle_validation_error: 1,
-                      parse_args: 2,
-                      concurrent?: 1,
-                      max_result_chars: 1,
-                      tags: 1,
-                      metadata: 1,
-                      provider_opts: 1
+  @defaults [
+    {:injected, 1, %{}},
+    {:return_direct, 1, false},
+    {:response_format, 1, nil},
+    {:output_schema, 1, nil},
+    {:handle_tool_error, 1, nil},
+    {:handle_validation_error, 1, nil},
+    {:parse_args, 2, :ok},
+    {:concurrent?, 1, true},
+    {:max_result_chars, 1, :unlimited},
+    {:tags, 1, []},
+    {:metadata, 1, %{}},
+    {:provider_opts, 1, %{}}
+  ]
+
+  # `use BeamWeaver.Core.Tool` implements the behaviour; every callback but
+  # `name/1`, `description/1`, `input_schema/1`, and `invoke/3` gets a default
+  # unless the module defines it.
+  defmacro __using__(_opts) do
+    quote do
+      @behaviour BeamWeaver.Core.Tool
+      @before_compile BeamWeaver.Core.Tool
+    end
+  end
+
+  defmacro __before_compile__(env) do
+    for {fun, arity, value} <- @defaults, not Module.defines?(env.module, {fun, arity}) do
+      args = for i <- 1..arity, do: Macro.var(:"_arg#{i}", __MODULE__)
+
+      quote do
+        @doc false
+        def unquote(fun)(unquote_splicing(args)), do: unquote(Macro.escape(value))
+      end
+    end
+  end
+
+  @doc false
+  # Whether `module` implements this behaviour (directly or via `use`).
+  @spec implemented_by?(module()) :: boolean()
+  def implemented_by?(module) when is_atom(module), do: BeamWeaver.Behaviour.implemented_by?(module, __MODULE__)
 
   @enforce_keys [:name, :description, :input_schema, :handler]
   defstruct [
@@ -103,85 +220,62 @@ defmodule BeamWeaver.Core.Tool do
   """
   @spec from_function(keyword()) :: {:ok, t()} | {:error, Error.t()}
   def from_function(opts) do
-    name = Keyword.get(opts, :name)
-    description = Keyword.get(opts, :description)
-    input_schema = Keyword.get(opts, :input_schema)
-    handler = Keyword.get(opts, :handler)
-    injected = Keyword.get(opts, :injected, %{})
-    return_direct = Keyword.get(opts, :return_direct, false)
-    response_format = Keyword.get(opts, :response_format)
-    output_schema = Keyword.get(opts, :output_schema)
-    handle_tool_error = Keyword.get(opts, :handle_tool_error)
-    handle_validation_error = Keyword.get(opts, :handle_validation_error)
-    parse_args = Keyword.get(opts, :parse_args)
-    concurrent? = Keyword.get(opts, :concurrent, true)
-    max_result_chars = Keyword.get(opts, :max_result_chars, :unlimited)
-    tags = Keyword.get(opts, :tags, [])
-    metadata = Keyword.get(opts, :metadata, %{})
-    provider_opts = Keyword.get(opts, :provider_opts, %{})
-    artifact = Keyword.get(opts, :artifact)
+    tool = %__MODULE__{
+      name: Keyword.get(opts, :name),
+      description: Keyword.get(opts, :description),
+      input_schema: Keyword.get(opts, :input_schema),
+      return_direct: Keyword.get(opts, :return_direct, false) == true,
+      response_format: Keyword.get(opts, :response_format),
+      output_schema: Keyword.get(opts, :output_schema),
+      handle_tool_error: Keyword.get(opts, :handle_tool_error),
+      handle_validation_error: Keyword.get(opts, :handle_validation_error),
+      parse_args: Keyword.get(opts, :parse_args),
+      concurrent?: Keyword.get(opts, :concurrent, true),
+      max_result_chars: Keyword.get(opts, :max_result_chars, :unlimited),
+      tags: Keyword.get(opts, :tags, []),
+      metadata: Keyword.get(opts, :metadata, %{}),
+      provider_opts: Keyword.get(opts, :provider_opts, %{}),
+      artifact: Keyword.get(opts, :artifact),
+      handler: Keyword.get(opts, :handler)
+    }
 
     cond do
-      not valid_name?(name) ->
+      not is_binary(tool.name) or tool.name == "" ->
         {:error, Error.new(:invalid_tool, "tool name is required")}
 
-      not is_binary(description) or description == "" ->
+      not is_binary(tool.description) or tool.description == "" ->
         {:error, Error.new(:invalid_tool, "tool description is required")}
 
-      not is_map(input_schema) ->
+      not is_map(tool.input_schema) ->
         {:error, Error.new(:invalid_tool, "tool input_schema must be a map")}
 
-      not is_function(handler, 2) ->
+      not is_function(tool.handler, 2) ->
         {:error, Error.new(:invalid_tool, "tool handler must accept input and opts")}
 
-      output_schema != nil and not is_map(output_schema) ->
+      tool.output_schema != nil and not is_map(tool.output_schema) ->
         {:error, Error.new(:invalid_tool, "tool output_schema must be a map")}
 
-      parse_args != nil and not is_function(parse_args, 1) ->
+      tool.parse_args != nil and not is_function(tool.parse_args, 1) ->
         {:error, Error.new(:invalid_tool, "tool parse_args must accept args")}
 
-      not is_boolean(concurrent?) ->
+      not is_boolean(tool.concurrent?) ->
         {:error, Error.new(:invalid_tool, "tool concurrent option must be a boolean")}
 
-      not valid_max_result_chars?(max_result_chars) ->
-        {:error,
-         Error.new(
-           :invalid_tool,
-           "tool max_result_chars must be :unlimited or a positive integer"
-         )}
+      not (tool.max_result_chars == :unlimited or (is_integer(tool.max_result_chars) and tool.max_result_chars > 0)) ->
+        {:error, Error.new(:invalid_tool, "tool max_result_chars must be :unlimited or a positive integer")}
 
-      not is_list(tags) ->
+      not is_list(tool.tags) ->
         {:error, Error.new(:invalid_tool, "tool tags must be a list")}
 
-      not is_map(metadata) ->
+      not is_map(tool.metadata) ->
         {:error, Error.new(:invalid_tool, "tool metadata must be a map")}
 
-      not (is_map(provider_opts) or Keyword.keyword?(provider_opts)) ->
+      not (is_map(tool.provider_opts) or Keyword.keyword?(tool.provider_opts)) ->
         {:error, Error.new(:invalid_tool, "tool provider_opts must be a map or keyword list")}
 
       true ->
-        with {:ok, injected} <- Injected.normalize(injected) do
-          {:ok,
-           %__MODULE__{
-             name: name,
-             description: description,
-             input_schema: input_schema,
-             injected: injected,
-             return_direct: return_direct == true,
-             response_format: response_format,
-             output_schema: output_schema,
-             handle_tool_error: handle_tool_error,
-             handle_validation_error: handle_validation_error,
-             parse_args: parse_args,
-             concurrent?: concurrent?,
-             max_result_chars: max_result_chars,
-             tags: tags,
-             metadata: metadata,
-             provider_opts: provider_opts,
-             artifact: artifact,
-             handler: handler
-           }}
-        end
+        with {:ok, injected} <- Injected.normalize(Keyword.get(opts, :injected, %{})),
+             do: {:ok, %{tool | injected: injected}}
     end
   end
 
@@ -189,41 +283,26 @@ defmodule BeamWeaver.Core.Tool do
   Builds a tool and raises on invalid input.
   """
   @spec from_function!(keyword()) :: t()
-  def from_function!(opts) do
-    case from_function(opts) do
-      {:ok, tool} -> tool
-      {:error, error} -> raise ArgumentError, error.message
-    end
-  end
+  def from_function!(opts), do: opts |> from_function() |> BeamWeaver.Policy.bang()
 
   @doc """
   Returns a tool name for structs implementing this behaviour or `%Tool{}`.
   """
   @spec name(term()) :: String.t()
   def name(%__MODULE__{name: name}), do: name
-  def name(tool), do: required_callback(tool, :name)
+  def name(tool), do: callback(tool, :name)
 
   @doc """
   Returns a tool description.
   """
   @spec description(term()) :: String.t()
   def description(%__MODULE__{description: description}), do: description
-  def description(tool), do: required_callback(tool, :description)
+  def description(tool), do: callback(tool, :description)
 
   @doc """
   Returns a tool input schema.
   """
   @spec input_schema(term()) :: map()
-  def input_schema(module) when is_atom(module) do
-    module
-    |> raw_input_schema()
-    |> Schema.public_input(Map.keys(injected(module)))
-  end
-
-  def input_schema(%__MODULE__{input_schema: input_schema, injected: injected}) do
-    Schema.public_input(input_schema, Map.keys(injected))
-  end
-
   def input_schema(tool) do
     tool
     |> raw_input_schema()
@@ -235,7 +314,7 @@ defmodule BeamWeaver.Core.Tool do
   """
   @spec raw_input_schema(term()) :: map()
   def raw_input_schema(%__MODULE__{input_schema: input_schema}), do: input_schema
-  def raw_input_schema(tool), do: required_callback(tool, :input_schema)
+  def raw_input_schema(tool), do: callback(tool, :input_schema)
 
   @doc """
   Returns runtime-injected tool arguments.
@@ -245,7 +324,7 @@ defmodule BeamWeaver.Core.Tool do
 
   def injected(tool) do
     tool
-    |> optional_callback(:injected, %{})
+    |> callback(:injected)
     |> Injected.normalize!()
   end
 
@@ -256,7 +335,7 @@ defmodule BeamWeaver.Core.Tool do
   def return_direct(%__MODULE__{return_direct: return_direct}), do: return_direct == true
 
   def return_direct(tool) do
-    optional_callback(tool, :return_direct, false) == true
+    callback(tool, :return_direct) == true
   end
 
   @doc """
@@ -266,7 +345,7 @@ defmodule BeamWeaver.Core.Tool do
   def response_format(%__MODULE__{response_format: response_format}), do: response_format
 
   def response_format(tool) do
-    optional_callback(tool, :response_format, nil)
+    callback(tool, :response_format)
   end
 
   @doc """
@@ -276,7 +355,7 @@ defmodule BeamWeaver.Core.Tool do
   def output_schema(%__MODULE__{output_schema: output_schema}), do: output_schema
 
   def output_schema(tool) do
-    optional_callback(tool, :output_schema, nil)
+    callback(tool, :output_schema)
   end
 
   @doc """
@@ -286,7 +365,7 @@ defmodule BeamWeaver.Core.Tool do
   def handle_tool_error(%__MODULE__{handle_tool_error: policy}), do: policy
 
   def handle_tool_error(tool) do
-    optional_callback(tool, :handle_tool_error, nil)
+    callback(tool, :handle_tool_error)
   end
 
   @doc """
@@ -296,7 +375,7 @@ defmodule BeamWeaver.Core.Tool do
   def handle_validation_error(%__MODULE__{handle_validation_error: policy}), do: policy
 
   def handle_validation_error(tool) do
-    optional_callback(tool, :handle_validation_error, nil)
+    callback(tool, :handle_validation_error)
   end
 
   @doc """
@@ -309,7 +388,7 @@ defmodule BeamWeaver.Core.Tool do
     do: parser.(args)
 
   def parse_args(tool, args) do
-    optional_callback(tool, :parse_args, :ok, [args])
+    callback(tool, :parse_args, [args])
   end
 
   @doc """
@@ -319,7 +398,7 @@ defmodule BeamWeaver.Core.Tool do
   def concurrent?(%__MODULE__{concurrent?: concurrent?}), do: concurrent? == true
 
   def concurrent?(tool) do
-    optional_callback(tool, :concurrent?, true) == true
+    callback(tool, :concurrent?) == true
   end
 
   @doc """
@@ -329,10 +408,9 @@ defmodule BeamWeaver.Core.Tool do
   def max_result_chars(%__MODULE__{max_result_chars: max_result_chars}), do: max_result_chars
 
   def max_result_chars(tool) do
-    case optional_callback(tool, :max_result_chars, :unlimited) do
+    case callback(tool, :max_result_chars) do
       value when is_integer(value) and value > 0 -> value
-      :unlimited -> :unlimited
-      _invalid -> :unlimited
+      _unlimited -> :unlimited
     end
   end
 
@@ -343,7 +421,7 @@ defmodule BeamWeaver.Core.Tool do
   def tags(%__MODULE__{tags: tags}), do: tags
 
   def tags(tool) do
-    optional_callback(tool, :tags, [])
+    callback(tool, :tags)
   end
 
   @doc """
@@ -353,7 +431,7 @@ defmodule BeamWeaver.Core.Tool do
   def metadata(%__MODULE__{metadata: metadata}), do: metadata
 
   def metadata(tool) do
-    optional_callback(tool, :metadata, %{})
+    callback(tool, :metadata)
   end
 
   @doc """
@@ -363,7 +441,7 @@ defmodule BeamWeaver.Core.Tool do
   def provider_opts(%__MODULE__{provider_opts: provider_opts}), do: provider_opts
 
   def provider_opts(tool) do
-    optional_callback(tool, :provider_opts, %{})
+    callback(tool, :provider_opts)
   end
 
   @doc """
@@ -403,36 +481,16 @@ defmodule BeamWeaver.Core.Tool do
   end
 
   @doc """
-  Invokes a tool after validating required input keys.
+  Invokes a tool after parsing and validating its input schema.
+
+  Map input returns the normalized handler result. Tool-call input preserves
+  correlation in a tool message/result. String error reasons normalize to
+  Core.Error values; direct module-handler exceptions can still raise.
   """
   @spec invoke(term(), map(), keyword()) :: {:ok, term()} | {:error, Error.t()}
-  def invoke(tool, input, opts \\ [])
-
-  def invoke(tool, input, opts) do
-    trace_tool_call(tool, input, opts, fn call_opts ->
-      Invocation.invoke(tool, input, call_opts, invocation_api())
-    end)
+  def invoke(tool, input, opts \\ []) do
+    trace_tool_call(tool, input, opts, &Invocation.invoke(tool, input, &1))
   end
-
-  @doc """
-  Alias for `invoke/3`, matching LangChain's run-style tool surface.
-  """
-  @spec run(term(), map(), keyword()) :: {:ok, term()} | {:error, Error.t()}
-  def run(tool, input, opts \\ []), do: invoke(tool, input, opts)
-
-  @doc """
-  Starts a Task-backed tool invocation.
-  """
-  @spec async_invoke(term(), map(), keyword()) :: Async.handle()
-  def async_invoke(tool, input, opts \\ []) do
-    Async.run_call(opts, &invoke(tool, input, &1))
-  end
-
-  @doc """
-  Alias for `async_invoke/3`.
-  """
-  @spec async_run(term(), map(), keyword()) :: Async.handle()
-  def async_run(tool, input, opts \\ []), do: async_invoke(tool, input, opts)
 
   @doc """
   Formats a raw tool result as a tool message when a tool-call ID is present.
@@ -459,27 +517,11 @@ defmodule BeamWeaver.Core.Tool do
   @spec normalize_input(map(), map()) :: {:ok, map()} | {:error, Error.t()}
   def normalize_input(schema, input), do: Schema.normalize(schema, input)
 
-  defp do_invoke(%__MODULE__{handler: handler}, input, opts) do
-    normalize_result(handler.(input, opts))
-  rescue
-    exception -> {:error, Error.new(:tool_exception, Exception.message(exception))}
-  end
-
-  defp do_invoke(tool, input, opts), do: required_callback(tool, :invoke, [input, opts])
-
-  defp normalize_result({:ok, _value} = result), do: result
-  defp normalize_result({:error, %Error{}} = result), do: result
-
-  defp normalize_result({:error, reason}),
-    do: {:error, Error.new(:tool_error, "tool returned an error", %{reason: inspect(reason)})}
-
-  defp normalize_result(value), do: {:ok, value}
-
-  defp trace_tool_call(tool, input, opts, fun) when is_function(fun, 1) do
+  defp trace_tool_call(tool, input, opts, fun) do
     call_opts = Keyword.drop(opts, @internal_trace_opt_keys)
 
-    if trace_tool_call?(opts) do
-      exporter_opts = tracing_exporter_opts(opts)
+    if BeamWeaver.Core.ChatModel.trace?(opts) do
+      exporter_opts = Keyword.take(opts, [:exporter, :exporter_opts])
 
       TraceRunner.run(
         name(tool),
@@ -521,16 +563,6 @@ defmodule BeamWeaver.Core.Tool do
     end
   end
 
-  defp trace_tool_call?(opts) do
-    trace? = Keyword.get(opts, :trace?, Keyword.get(opts, :trace, true))
-
-    trace? != false and
-      (not is_nil(Tracing.capture_context()) or Keyword.has_key?(opts, :exporter) or
-         Tracing.exporter_configured?())
-  end
-
-  defp tracing_exporter_opts(opts), do: Keyword.take(opts, [:exporter, :exporter_opts])
-
   defp tool_trace_metadata(tool, input, opts) do
     tool
     |> metadata()
@@ -540,7 +572,7 @@ defmodule BeamWeaver.Core.Tool do
     })
     |> Map.merge(Keyword.get(opts, :trace_metadata, %{}) || %{})
     |> TraceOptions.metadata(Keyword.get(opts, :trace))
-    |> maybe_put(:tool_call_id, tool_call_id(input, opts))
+    |> put_present(:tool_call_id, Keyword.get(opts, :tool_call_id) || BeamWeaver.MapAccess.get(input, :id))
   end
 
   defp trace_inputs(tool, input, opts) do
@@ -549,7 +581,7 @@ defmodule BeamWeaver.Core.Tool do
   end
 
   defp default_trace_input(_tool, input) when is_map(input) do
-    if tool_call_input?(input) do
+    if Invocation.tool_call_input?(input) do
       args = BeamWeaver.MapAccess.get(input, :args)
       if is_map(args), do: args, else: %{"input" => args}
     else
@@ -566,59 +598,13 @@ defmodule BeamWeaver.Core.Tool do
     end
   end
 
-  defp public_trace_input(tool, input) when is_map(input) do
-    hidden = tool |> injected() |> Map.keys() |> MapSet.new(&to_string/1)
-
-    input
-    |> Enum.reject(fn {key, _value} -> MapSet.member?(hidden, to_string(key)) end)
-    |> Map.new()
-  end
+  defp public_trace_input(tool, input) when is_map(input), do: Invocation.without_injected(input, injected(tool))
 
   defp public_trace_input(_tool, input), do: %{"input" => input}
 
-  defp tool_call_input?(input) do
-    BeamWeaver.MapAccess.get(input, :type) in [:tool_call, "tool_call"]
-  end
-
-  defp tool_call_id(input, opts) when is_map(input) do
-    Keyword.get(opts, :tool_call_id) || BeamWeaver.MapAccess.get(input, :id)
-  end
-
-  defp tool_call_id(_input, opts), do: Keyword.get(opts, :tool_call_id)
-
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
-
-  defp valid_name?(name), do: is_binary(name) and name != ""
-  defp valid_max_result_chars?(:unlimited), do: true
-  defp valid_max_result_chars?(value), do: is_integer(value) and value > 0
-
-  defp invocation_api do
-    %{
-      args: &args/1,
-      do_invoke: &do_invoke/3,
-      handle_tool_error: &handle_tool_error/1,
-      handle_validation_error: &handle_validation_error/1,
-      injected: &injected/1,
-      input_schema: &input_schema/1,
-      name: &name/1,
-      parse_args: &parse_args/2,
-      response_format: &response_format/1
-    }
-  end
-
-  defp required_callback(tool, callback, extra_args \\ []) do
+  defp callback(tool, callback, extra_args \\ []) do
     {module, first_arg} = callback_target(tool)
     apply(module, callback, [first_arg | extra_args])
-  end
-
-  defp optional_callback(tool, callback, default, extra_args \\ []) do
-    {module, first_arg} = callback_target(tool)
-    arity = 1 + length(extra_args)
-
-    if function_exported?(module, callback, arity),
-      do: apply(module, callback, [first_arg | extra_args]),
-      else: default
   end
 
   defp callback_target(module) when is_atom(module), do: {module, module}

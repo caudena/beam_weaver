@@ -5,8 +5,7 @@ defmodule BeamWeaver.Anthropic.MessagesTest do
   alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages.ToolCall
-  alias BeamWeaver.Provider.DecodeMessage
-  alias BeamWeaver.Provider.EncodeMessage
+  alias BeamWeaver.Provider.MessageCodec
 
   test "lifts system messages, appends missing assistant tool_use blocks, and formats tool results" do
     messages = [
@@ -281,12 +280,12 @@ defmodule BeamWeaver.Anthropic.MessagesTest do
 
   test "provider protocols route Anthropic through the Anthropic translator" do
     assert {:ok, %{"role" => "user", "content" => "hello"}} =
-             EncodeMessage.encode(Message.user("hello"), provider: :anthropic)
+             MessageCodec.encode(Message.user("hello"), provider: :anthropic)
 
     payload = %{"content" => [%{"type" => "text", "text" => "hi"}]}
 
     assert {:ok, %Message{role: :assistant, content: "hi"}} =
-             DecodeMessage.decode(payload, provider: :anthropic)
+             MessageCodec.decode(payload, provider: :anthropic)
   end
 
   test "preserves fallback boundary blocks when an assistant turn is replayed" do
@@ -322,5 +321,147 @@ defmodule BeamWeaver.Anthropic.MessagesTest do
              "from" => %{"model" => "claude-opus-5"},
              "to" => %{"model" => "claude-opus-4-8"}
            }
+  end
+
+  describe "server tool blocks" do
+    @search_use %{
+      "type" => "server_tool_use",
+      "id" => "srvtoolu_1",
+      "name" => "web_search",
+      "input" => %{"query" => "carrier delays"}
+    }
+    @search_result %{
+      "type" => "web_search_tool_result",
+      "tool_use_id" => "srvtoolu_1",
+      "content" => [
+        %{
+          "type" => "web_search_result",
+          "url" => "https://status.example.test",
+          "title" => "Status",
+          "encrypted_content" => "abc"
+        }
+      ]
+    }
+    @mcp_use %{
+      "type" => "mcp_tool_use",
+      "id" => "mcptoolu_1",
+      "name" => "track_parcel",
+      "server_name" => "carriers",
+      "input" => %{"parcel" => "A-1001"}
+    }
+    @mcp_result %{
+      "type" => "mcp_tool_result",
+      "tool_use_id" => "mcptoolu_1",
+      "is_error" => false,
+      "content" => [%{"type" => "text", "text" => "In transit"}]
+    }
+
+    defp server_tool_reply do
+      Messages.response_to_message(%{
+        "id" => "msg_1",
+        "type" => "message",
+        "role" => "assistant",
+        "model" => "claude-haiku-4-5",
+        "stop_reason" => "end_turn",
+        "usage" => %{"input_tokens" => 10, "output_tokens" => 5},
+        "content" => [
+          @search_use,
+          @search_result,
+          @mcp_use,
+          @mcp_result,
+          %{"type" => "text", "text" => "A-1001 is in transit."}
+        ]
+      })
+    end
+
+    defp replayed_content(reply) do
+      assert {:ok, {nil, [_user, %{"role" => "assistant", "content" => content}, _next]}} =
+               Messages.format_messages([Message.user("Where is A-1001?"), reply, Message.user("Thanks")])
+
+      content
+    end
+
+    test "a reply's server tool blocks go back as Anthropic sent them" do
+      assert {:ok, reply} = server_tool_reply()
+
+      assert [
+               %{type: :server_tool_call, id: "srvtoolu_1", name: "web_search", args: %{"query" => "carrier delays"}},
+               %{type: :server_tool_result, tool_call_id: "srvtoolu_1", status: "success"},
+               %{type: :server_tool_call, id: "mcptoolu_1", name: "remote_mcp", args: %{"parcel" => "A-1001"}},
+               %{type: :server_tool_result, tool_call_id: "mcptoolu_1", status: "success"},
+               _text
+             ] = reply.content
+
+      expected = [
+        @search_use,
+        @search_result,
+        @mcp_use,
+        @mcp_result,
+        %{"type" => "text", "text" => "A-1001 is in transit."}
+      ]
+
+      assert replayed_content(reply) == expected
+
+      # The same after the reply is saved and loaded, as a checkpoint does.
+      assert {:ok, saved} = BeamWeaver.Serialization.dump(reply)
+      assert {:ok, loaded} = BeamWeaver.Serialization.load(saved)
+      assert replayed_content(loaded) == expected
+    end
+
+    test "a server tool call without Anthropic's block maps back to server_tool_use" do
+      call = %{type: :server_tool_call, id: "srvtoolu_2", name: "code_interpreter", args: %{"code" => "1 + 1"}}
+
+      assert [
+               %{
+                 "type" => "server_tool_use",
+                 "id" => "srvtoolu_2",
+                 "name" => "code_execution",
+                 "input" => %{"code" => "1 + 1"}
+               }
+             ] = replayed_content(Message.assistant([call]))
+
+      result = %{type: :server_tool_result, tool_call_id: "srvtoolu_2", status: "success", output: "2"}
+
+      assert {:error, %BeamWeaver.Core.Error{type: :invalid_content_block}} =
+               Messages.format_messages([Message.user("Add"), Message.assistant([call, result])])
+    end
+  end
+
+  test "a block Anthropic has no input for is an error, not a crash" do
+    for block <- [
+          ContentBlock.video(%{url: "https://example.test/clip.mp4"}),
+          ContentBlock.audio(%{url: "https://example.test/call.mp3"}),
+          ContentBlock.citation(%{url: "https://example.test", title: "Source"})
+        ] do
+      assert {:error, %BeamWeaver.Core.Error{type: :invalid_content_block, message: message}} =
+               Messages.format_messages([Message.user([ContentBlock.text("What is this?"), block])])
+
+      assert message =~ "does not take this #{inspect(block.type)} block"
+
+      # In a system prompt too.
+      assert {:error, %BeamWeaver.Core.Error{type: :invalid_content_block}} =
+               Messages.format_messages([Message.system([block]), Message.user("Hi")])
+    end
+
+    assert {:error, %BeamWeaver.Core.Error{type: :invalid_content_block}} =
+             Messages.format_messages([Message.user([ContentBlock.image(%{})])])
+
+    assert {:ok,
+            {nil, [%{"content" => [%{"type" => "image", "source" => %{"type" => "file", "file_id" => "file_1"}}]}]}} =
+             Messages.format_messages([Message.user([ContentBlock.image(file_id: "file_1")])])
+
+    model =
+      BeamWeaver.Models.init_chat_model!("anthropic:claude-haiku-4-5",
+        api_key: "test-key",
+        transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+        transport_opts: [parent: self()]
+      )
+
+    video = Message.user([ContentBlock.video(%{url: "https://example.test/clip.mp4"})])
+
+    assert {:error, %BeamWeaver.Core.Error{type: :invalid_content_block}} =
+             BeamWeaver.Core.ChatModel.invoke(model, [video])
+
+    refute_received {:fake_transport_request, _request}
   end
 end

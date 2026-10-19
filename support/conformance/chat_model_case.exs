@@ -7,14 +7,12 @@ defmodule BeamWeaver.TestSupport.Conformance.ChatModelCase do
     quote bind_quoted: [opts: opts] do
       use ExUnit.Case, async: true
 
-      alias BeamWeaver.Core.Async
       alias BeamWeaver.Core.ChatModel
       alias BeamWeaver.Core.ContentBlock
       alias BeamWeaver.Core.LanguageModel
       alias BeamWeaver.Core.Message
       alias BeamWeaver.Core.Messages.InvalidToolCall
       alias BeamWeaver.Core.Tool
-      alias BeamWeaver.Models
       alias BeamWeaver.TestSupport.Conformance.Subject
       alias BeamWeaver.Stream.Envelope
       alias BeamWeaver.Stream.Events
@@ -43,28 +41,6 @@ defmodule BeamWeaver.TestSupport.Conformance.ChatModelCase do
 
         assert {:ok, %Message{role: :assistant} = response} = ChatModel.invoke(model, "hello")
         assert Message.text(response) != ""
-      end
-
-      test "chat model async invoke and batch preserve behavior and order" do
-        model = build_subject()
-        messages = fixture(:messages)
-
-        assert {:ok, %Message{} = async_response} =
-                 model
-                 |> ChatModel.async_invoke(messages)
-                 |> Async.await()
-
-        assert Message.text(async_response) != ""
-
-        handles =
-          ChatModel.async_batch(model, [
-            [Message.user("first")],
-            [Message.user("second")]
-          ])
-
-        assert [{:ok, first}, {:ok, second}] = Async.await_batch(handles)
-        assert Message.text(first) =~ "first"
-        assert Message.text(second) =~ "second"
       end
 
       test "chat model sync batch preserves behavior and order" do
@@ -178,9 +154,7 @@ defmodule BeamWeaver.TestSupport.Conformance.ChatModelCase do
           model = build_subject()
 
           assert {:ok, %Message{tool_calls: calls}} =
-                   ChatModel.invoke(model, fixture(:messages),
-                     tools: [lookup_tool(), time_tool()]
-                   )
+                   ChatModel.invoke(model, fixture(:messages), tools: [lookup_tool(), time_tool()])
 
           assert Enum.map(calls, &(Map.get(&1, :name) || Map.get(&1, "name"))) == [
                    "lookup",
@@ -211,7 +185,7 @@ defmodule BeamWeaver.TestSupport.Conformance.ChatModelCase do
       end
 
       if Subject.capability?(@beamweaver_subject, :structured_output) do
-        test "chat model supports structured output wrapper" do
+        test "chat model returns the data of a response format" do
           schema =
             fixture(:structured_schema, %{
               "title" => "answer",
@@ -220,13 +194,12 @@ defmodule BeamWeaver.TestSupport.Conformance.ChatModelCase do
               "properties" => %{"value" => %{"type" => "string"}}
             })
 
-          model = build_subject() |> Models.with_structured_output(schema)
-
           assert {:ok, %Message{metadata: metadata}} =
-                   ChatModel.invoke(model, fixture(:messages), [])
+                   ChatModel.invoke(build_subject(), fixture(:messages),
+                     response_format: %{name: "answer", schema: schema}
+                   )
 
-          assert metadata[:structured_response] || metadata["structured_response"] ||
-                   metadata["parsed"]
+          assert metadata[:parsed] || metadata["parsed"]
         end
       end
 
@@ -378,14 +351,12 @@ defmodule BeamWeaver.TestSupport.Conformance.ChatModelCase do
       if Subject.capability?(@beamweaver_subject, :model_override) do
         test "chat model receives model override as explicit runtime config" do
           model = build_subject()
-          parent = fixture(:parent, self())
 
           assert {:ok, %Message{}} =
                    ChatModel.invoke(model, fixture(:messages), model: "override-model")
 
           assert_received {:fake_chat_model_call, _messages, opts}
           assert Keyword.fetch!(opts, :model) == "override-model"
-          assert parent == self()
         end
       end
 

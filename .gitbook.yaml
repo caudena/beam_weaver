@@ -3,3 +3,44 @@ root: ./docs/
 structure:
   readme: README.md
   summary: SUMMARY.md
+
+# Old guide names, renamed or merged into other pages. Keep in step with
+# `@doc_redirects` in mix.exs.
+redirects:
+  adapters: storage.md
+  agent_harness: deep_agents.md
+  async_subagents: subagents.md
+  coming_from_langchain: quickstart.md
+  compaction: compaction_engine.md
+  context_engineering: context_management.md
+  core: models.md
+  custom_middleware: middleware.md
+  customization: deep_agents.md
+  deep_agents_quickstart: deep_agents.md
+  event_streaming: streaming.md
+  fault_tolerance: durable_execution.md
+  getting_started: quickstart.md
+  graph: graphs.md
+  memory: long_term_memory.md
+  partners: providers.md
+  partners/anthropic: providers/anthropic.md
+  partners/deepseek: providers/deepseek.md
+  partners/google: providers/google.md
+  partners/moonshot: providers/moonshot.md
+  partners/openai: providers/openai.md
+  partners/typesafe: providers/typesafe.md
+  partners/xai: providers/xai.md
+  partners/zai: providers/zai.md
+  permissions: filesystem.md
+  persistence: checkpoints.md
+  prebuilt_middleware: builtin_middleware.md
+  prompt_caching: caching.md
+  prompts_and_parsers: structured_output.md
+  prompts_parsers: structured_output.md
+  replay: testing.md
+  runtime: runtime_context.md
+  semantic_dsl: agents.md
+  thinking_in_beamweaver: graphs.md
+  time_travel: checkpoints.md
+  todos: deep_agents.md
+  workflows_and_agents: workflow_patterns.md

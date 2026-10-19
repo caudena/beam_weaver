@@ -3,7 +3,7 @@ defmodule BeamWeaver.Tools.Todo do
   State tool that updates explicit agent state through graph commands.
   """
 
-  @behaviour BeamWeaver.Core.Tool
+  use BeamWeaver.Core.Tool
   @behaviour BeamWeaver.ToolKit
 
   alias BeamWeaver.Core.Error
@@ -129,32 +129,18 @@ defmodule BeamWeaver.Tools.Todo do
   def injected(_tool), do: %{state: :state, tool_call_id: :tool_call_id}
 
   @impl true
-  def return_direct(_tool), do: false
-
-  @impl true
-  def response_format(_tool), do: nil
-
-  @impl true
   def output_schema(_tool), do: %{"type" => "object"}
 
   @impl true
   def tags(_tool), do: [:todo]
 
   @impl true
-  def metadata(_tool), do: %{}
-
-  @impl true
-  def provider_opts(_tool), do: %{}
-
-  @impl true
   def invoke(%__MODULE__{} = tool, input, _opts) do
-    state = Map.get(input, :state) || Map.get(input, "state") || %{}
     call_id = Map.get(input, :tool_call_id) || Map.get(input, "tool_call_id")
-    todos = Map.get(state, tool.state_key, Map.get(state, to_string(tool.state_key), [])) || []
 
-    with {:ok, todos, _result} <- apply_todos(todos, input) do
+    with {:ok, todos} <- apply_todos(tool, input) do
       message =
-        Message.tool("Updated todo list to #{inspect_todos(todos)}",
+        Message.tool("Updated todo list to #{inspect(todos, charlists: :as_lists)}",
           tool_call_id: call_id,
           name: name(tool),
           metadata: %{status: "success"}
@@ -164,9 +150,9 @@ defmodule BeamWeaver.Tools.Todo do
     end
   end
 
-  defp apply_todos(_current, input) do
+  defp apply_todos(tool, input) do
     case get_value(input, :todos, :missing) do
-      :missing -> {:error, Error.new(:invalid_todos, "write_todos input must include a todos array")}
+      :missing -> {:error, Error.new(:invalid_todos, "#{name(tool)} input must include a todos array")}
       todos -> replace_todos(todos)
     end
   end
@@ -178,7 +164,7 @@ defmodule BeamWeaver.Tools.Todo do
       |> Enum.reject(&is_nil/1)
 
     if length(normalized) == length(todos) do
-      {:ok, normalized, %{todos: normalized}}
+      {:ok, normalized}
     else
       {:error, Error.new(:invalid_todo, "each todo must include non-empty content and a valid status")}
     end
@@ -198,7 +184,6 @@ defmodule BeamWeaver.Tools.Todo do
 
   defp normalize_todo(_todo), do: nil
 
-  defp normalize_status(nil), do: nil
   defp normalize_status(status) when status in ["pending", "in_progress", "completed"], do: status
 
   defp normalize_status(status) when is_atom(status),
@@ -206,10 +191,6 @@ defmodule BeamWeaver.Tools.Todo do
 
   defp normalize_status(_status), do: nil
 
-  defp inspect_todos(todos) do
-    inspect(todos, charlists: :as_lists)
-  end
-
-  defp get_value(map, key, default \\ nil)
-  defp get_value(map, key, default) when is_map(map), do: Map.get(map, key, Map.get(map, to_string(key), default))
+  defp get_value(map, key, default \\ nil) when is_map(map),
+    do: Map.get(map, key, Map.get(map, to_string(key), default))
 end

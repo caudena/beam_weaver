@@ -1,9 +1,14 @@
 defmodule BeamWeaver.Google.Tools do
-  @moduledoc """
-  Google Gemini tool declaration helpers.
+  @moduledoc ~S"""
+  Construct Gemini-native tool declarations without executing tools.
+
+  Search, code execution and other hosted services execute at Google when the
+  model selects them. File-search and MCP declarations require actual resources.
+  Computer-use declarations require an application-side browser/desktop executor.
+  See [Google Gemini](providers/google.md#built-in-tools) for a real search call.
   """
 
-  @behaviour BeamWeaver.Provider.ToolRenderer
+  import BeamWeaver.MapShape, only: [put_present: 3]
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Tool
@@ -25,15 +30,24 @@ defmodule BeamWeaver.Google.Tools do
                                                 "unevaluatedProperties"
                                               ])
 
+  @doc """
+  Declares hosted Google Search; inspect response grounding to verify actual use.
+  """
   def google_search(opts \\ %{}), do: %{"googleSearch" => Options.stringify_keys(Map.new(opts))}
 
-  def google_search_retrieval(opts \\ %{}),
-    do: %{"googleSearchRetrieval" => Options.stringify_keys(Map.new(opts))}
-
+  @doc """
+  Declares Google Maps grounding where supported by the selected model/account.
+  """
   def google_maps(opts \\ %{}), do: %{"googleMaps" => Options.stringify_keys(Map.new(opts))}
 
+  @doc """
+  Declares hosted code execution where supported.
+  """
   def code_execution(opts \\ %{}), do: %{"codeExecution" => Options.stringify_keys(Map.new(opts))}
 
+  @doc """
+  Declares search over actual File Search store names supplied by the application.
+  """
   def file_search(store_names, opts \\ []) do
     config =
       opts
@@ -44,55 +58,56 @@ defmodule BeamWeaver.Google.Tools do
     %{"fileSearch" => config}
   end
 
+  @doc """
+  Declares URL-context retrieval for provider-supported public content.
+  """
   def url_context(opts \\ %{}), do: %{"urlContext" => Options.stringify_keys(Map.new(opts))}
 
+  @doc """
+  Declares client computer actions; the application must execute them and return results.
+  """
   def computer_use(opts \\ %{}), do: %{"computerUse" => Options.stringify_keys(Map.new(opts))}
 
+  @doc """
+  Declares configured MCP servers; their access and execution prerequisites remain external.
+  """
   def mcp_servers(servers),
     do: %{"mcpServers" => Options.normalize_option_list(List.wrap(servers))}
 
-  @impl true
-  def render_tools(nil, _opts), do: {:ok, []}
-  def render_tools([], _opts), do: {:ok, []}
+  @doc false
+  def render_tools(nil), do: {:ok, []}
+  def render_tools([]), do: {:ok, []}
 
-  def render_tools(tools, _opts) when is_list(tools) do
+  def render_tools(tools) when is_list(tools) do
     {builtins, custom} = Enum.split_with(tools, &builtin_tool?/1)
 
-    declarations =
-      custom
-      |> Enum.map(&function_declaration/1)
-
-    rendered =
-      Enum.map(builtins, &builtin_tool/1) ++
-        if declarations == [], do: [], else: [%{"functionDeclarations" => declarations}]
-
-    {:ok, rendered}
+    declarations = Enum.map(custom, &function_declaration/1)
+    {:ok, Enum.map(builtins, &builtin_tool/1) ++ function_declarations(declarations)}
   rescue
-    exception -> {:error, Error.new(:invalid_tool, Exception.message(exception))}
+    error in ArgumentError -> {:error, Error.new(:invalid_tool, Exception.message(error))}
   end
 
-  @impl true
-  def render_tool_choice(nil, _tools, _opts), do: {:ok, nil}
-  def render_tool_choice(false, _tools, _opts), do: {:ok, nil}
-  def render_tool_choice(:validated, _tools, _opts), do: {:ok, function_calling_config("VALIDATED")}
-  def render_tool_choice("validated", _tools, _opts), do: {:ok, function_calling_config("VALIDATED")}
-  def render_tool_choice(:auto, _tools, _opts), do: {:ok, function_calling_config("AUTO")}
-  def render_tool_choice("auto", _tools, _opts), do: {:ok, function_calling_config("AUTO")}
-  def render_tool_choice(:none, _tools, _opts), do: {:ok, function_calling_config("NONE")}
-  def render_tool_choice("none", _tools, _opts), do: {:ok, function_calling_config("NONE")}
-  def render_tool_choice(:any, tools, opts), do: render_tool_choice(:required, tools, opts)
-  def render_tool_choice("any", tools, opts), do: render_tool_choice(:required, tools, opts)
-  def render_tool_choice(:required, _tools, _opts), do: {:ok, function_calling_config("ANY")}
-  def render_tool_choice("required", _tools, _opts), do: {:ok, function_calling_config("ANY")}
-  def render_tool_choice(%{name: name}, tools, opts), do: render_tool_choice(name, tools, opts)
+  # Gemini takes the function declarations together, in one tool.
+  defp function_declarations([]), do: []
+  defp function_declarations(declarations), do: [%{"functionDeclarations" => declarations}]
 
-  def render_tool_choice(%{"name" => name}, tools, opts),
-    do: render_tool_choice(name, tools, opts)
+  @doc false
+  def render_tool_choice(choice) when choice in [nil, false], do: {:ok, nil}
 
-  def render_tool_choice(name, _tools, _opts) when is_binary(name),
-    do: {:ok, function_calling_config("ANY", [name])}
+  def render_tool_choice(choice) when choice in [:validated, "validated"],
+    do: {:ok, function_calling_config("VALIDATED")}
 
-  def render_tool_choice(choice, _tools, _opts),
+  def render_tool_choice(choice) when choice in [:auto, "auto"], do: {:ok, function_calling_config("AUTO")}
+  def render_tool_choice(choice) when choice in [:none, "none"], do: {:ok, function_calling_config("NONE")}
+
+  def render_tool_choice(choice) when choice in [:any, "any", :required, "required"],
+    do: {:ok, function_calling_config("ANY")}
+
+  def render_tool_choice(%{name: name}), do: render_tool_choice(name)
+  def render_tool_choice(%{"name" => name}), do: render_tool_choice(name)
+  def render_tool_choice(name) when is_binary(name), do: {:ok, function_calling_config("ANY", [name])}
+
+  def render_tool_choice(choice),
     do: {:error, Error.new(:invalid_tool_choice, "Google tool_choice is invalid", %{choice: choice})}
 
   defp function_declaration(tool) when is_map(tool) and not is_struct(tool) do
@@ -192,6 +207,28 @@ defmodule BeamWeaver.Google.Tools do
   defp sanitize_schema_value(value) when is_list(value), do: Enum.map(value, &sanitize_schema_value/1)
   defp sanitize_schema_value(value), do: value
 
+  @builtin_tool_keys %{
+    "google_search" => "googleSearch",
+    "google_maps" => "googleMaps",
+    "code_execution" => "codeExecution",
+    "file_search" => "fileSearch",
+    "url_context" => "urlContext",
+    "computer_use" => "computerUse",
+    "mcp_servers" => "mcpServers"
+  }
+  @builtin_tool_kinds Map.new(@builtin_tool_keys, fn {key, wire_key} -> {wire_key, String.to_atom(key)} end)
+
+  @doc false
+  # The kinds of the built-in tools in a tool list, such as `:computer_use`.
+  def builtin_tool_kinds(tools) do
+    tools
+    |> Enum.filter(&builtin_tool?/1)
+    |> Enum.flat_map(fn tool -> tool |> Map.keys() |> Enum.map(&builtin_tool_key(to_string(&1))) end)
+    |> Enum.map(&Map.get(@builtin_tool_kinds, &1))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
   @doc false
   def mixed_execution?(tools) do
     Enum.any?(tools, &builtin_tool?/1) and Enum.any?(tools, &(not builtin_tool?(&1)))
@@ -212,21 +249,10 @@ defmodule BeamWeaver.Google.Tools do
   defp function_calling_config(mode, names \\ nil) do
     config =
       %{"mode" => mode}
-      |> maybe_put("allowedFunctionNames", names)
+      |> put_present("allowedFunctionNames", names)
 
     %{"functionCallingConfig" => config}
   end
 
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
-
-  defp builtin_tool_key("google_search"), do: "googleSearch"
-  defp builtin_tool_key("google_search_retrieval"), do: "googleSearchRetrieval"
-  defp builtin_tool_key("google_maps"), do: "googleMaps"
-  defp builtin_tool_key("code_execution"), do: "codeExecution"
-  defp builtin_tool_key("file_search"), do: "fileSearch"
-  defp builtin_tool_key("url_context"), do: "urlContext"
-  defp builtin_tool_key("computer_use"), do: "computerUse"
-  defp builtin_tool_key("mcp_servers"), do: "mcpServers"
-  defp builtin_tool_key(key), do: key
+  defp builtin_tool_key(key), do: Map.get(@builtin_tool_keys, key, key)
 end

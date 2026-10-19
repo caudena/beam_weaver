@@ -19,30 +19,22 @@ defmodule BeamWeaver.Tokenizer.OpenAI do
         }
 
   @impl true
-  def encode(%__MODULE__{} = tokenizer, text, opts) when is_binary(text) do
-    with {:ok, selector_opts} <- selector_opts(tokenizer, opts) do
-      call_fastest_tiktoken(:encode, [text, selector_opts], selector_opts)
-    end
-  end
+  def encode(%__MODULE__{} = tokenizer, text, opts) when is_binary(text), do: call(:encode, tokenizer, text, opts)
 
   @impl true
-  def decode(%__MODULE__{} = tokenizer, ids, opts) when is_list(ids) do
-    with {:ok, selector_opts} <- selector_opts(tokenizer, opts) do
-      call_fastest_tiktoken(:decode, [ids, selector_opts], selector_opts)
-    end
-  end
+  def decode(%__MODULE__{} = tokenizer, ids, opts) when is_list(ids), do: call(:decode, tokenizer, ids, opts)
 
   @impl true
-  def count_tokens(%__MODULE__{} = tokenizer, text, opts) when is_binary(text) do
-    with {:ok, selector_opts} <- selector_opts(tokenizer, opts) do
-      call_fastest_tiktoken(:count_tokens, [text, selector_opts], selector_opts)
-    end
-  end
+  def count_tokens(%__MODULE__{} = tokenizer, text, opts) when is_binary(text),
+    do: call(:count_tokens, tokenizer, text, opts)
 
   @impl true
-  def split_tokens(%__MODULE__{} = tokenizer, text, opts) when is_binary(text) do
+  def split_tokens(%__MODULE__{} = tokenizer, text, opts) when is_binary(text),
+    do: call(:split_tokens, tokenizer, text, opts)
+
+  defp call(function, tokenizer, input, opts) do
     with {:ok, selector_opts} <- selector_opts(tokenizer, opts) do
-      call_fastest_tiktoken(:split_tokens, [text, selector_opts], selector_opts)
+      call_fastest_tiktoken(function, input, selector_opts)
     end
   end
 
@@ -65,24 +57,15 @@ defmodule BeamWeaver.Tokenizer.OpenAI do
           [model: model, encoding: encoding]
       end
 
-    selector =
-      Keyword.put(
-        selector,
-        :allowed_special,
-        Keyword.get(opts, :allowed_special, tokenizer.allowed_special || [])
-      )
-
-    case selector do
-      [allowed_special: _allowed_special] ->
-        {:error, Error.new(:invalid_tokenizer, "OpenAI tokenizer requires a model or encoding")}
-
-      _selector ->
-        {:ok, selector}
+    if selector == [] do
+      {:error, Error.new(:invalid_tokenizer, "OpenAI tokenizer requires a model or encoding")}
+    else
+      {:ok, [allowed_special: Keyword.get(opts, :allowed_special, tokenizer.allowed_special || [])] ++ selector}
     end
   end
 
-  defp call_fastest_tiktoken(function, args, selector_opts) do
-    case apply(FastestTiktoken, function, args) do
+  defp call_fastest_tiktoken(function, input, selector_opts) do
+    case apply(FastestTiktoken, function, [input, selector_opts]) do
       {:ok, value} ->
         {:ok, value}
 

@@ -1,9 +1,18 @@
 defmodule BeamWeaver.Graph.Runtime do
-  @moduledoc """
-  Runtime context passed to graph nodes.
+  @moduledoc ~S"""
+  Per-node execution context, supplied as the second argument to two-arity nodes.
+
+  Carries trusted caller context, run configuration, store/checkpointer handles,
+  execution metadata and a stream writer. Read attempt/step identity from
+  `execution`; do not persist process handles as ordinary checkpoint state.
+
+  Message/UI helpers emit events and return data that a node can also place in
+  its state update. Emission alone does not persist that data. See
+  [Streaming](streaming.md) and [State](graph_state.md).
   """
 
   alias BeamWeaver.Graph.ExecutionInfo
+  alias BeamWeaver.MapAccess
   alias BeamWeaver.Stream.Events
 
   @fields [
@@ -20,7 +29,6 @@ defmodule BeamWeaver.Graph.Runtime do
     :stream_sink,
     :stream_writer,
     :stream_modes,
-    :collect_stream?,
     :run_id,
     :recursion_limit,
     :task_id,
@@ -47,7 +55,6 @@ defmodule BeamWeaver.Graph.Runtime do
           stream_sink: BeamWeaver.Stream.Sink.t() | nil,
           stream_writer: (term() -> :ok),
           stream_modes: MapSet.t(atom()) | nil,
-          collect_stream?: boolean() | nil,
           run_id: String.t(),
           recursion_limit: non_neg_integer() | nil,
           task_id: String.t() | nil,
@@ -136,23 +143,23 @@ defmodule BeamWeaver.Graph.Runtime do
   @doc """
   Ensures runtime execution info exists, hydrating it from graph config/task data.
 
-  This mirrors LangGraph's distributed-executor guard without adding a remote
-  platform runtime: if `runtime.execution` is already populated, it is returned
-  unchanged; otherwise BeamWeaver builds native `%ExecutionInfo{}` metadata.
+  If `runtime.execution` is already populated, the runtime is returned
+  unchanged; otherwise this builds an `%ExecutionInfo{}` with the checkpoint id
+  and namespace, task id, thread id and run id found in `config` and `task`.
   """
   @spec ensure_execution_info(t(), map(), map() | struct()) :: t()
   def ensure_execution_info(%__MODULE__{execution: %ExecutionInfo{}} = runtime, _config, _task),
     do: runtime
 
   def ensure_execution_info(%__MODULE__{} = runtime, config, task) when is_map(config) do
-    configurable = get(config, :configurable, %{})
+    configurable = MapAccess.get(config, :configurable, %{})
 
     execution = %ExecutionInfo{
-      checkpoint_id: get(configurable, :checkpoint_id, ""),
-      checkpoint_ns: get(configurable, :checkpoint_ns, ""),
-      task_id: get(configurable, :task_id, task_id(task)),
-      thread_id: get(configurable, :thread_id),
-      run_id: maybe_to_string(get(config, :run_id))
+      checkpoint_id: MapAccess.get(configurable, :checkpoint_id, ""),
+      checkpoint_ns: MapAccess.get(configurable, :checkpoint_ns, ""),
+      task_id: MapAccess.get(configurable, :task_id, task_id(task)),
+      thread_id: MapAccess.get(configurable, :thread_id),
+      run_id: maybe_to_string(MapAccess.get(config, :run_id))
     }
 
     %{runtime | execution: execution}
@@ -162,20 +169,11 @@ defmodule BeamWeaver.Graph.Runtime do
   defp task_id(%{"id" => id}) when not is_nil(id), do: to_string(id)
   defp task_id(_task), do: ""
 
-  defp get(map, key, default \\ nil)
-
-  defp get(map, key, default) when is_map(map),
-    do: Map.get(map, key, Map.get(map, to_string(key), default))
-
-  defp get(_map, _key, default), do: default
-
   defp maybe_to_string(nil), do: nil
   defp maybe_to_string(value), do: to_string(value)
 
-  defp normalize_field_overrides(overrides) do
-    Map.new(overrides, fn {key, value} -> {field_atom(key), value} end)
-    |> Map.reject(fn {key, _value} -> is_nil(key) end)
-  end
+  defp normalize_field_overrides(overrides),
+    do: for({key, value} <- overrides, field = field_atom(key), into: %{}, do: {field, value})
 
   defp field_atom(key) when is_atom(key) do
     if key in @fields, do: key

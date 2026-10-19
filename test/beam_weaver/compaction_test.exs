@@ -109,10 +109,12 @@ defmodule BeamWeaver.CompactionTest do
     run_agent_id = first_request.run_agent_id
 
     later_events = [
-      event(run_agent_id, 7, :user, "continue from the compacted history"),
+      event(run_agent_id, 7, :user, "implement the requested behavior from the compacted history"),
       event(run_agent_id, 8, :assistant, String.duplicate("new work ", 1_000)),
       event(run_agent_id, 9, :user, "keep the new decision"),
-      event(run_agent_id, 10, :assistant, "continuing")
+      event(run_agent_id, 10, :assistant, "continuing"),
+      event(run_agent_id, 11, :user, "continue"),
+      event(run_agent_id, 12, :assistant, "still continuing")
     ]
 
     later_source_id = hd(later_events).event_id
@@ -138,6 +140,39 @@ defmodule BeamWeaver.CompactionTest do
     assert {:ok, second_result} = Compaction.compact(%{}, second_request)
     assert second_result.compaction_checkpoint.parent_checkpoint_id == first_checkpoint.checkpoint_id
     assert :erlang.term_to_binary(first_checkpoint) == frozen_parent
+  end
+
+  test "compaction fails without calling the model when every event is protected" do
+    events = Enum.map(events(), &%{&1 | protected: true})
+    request = request(events, fn _payload -> flunk("summarizer must not run") end)
+
+    assert {:error, %{type: :current_input_item_too_large}} = Compaction.compact(%{}, request)
+  end
+
+  test "compaction does not reuse the previous summary when every event is protected" do
+    {first_request, first_checkpoint} = compacted_request()
+    run_agent_id = first_request.run_agent_id
+
+    events =
+      Enum.map(
+        [
+          event(run_agent_id, 7, :user, "continue from the compacted history"),
+          event(run_agent_id, 8, :assistant, String.duplicate("new work ", 1_000))
+        ],
+        &%{&1 | protected: true}
+      )
+
+    request = %{
+      first_request
+      | request_id: ID.uuidv7(),
+        parent_checkpoint_id: first_checkpoint.checkpoint_id,
+        previous_semantic: first_checkpoint.semantic,
+        events: events,
+        active_input_event_ids: [List.last(events).event_id],
+        summarize: fn _payload -> flunk("summarizer must not run") end
+    }
+
+    assert {:error, %{type: :current_input_item_too_large}} = Compaction.compact(%{}, request)
   end
 
   test "automatic check below trigger is skipped without calling the model" do
@@ -288,16 +323,90 @@ defmodule BeamWeaver.CompactionTest do
   end
 
   test "compaction state advances automatic and overflow circuit evidence" do
+    checkpoint = compacted_checkpoint()
+
     assert {:ok, observed} = State.observe_new_tokens(%State{}, 12_000)
     assert observed.new_tokens_since_compaction == 12_000
 
-    assert {:ok, automatic} = State.record_success(observed, :auto, 9, 20_000)
+    assert {:ok, automatic} = State.record_success(observed, %{checkpoint | trigger: :auto})
     assert automatic.successful_auto_compactions == 1
     assert automatic.new_tokens_since_compaction == 0
+    assert automatic.root_turn_id == checkpoint.root_turn_id
+    assert automatic.last_compaction_lane_event_ordinal == checkpoint.context_lane_event_ordinal_high_watermark
+    assert automatic.last_compaction_tokens_after == checkpoint.tokens_after
+    assert automatic.accounting_method == checkpoint.accounting_method
 
-    assert {:ok, overflow} = State.record_success(automatic, :overflow, 12, 18_000)
+    assert {:ok, overflow} = State.record_success(automatic, %{checkpoint | trigger: :overflow})
     assert overflow.overflow_retry_used
     assert overflow.successful_auto_compactions == 1
+
+    next_turn = %{checkpoint | trigger: :auto, root_turn_id: ID.uuidv7()}
+    assert {:ok, next} = State.record_success(overflow, next_turn)
+    assert next.root_turn_id == next_turn.root_turn_id
+    assert next.successful_auto_compactions == 1
+    refute next.overflow_retry_used
+  end
+
+  test "a state recorded from a fresh one keeps automatic compaction suppressed" do
+    {request, checkpoint} = compacted_request()
+
+    {:ok, state} = State.new(%{})
+    {:ok, state} = State.record_success(state, checkpoint)
+
+    auto = %{request | request_id: ID.uuidv7(), trigger: :auto, anti_thrash: state}
+
+    assert {:ok, %{status: :skipped, provider_usage: %{suppression: :insufficient_new_tokens}} = skipped} =
+             Compaction.compact(%{}, auto)
+
+    assert skipped.anti_thrash == state
+  end
+
+  test "an ineffective compaction pauses automatic compaction until new context arrives" do
+    events = events()
+    first_user_id = hd(events).event_id
+
+    request =
+      request(events, fn payload ->
+        {:ok, semantic(first_user_id, payload.covered_range.first_chat_seq, payload.covered_range.last_chat_seq)}
+      end)
+
+    request = %{request | policy: %{request.policy | minimum_total_reclaim_tokens: 1_000_000}}
+
+    assert {:error, %{type: :ineffective_compaction, details: %{anti_thrash: state}}} =
+             Compaction.compact(%{}, request)
+
+    assert state.consecutive_ineffective_compactions == 1
+
+    auto = %{request | request_id: ID.uuidv7(), trigger: :auto, anti_thrash: state}
+
+    assert {:ok, %{status: :skipped, provider_usage: %{suppression: :rapid_refill}}} =
+             Compaction.compact(%{}, auto)
+
+    {:ok, grown} = State.observe_new_tokens(state, 5_000)
+    assert State.auto_suppression(grown, request.policy) == nil
+  end
+
+  test "the automatic-compaction count starts again in a new root turn" do
+    {request, checkpoint} = compacted_request()
+
+    {:ok, state} =
+      State.new(%{
+        "root_turn_id" => checkpoint.root_turn_id,
+        "successful_auto_compactions" => request.policy.maximum_auto_compactions_per_root_turn
+      })
+
+    same_turn = %{request | request_id: ID.uuidv7(), trigger: :auto, anti_thrash: state}
+
+    assert {:ok, %{status: :skipped, provider_usage: %{suppression: :automatic_limit}}} =
+             Compaction.compact(%{}, same_turn)
+
+    next_turn = %{same_turn | request_id: ID.uuidv7(), root_turn_id: ID.uuidv7()}
+    assert {:ok, %{status: :compacted} = result} = Compaction.compact(%{}, next_turn)
+    assert result.anti_thrash.root_turn_id == next_turn.root_turn_id
+    assert result.anti_thrash.successful_auto_compactions == 0
+
+    assert {:ok, recorded} = State.record_success(result.anti_thrash, result.compaction_checkpoint)
+    assert recorded.successful_auto_compactions == 1
   end
 
   test "accounting identity changes reset only unit-dependent anti-thrash state" do
@@ -398,6 +507,21 @@ defmodule BeamWeaver.CompactionTest do
     assert schema["required"] == Enum.map(Semantic.fields(), &Atom.to_string/1)
     assert schema["properties"]["critical_context"]["maxItems"] == Semantic.bounds().critical_context
   end
+
+  defp compacted_request do
+    events = events()
+    first_user_id = hd(events).event_id
+
+    request =
+      request(events, fn payload ->
+        {:ok, semantic(first_user_id, payload.covered_range.first_chat_seq, payload.covered_range.last_chat_seq)}
+      end)
+
+    {:ok, %{status: :compacted, compaction_checkpoint: checkpoint}} = Compaction.compact(%{}, request)
+    {request, checkpoint}
+  end
+
+  defp compacted_checkpoint, do: compacted_request() |> elem(1)
 
   defp request(events, summarize) do
     {:ok, policy} =

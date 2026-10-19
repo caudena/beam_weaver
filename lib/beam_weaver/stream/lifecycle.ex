@@ -3,8 +3,10 @@ defmodule BeamWeaver.Stream.Lifecycle do
   Projects typed graph stream envelopes into subgraph lifecycle events.
 
   The projector is intentionally a pure read-side reducer. It uses the same
-  envelope data as `BeamWeaver.Stream.Subgraphs` and emits immutable lifecycle
-  envelopes instead of exposing Python-style live lifecycle channels.
+  envelope data as `BeamWeaver.Stream.Subgraphs` and emits two immutable
+  lifecycle envelopes per subgraph run, in the subgraph's namespace:
+  `:started`, then the status `BeamWeaver.Stream.Subgraphs` gives the run
+  (`:completed`, `:failed` or `:interrupted`).
   """
 
   alias BeamWeaver.Stream
@@ -28,47 +30,28 @@ defmodule BeamWeaver.Stream.Lifecycle do
 
   defp run_events(run, source_events, opts) do
     envelope_opts = [
+      run_id: first_run_id(run.path, source_events),
       graph: run.graph,
       namespace: run.path,
       metadata: Keyword.get(opts, :metadata, %{})
     ]
 
-    envelope_opts =
-      case first_run_id(run.path, source_events) do
-        nil -> envelope_opts
-        run_id -> Keyword.put(envelope_opts, :run_id, run_id)
-      end
+    started = %Events.Lifecycle{
+      status: :started,
+      namespace: run.path,
+      graph_name: run.graph_name,
+      trigger_call_id: run.trigger_call_id
+    }
 
     [
-      Stream.envelope(
-        %Events.Lifecycle{
-          status: :started,
-          namespace: run.path,
-          graph_name: run.graph_name,
-          trigger_call_id: run.trigger_call_id
-        },
-        envelope_opts
-      ),
-      Stream.envelope(
-        %Events.Lifecycle{
-          status: run.status,
-          namespace: run.path,
-          graph_name: run.graph_name,
-          trigger_call_id: run.trigger_call_id,
-          error: run.error
-        },
-        envelope_opts
-      )
+      Stream.envelope(started, envelope_opts),
+      Stream.envelope(%{started | status: run.status, error: run.error}, envelope_opts)
     ]
   end
 
   defp first_run_id(path, events) do
-    Enum.find_value(events, fn
-      %Envelope{namespace: namespace, run_id: run_id} ->
-        if Namespace.normalize(namespace, stringify: true) == path, do: run_id, else: nil
-
-      _other ->
-        nil
+    Enum.find_value(events, fn %Envelope{namespace: namespace, run_id: run_id} ->
+      if Namespace.normalize(namespace, stringify: true) == path, do: run_id
     end)
   end
 end

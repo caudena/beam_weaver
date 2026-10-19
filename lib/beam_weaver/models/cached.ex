@@ -2,13 +2,11 @@ defmodule BeamWeaver.Models.Cached do
   @moduledoc false
 
   @behaviour BeamWeaver.Core.ChatModel
-  @behaviour BeamWeaver.Core.LLM
   @behaviour BeamWeaver.Core.DecisionModel
 
   alias BeamWeaver.Cache
   alias BeamWeaver.Core.ChatModel
   alias BeamWeaver.Core.Error
-  alias BeamWeaver.Core.LLM
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Stream
   alias BeamWeaver.Stream.Events
@@ -20,42 +18,31 @@ defmodule BeamWeaver.Models.Cached do
 
   @impl true
   def evaluate(%__MODULE__{} = wrapper, input, opts) do
-    with :ok <- require_decision_model(wrapper),
-         {:ok, cache} <- resolve_cache(wrapper, opts) do
-      namespace = {:decision_model, model_name(wrapper.model)}
+    key_opts =
+      Keyword.drop(opts, [
+        :run_id,
+        :run_name,
+        :tags,
+        :metadata,
+        :trace,
+        :trace?,
+        :exporter,
+        :exporter_opts,
+        :max_concurrency
+      ])
 
-      key =
-        cache_key(
-          wrapper,
-          input,
-          Keyword.drop(opts, [
-            :run_id,
-            :run_name,
-            :tags,
-            :metadata,
-            :trace,
-            :trace?,
-            :exporter,
-            :exporter_opts,
-            :config,
-            :configurable,
-            :context,
-            :max_concurrency,
-            :recursion_limit,
-            :opts
-          ])
-        )
-
-      case Cache.lookup(cache, namespace, key) do
-        {:hit, %BeamWeaver.TypeSafe.Response{} = response, _metadata} ->
-          {:ok, BeamWeaver.TypeSafe.Response.cached(response)}
+    with :ok <- require_decision_model(wrapper) do
+      case lookup(wrapper, :decision_model, input, key_opts) do
+        {:hit, %response_module{} = response, _metadata}
+        when response_module in [BeamWeaver.TypeSafe.Response, BeamWeaver.OpenAI.Decisions.Response] ->
+          {:ok, response_module.cached(response)}
 
         {:hit, _value, _metadata} ->
           {:error, Error.new(:invalid_cache_entry, "cached value is not a decision response")}
 
-        :miss ->
+        {:miss, store} ->
           with {:ok, response} <- BeamWeaver.Core.DecisionModel.invoke(wrapper.model, input, opts),
-               :ok <- Cache.put(cache, namespace, key, response, wrapper.opts),
+               :ok <- store.(response),
                do: {:ok, response}
 
         {:error, _} = error ->
@@ -74,127 +61,43 @@ defmodule BeamWeaver.Models.Cached do
   def invoke(%__MODULE__{} = wrapper, input, opts) when is_map(input), do: evaluate(wrapper, input, opts)
 
   def invoke(%__MODULE__{} = wrapper, messages, opts) when is_list(messages) do
-    with {:ok, cache} <- resolve_cache(wrapper, opts) do
-      namespace = {:chat_model, model_name(wrapper.model)}
-      key = cache_key(wrapper, messages, opts)
-
-      case Cache.lookup(cache, namespace, key) do
-        {:hit, message, _metadata} ->
-          {:ok, zero_cached_cost(message)}
-
-        :miss ->
-          with {:ok, message} <- ChatModel.invoke(wrapper.model, messages, opts),
-               :ok <- Cache.put(cache, namespace, key, message, wrapper.opts) do
-            {:ok, message}
-          end
-
-        {:error, %Error{}} = error ->
-          error
-      end
-    end
+    with {:ok, message, _status, _metadata} <- chat(wrapper, messages, opts), do: {:ok, message}
   end
 
   @impl true
-  def stream(%__MODULE__{} = wrapper, input, opts) when is_map(input) do
-    with {:ok, response} <- evaluate(wrapper, input, opts), do: {:ok, [response]}
-  end
-
-  def stream(%__MODULE__{} = wrapper, messages, opts) when is_list(messages) do
-    with {:ok, cache} <- resolve_cache(wrapper, opts) do
-      namespace = {:chat_model, model_name(wrapper.model)}
-      key = cache_key(wrapper, messages, opts)
-
-      case Cache.lookup(cache, namespace, key) do
-        {:hit, message, _metadata} ->
-          {:ok, [zero_cached_cost(message)]}
-
-        :miss ->
-          with {:ok, message} <- ChatModel.invoke(wrapper.model, messages, opts),
-               :ok <- Cache.put(cache, namespace, key, message, wrapper.opts) do
-            {:ok, [message]}
-          end
-
-        {:error, %Error{}} = error ->
-          error
-      end
-    end
-  end
-
-  def stream(%__MODULE__{} = wrapper, prompt, opts) when is_binary(prompt) do
-    with {:ok, cache} <- resolve_cache(wrapper, opts) do
-      namespace = {:llm, model_name(wrapper.model)}
-      key = cache_key(wrapper, prompt, opts)
-
-      case Cache.lookup(cache, namespace, key) do
-        {:hit, completion, _metadata} when is_binary(completion) ->
-          {:ok, [completion]}
-
-        {:hit, completion, _metadata} ->
-          {:error,
-           Error.new(:invalid_cache_entry, "cached LLM completion must be a string", %{
-             cached: inspect(completion)
-           })}
-
-        :miss ->
-          with {:ok, chunks} <- LLM.stream(wrapper.model, prompt, opts),
-               chunk_list <- Enum.to_list(chunks),
-               completion <- Enum.join(chunk_list),
-               :ok <- Cache.put(cache, namespace, key, completion, wrapper.opts) do
-            {:ok, chunk_list}
-          end
-
-        {:error, %Error{}} = error ->
-          error
-      end
-    end
+  def stream(%__MODULE__{} = wrapper, input, opts) when is_map(input) or is_list(input) do
+    with {:ok, value} <- invoke(wrapper, input, opts), do: {:ok, [value]}
   end
 
   @impl true
   def stream_events(%__MODULE__{} = wrapper, messages, opts) when is_list(messages) do
-    with {:ok, cache} <- resolve_cache(wrapper, opts) do
-      namespace = {:chat_model, model_name(wrapper.model)}
-      key = cache_key(wrapper, messages, opts)
+    with {:ok, message, status, metadata} <- chat(wrapper, messages, opts),
+         do: {:ok, cached_event_stream(message, status, metadata)}
+  end
 
-      case Cache.lookup(cache, namespace, key) do
-        {:hit, message, metadata} ->
-          {:ok, cached_event_stream(message, :hit, metadata)}
+  defp chat(wrapper, messages, opts) do
+    case lookup(wrapper, :chat_model, messages, opts) do
+      {:hit, message, metadata} ->
+        {:ok, zero_cached_cost(message), :hit, metadata}
 
-        :miss ->
-          with {:ok, message} <- ChatModel.invoke(wrapper.model, messages, opts),
-               :ok <- Cache.put(cache, namespace, key, message, wrapper.opts) do
-            {:ok, cached_event_stream(message, :miss, %{})}
-          end
+      {:miss, store} ->
+        with {:ok, message} <- ChatModel.invoke(wrapper.model, messages, opts),
+             :ok <- store.(message),
+             do: {:ok, message, :miss, %{}}
 
-        {:error, %Error{}} = error ->
-          error
-      end
+      {:error, %Error{}} = error ->
+        error
     end
   end
 
-  @impl true
-  def complete(%__MODULE__{} = wrapper, prompt, opts) when is_binary(prompt) do
+  defp lookup(wrapper, kind, input, opts) do
     with {:ok, cache} <- resolve_cache(wrapper, opts) do
-      namespace = {:llm, model_name(wrapper.model)}
-      key = cache_key(wrapper, prompt, opts)
+      namespace = {kind, model_name(wrapper.model)}
+      key = cache_key(wrapper, input, opts)
 
       case Cache.lookup(cache, namespace, key) do
-        {:hit, completion, _metadata} when is_binary(completion) ->
-          {:ok, completion}
-
-        {:hit, completion, _metadata} ->
-          {:error,
-           Error.new(:invalid_cache_entry, "cached LLM completion must be a string", %{
-             cached: inspect(completion)
-           })}
-
-        :miss ->
-          with {:ok, completion} <- LLM.complete(wrapper.model, prompt, opts),
-               :ok <- Cache.put(cache, namespace, key, completion, wrapper.opts) do
-            {:ok, completion}
-          end
-
-        {:error, %Error{}} = error ->
-          error
+        :miss -> {:miss, &Cache.put(cache, namespace, key, &1, wrapper.opts)}
+        hit_or_error -> hit_or_error
       end
     end
   end
@@ -252,11 +155,7 @@ defmodule BeamWeaver.Models.Cached do
         {:error, Cache.explicit_required_error(%{model: "chat_model"})}
 
       cache ->
-        if Cache.adapter?(cache) do
-          {:ok, cache}
-        else
-          {:error, Error.new(:invalid_cache, "model cache must be a BeamWeaver.Cache adapter")}
-        end
+        resolve_cache(%__MODULE__{cache: cache}, opts)
     end
   end
 
@@ -269,12 +168,9 @@ defmodule BeamWeaver.Models.Cached do
   end
 
   defp model_name(%{__struct__: module}), do: inspect(module)
-  defp model_name(module) when is_atom(module), do: inspect(module)
   defp model_name(other), do: inspect(other)
 
   defp cached_event_stream(message, cache_status, cache_metadata) do
-    message = if cache_status == :hit, do: zero_cached_cost(message), else: message
-
     [
       Stream.envelope(%Events.Debug{payload: %{type: :cache_replay, cache: cache_status}},
         metadata: %{cache: cache_status, cache_metadata: cache_metadata}

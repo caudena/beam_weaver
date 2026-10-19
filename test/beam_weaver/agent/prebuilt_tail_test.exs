@@ -21,7 +21,7 @@ defmodule BeamWeaver.Agent.PrebuiltTailTest do
       send(parent, {:mixed_return_direct_model_call, Enum.map(messages, & &1.role)})
 
       if Enum.any?(messages, &match?(%Message{role: :tool}, &1)) do
-        {:ok, Message.assistant("should not be called after return_direct")}
+        {:ok, Message.assistant("Done, and the value is logged.")}
       else
         {:ok,
          Message.assistant("",
@@ -77,11 +77,11 @@ defmodule BeamWeaver.Agent.PrebuiltTailTest do
   end
 
   defmodule SyntheticToolMessageMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :synthetic_tool_message_middleware
 
-    def after_model(state, runtime) do
+    def after_model(_middleware, state, runtime) do
       messages = Map.get(state, :messages, [])
 
       case List.last(messages) do
@@ -407,7 +407,9 @@ defmodule BeamWeaver.Agent.PrebuiltTailTest do
     end
   end
 
-  test "mixed return_direct and normal tool calls execute once and stop after tool results" do
+  # The run ends on the tools' results only when every call returns directly;
+  # with a normal call in the batch, the model reads both results.
+  test "mixed return_direct and normal tool calls run once, and the model reads both results" do
     assert {:ok, %{messages: messages}} =
              MixedReturnDirectAgent.invoke(%{messages: [Message.user("run both")]},
                context: %{parent: self()}
@@ -422,12 +424,13 @@ defmodule BeamWeaver.Agent.PrebuiltTailTest do
                content: "done",
                metadata: %{return_direct: true}
              },
-             %Message{role: :tool, tool_call_id: "call-log", content: "logged:recorded"}
+             %Message{role: :tool, tool_call_id: "call-log", content: "logged:recorded"},
+             %Message{role: :assistant, content: "Done, and the value is logged."}
            ] = messages
 
     assert_receive {:normal_tool_executed, "recorded"}
     assert_receive {:mixed_return_direct_model_call, [:user]}
-    refute_receive {:mixed_return_direct_model_call, [:user, :assistant, :tool, :tool]}, 50
+    assert_receive {:mixed_return_direct_model_call, [:user, :assistant, :tool, :tool]}
   end
 
   test "synthetic satisfied tool messages route back to the model instead of executing tools" do
@@ -519,8 +522,6 @@ defmodule BeamWeaver.Agent.PrebuiltTailTest do
   end
 
   test "generated agent event streams include typed tool lifecycle events" do
-    refute function_exported?(StreamedToolAgent, :stream, 2)
-
     assert {:ok, events} =
              StreamedToolAgent.stream_events(%{messages: [Message.user("stream")]},
                context: %{parent: self()}

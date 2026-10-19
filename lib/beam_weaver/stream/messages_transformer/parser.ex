@@ -5,6 +5,7 @@ defmodule BeamWeaver.Stream.MessagesTransformer.Parser do
   alias BeamWeaver.Core.Messages.AIChunk
   alias BeamWeaver.Core.Messages.Chunk
   alias BeamWeaver.Core.Messages.MessageChunk
+  alias BeamWeaver.MapAccess
   alias BeamWeaver.Stream.Events
 
   def parse(%BeamWeaver.Stream.Envelope{
@@ -40,8 +41,8 @@ defmodule BeamWeaver.Stream.MessagesTransformer.Parser do
   def parse(_event), do: :ignore
 
   defp parse_message_params(params) when is_map(params) do
-    if List.wrap(map_get(params, :namespace)) == [] do
-      case map_get(params, :data) do
+    if List.wrap(MapAccess.get(params, :namespace)) == [] do
+      case MapAccess.get(params, :data) do
         {%Message{} = message, metadata} ->
           {:whole_message, message, normalize_metadata(metadata)}
 
@@ -64,26 +65,12 @@ defmodule BeamWeaver.Stream.MessagesTransformer.Parser do
 
   defp parse_message_params(_params), do: :ignore
 
-  defp chunk_to_delta(%AIChunk{} = chunk) do
-    %{
-      event: "content-block-delta",
-      index: 0,
-      content_block: %{type: "text", text: chunk.content || ""}
-    }
-  end
+  defp chunk_to_delta(chunk),
+    do: %{event: "content-block-delta", index: 0, content_block: %{type: "text", text: chunk_text(chunk)}}
 
-  defp chunk_to_delta(chunk) do
-    %{
-      event: "content-block-delta",
-      index: 0,
-      content_block: %{type: "text", text: MessageChunk.to_message(chunk).content}
-    }
-  end
+  defp chunk_text(%AIChunk{content: content}), do: content || ""
+  defp chunk_text(chunk), do: MessageChunk.to_message(chunk).content
 
   defp normalize_metadata(metadata) when is_map(metadata), do: metadata
   defp normalize_metadata(_metadata), do: %{}
-
-  defp map_get(map, key, default \\ nil)
-
-  defp map_get(map, key, default), do: Map.get(map, key, Map.get(map, Atom.to_string(key), default))
 end

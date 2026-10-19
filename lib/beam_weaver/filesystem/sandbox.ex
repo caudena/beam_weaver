@@ -1,12 +1,13 @@
 defmodule BeamWeaver.Filesystem.Sandbox do
-  @moduledoc "Adapter from `BeamWeaver.Sandbox` implementations to DeepAgents backends."
+  @moduledoc "Adapter that exposes a `BeamWeaver.Sandbox` as an executable filesystem backend."
 
   use BeamWeaver.Filesystem
   use BeamWeaver.Filesystem.Executable
 
   alias BeamWeaver.Filesystem
   alias BeamWeaver.Filesystem.Executable
-  alias BeamWeaver.Filesystem.Utils
+  alias BeamWeaver.Filesystem.FileDataUtils
+  alias BeamWeaver.MapAccess
 
   @max_binary_bytes 500 * 1024
   @max_output_bytes 500 * 1024
@@ -74,15 +75,17 @@ defmodule BeamWeaver.Filesystem.Sandbox do
     |> Enum.map(&%Filesystem.DownloadResult{path: &1.path, content: &1.content, error: &1.error})
   end
 
+  @impl BeamWeaver.Filesystem
+  def canonical_paths(%__MODULE__{sandbox: sandbox}, paths, opts),
+    do: BeamWeaver.Sandbox.canonical_paths(sandbox, paths, opts)
+
   defp list_result(%{entries: entries, error: nil}),
-    do: %Filesystem.LsResult{
-      entries: Enum.map(entries || [], &struct(Filesystem.FileInfo, atomize(&1)))
-    }
+    do: %Filesystem.LsResult{entries: to_structs(entries, Filesystem.FileInfo)}
 
   defp list_result(%{error: error}), do: %Filesystem.LsResult{error: error}
 
   defp read_result(%{file_data: data, error: nil}),
-    do: %Filesystem.ReadResult{file_data: Utils.normalize_file_data(data)}
+    do: %Filesystem.ReadResult{file_data: FileDataUtils.normalize_file_data(data)}
 
   defp read_result(%{error: error}), do: %Filesystem.ReadResult{error: error}
 
@@ -93,29 +96,17 @@ defmodule BeamWeaver.Filesystem.Sandbox do
     do: %Filesystem.EditResult{path: path, occurrences: occurrences, error: error}
 
   defp glob_result(%{matches: matches, error: nil}),
-    do: %Filesystem.GlobResult{
-      matches: Enum.map(matches || [], &struct(Filesystem.FileInfo, atomize(&1)))
-    }
+    do: %Filesystem.GlobResult{matches: to_structs(matches, Filesystem.FileInfo)}
 
   defp glob_result(%{error: error}), do: %Filesystem.GlobResult{error: error}
 
   defp grep_result(%{matches: matches, error: nil}),
-    do: %Filesystem.GrepResult{
-      matches: Enum.map(matches || [], &struct(Filesystem.GrepMatch, atomize(&1)))
-    }
+    do: %Filesystem.GrepResult{matches: to_structs(matches, Filesystem.GrepMatch)}
 
   defp grep_result(%{error: error}), do: %Filesystem.GrepResult{error: error}
 
-  defp atomize(map) when is_map(map),
-    do: Map.new(map, fn {key, value} -> {existing_atom_key(key), value} end)
-
-  defp existing_atom_key(key) when is_atom(key), do: key
-
-  defp existing_atom_key(key) do
-    key
-    |> to_string()
-    |> String.to_existing_atom()
-  rescue
-    ArgumentError -> key
+  defp to_structs(entries, module) do
+    fields = module |> struct() |> Map.keys()
+    Enum.map(entries || [], &struct(module, MapAccess.normalize_keys(&1, fields)))
   end
 end

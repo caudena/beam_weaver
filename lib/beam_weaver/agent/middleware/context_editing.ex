@@ -1,17 +1,25 @@
 defmodule BeamWeaver.Agent.Middleware.ContextEditing do
   @moduledoc """
   Applies explicit message edits before model calls.
+
+  The default edit clears old tool results once the request is over its
+  `:trigger` tokens. `:token_count_method` counts them approximately (the
+  default) or with the agent's model (`:model`); a `:token_counter`, a
+  function of a message list that returns its token count, replaces both.
   """
 
-  @behaviour BeamWeaver.Agent.Middleware
+  use BeamWeaver.Agent.Middleware
 
   alias BeamWeaver.Agent.ModelRequest
   alias BeamWeaver.Agent.State
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.LanguageModel
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages.Utils
   alias BeamWeaver.Graph.Overwrite
   alias BeamWeaver.Options
+
+  import BeamWeaver.Agent.Nodes.Model.Prompt, only: [prompt_messages: 1]
 
   defmodule ClearToolUses do
     @moduledoc """
@@ -39,7 +47,8 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
 
   defstruct editor: nil,
             edits: [],
-            token_count_method: :approximate
+            token_count_method: :approximate,
+            token_counter: nil
 
   def new(opts \\ []) do
     if Keyword.has_key?(opts, :editor) do
@@ -47,7 +56,8 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
     else
       %__MODULE__{
         edits: Keyword.get(opts, :edits, [ClearToolUses.new(opts)]),
-        token_count_method: opts |> Keyword.get(:token_count_method, :approximate) |> normalize_counter()
+        token_count_method: opts |> Keyword.get(:token_count_method, :approximate) |> normalize_counter(),
+        token_counter: opts |> Keyword.get(:token_counter) |> token_counter!()
       }
     end
   end
@@ -55,6 +65,7 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
   @impl true
   def name(_middleware), do: :context_editing
 
+  @impl true
   def wrap_model_call(%__MODULE__{edits: []}, %ModelRequest{} = request, handler),
     do: handler.(request)
 
@@ -72,6 +83,7 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
     |> handler.()
   end
 
+  @impl true
   def before_model(%__MODULE__{editor: nil}, _state, _runtime), do: %{}
 
   def before_model(%__MODULE__{editor: editor}, state, runtime) do
@@ -131,7 +143,7 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
       kept_calls != [] ->
         [%{message | tool_calls: kept_calls}]
 
-      empty_assistant_content?(message.content) ->
+      message.content in [nil, "", []] ->
         []
 
       true ->
@@ -147,8 +159,6 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
         Map.get(call, :call_id)
 
   defp tool_call_id(_call), do: nil
-
-  defp empty_assistant_content?(content), do: content in [nil, "", []]
 
   defp apply_edit(%ClearToolUses{} = edit, messages, %ModelRequest{} = request, middleware) do
     apply_clear_tool_uses(edit, messages, fn value ->
@@ -215,19 +225,18 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
          {:ok, assistant_index, assistant, tool_call} <-
            matching_tool_call(messages, index, tool_message),
          false <- excluded_tool?(edit, tool_message, tool_call) do
-      messages
-      |> List.replace_at(index, cleared_tool_message(tool_message, edit))
-      |> maybe_clear_tool_inputs(edit, assistant_index, assistant, tool_message.tool_call_id)
+      messages = List.replace_at(messages, index, cleared_tool_message(tool_message, edit))
+
+      if edit.clear_tool_inputs == false,
+        do: messages,
+        else: clear_tool_inputs(messages, assistant_index, assistant, tool_message.tool_call_id)
     else
       _other -> messages
     end
   end
 
-  defp cleared?(%Message{response_metadata: metadata}) do
-    metadata = metadata || %{}
-    context = Map.get(metadata, :context_editing) || %{}
-    Map.get(context, :cleared) == true
-  end
+  defp cleared?(%Message{response_metadata: metadata}),
+    do: get_in(metadata || %{}, [:context_editing, :cleared]) == true
 
   defp matching_tool_call(messages, index, %Message{tool_call_id: id}) do
     messages
@@ -244,10 +253,6 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
       _other ->
         nil
     end)
-    |> case do
-      nil -> :error
-      result -> result
-    end
   end
 
   defp excluded_tool?(%ClearToolUses{exclude_tools: excluded}, %Message{name: name}, tool_call) do
@@ -263,29 +268,10 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
     %{message | content: edit.placeholder, artifacts: [], response_metadata: metadata}
   end
 
-  defp maybe_clear_tool_inputs(
-         messages,
-         %ClearToolUses{clear_tool_inputs: false},
-         _index,
-         _assistant,
-         _id
-       ),
-       do: messages
-
-  defp maybe_clear_tool_inputs(
-         messages,
-         %ClearToolUses{},
-         assistant_index,
-         assistant,
-         tool_call_id
-       ) do
+  defp clear_tool_inputs(messages, assistant_index, assistant, tool_call_id) do
     calls =
       Enum.map(assistant.tool_calls || [], fn call ->
-        if tool_call_id(call) == tool_call_id do
-          clear_call_args(call)
-        else
-          call
-        end
+        if tool_call_id(call) == tool_call_id, do: Map.put(call, :args, %{}), else: call
       end)
 
     response_metadata = assistant.response_metadata || %{}
@@ -303,8 +289,14 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
     })
   end
 
-  defp clear_call_args(call) do
-    Map.put(call, :args, %{})
+  defp count_tokens(messages, _request, %__MODULE__{token_counter: counter}) when is_function(counter, 1) do
+    case counter.(messages) do
+      count when is_integer(count) ->
+        {:ok, count}
+
+      other ->
+        {:error, Error.new(:token_count_failed, "token_counter must return an integer", %{value: inspect(other)})}
+    end
   end
 
   defp count_tokens(messages, %ModelRequest{} = request, %__MODULE__{token_count_method: :model}) do
@@ -314,10 +306,11 @@ defmodule BeamWeaver.Agent.Middleware.ContextEditing do
   defp count_tokens(messages, _request, _middleware),
     do: LanguageModel.count_tokens(:approximate, messages)
 
-  defp prompt_messages(nil), do: []
-  defp prompt_messages(messages) when is_list(messages), do: messages
-  defp prompt_messages(%Message{} = message), do: [message]
-
   defp normalize_counter(value),
     do: Options.atom_enum!("token_count_method", value, [:approximate, :model])
+
+  defp token_counter!(counter) when is_nil(counter) or is_function(counter, 1), do: counter
+
+  defp token_counter!(counter),
+    do: raise(ArgumentError, "token_counter must be a function of a message list, got #{inspect(counter)}")
 end

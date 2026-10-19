@@ -11,10 +11,7 @@ defmodule BeamWeaver.Anthropic.Middleware.PromptCaching do
   @type t :: %__MODULE__{cache_control: map()}
 
   @spec new(keyword() | map()) :: t()
-  def new(opts \\ []) do
-    attrs = if is_map(opts), do: opts, else: Map.new(opts)
-    struct(__MODULE__, attrs)
-  end
+  def new(opts \\ []), do: struct(__MODULE__, opts)
 
   @spec call_opts(t()) :: keyword()
   def call_opts(%__MODULE__{cache_control: cache_control}), do: [cache_control: cache_control]

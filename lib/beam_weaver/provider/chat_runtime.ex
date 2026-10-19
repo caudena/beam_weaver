@@ -1,93 +1,62 @@
 defmodule BeamWeaver.Provider.ChatRuntime do
   @moduledoc false
 
-  alias BeamWeaver.Core.Async
-  alias BeamWeaver.Core.Error
-  alias BeamWeaver.Provider.ChatModel.Options, as: ChatOptions
-  alias BeamWeaver.Provider.ChatRuntime.Adapter
+  # The invoke/stream flow behind `use BeamWeaver.Provider.ChatModel`; `module`
+  # is the provider chat model implementing that behaviour.
+
   alias BeamWeaver.Stream, as: BWStream
+  alias BeamWeaver.Stream.Envelope
+  alias BeamWeaver.Stream.Events
   alias BeamWeaver.Stream.Sink
 
-  def async_invoke(opts, invoke_fun), do: Async.run_call(opts, invoke_fun)
+  def invoke(module, model, messages, opts), do: reply(:invoke, false, module, model, messages, opts)
 
-  def async_batch(message_batches, opts, invoke_fun) when is_list(message_batches) do
-    Async.batch_call(message_batches, opts, invoke_fun)
-  end
-
-  def async_stream(opts, stream_fun), do: Async.run_call(opts, stream_fun)
-
-  def model_id(model), do: ChatOptions.model_id(model)
-
-  def profile(model), do: ChatOptions.profile(model)
-
-  def invoke(model, messages, opts, %Adapter{} = adapter) do
-    call_opts = default_response_header_opt(model, opts)
-
-    with {:ok, body} <-
-           request_body(model, messages, Keyword.put(call_opts, :stream, false), adapter),
-         {:ok, response} <- adapter.invoke.(model, body, call_opts),
-         {:ok, message} <- adapter.decode.(response, call_opts) do
-      parse_response(model, message, call_opts, adapter)
+  def stream(module, model, messages, opts) do
+    with {:ok, body} <- module.request_body(model, messages, Keyword.put(opts, :stream, true)) do
+      module.send_request(:stream, model, body, opts)
     end
   end
 
-  def stream(model, messages, opts, %Adapter{} = adapter) do
-    with {:ok, body} <- request_body(model, messages, Keyword.put(opts, :stream, true), adapter) do
-      adapter.stream.(model, body, opts)
+  def stream_response(module, model, messages, opts),
+    do: reply(:stream_response, true, module, model, messages, opts)
+
+  defp reply(call, stream?, module, %{include_response_headers: include?} = model, messages, opts) do
+    opts = Keyword.put_new(opts, :include_response_headers, include?)
+
+    with {:ok, body} <- module.request_body(model, messages, Keyword.put(opts, :stream, stream?)),
+         {:ok, response} <- module.send_request(call, model, body, opts),
+         {:ok, message} <- module.decode_response(response, opts) do
+      module.parse_response(model, message, opts)
     end
   end
 
-  def stream_response(model, messages, opts, %Adapter{} = adapter) do
-    call_opts = default_response_header_opt(model, opts)
-
-    with {:ok, body} <-
-           request_body(model, messages, Keyword.put(call_opts, :stream, true), adapter),
-         {:ok, response} <- adapter.stream_response.(model, body, call_opts),
-         {:ok, message} <- adapter.decode.(response, call_opts) do
-      parse_response(model, message, call_opts, adapter)
+  def stream_events(module, source, model, messages, opts) do
+    with {:ok, body} <- module.request_body(model, messages, Keyword.put(opts, :stream, true)),
+         {:ok, events} <- module.send_request(:stream_events, model, body, opts) do
+      mux_typed_events(events, source, module.stream_metadata(model, body, opts), opts)
     end
   end
 
-  def stream_events(model, messages, opts, %Adapter{stream_events: stream_events} = adapter)
-      when is_function(stream_events, 3) do
-    with {:ok, body} <- request_body(model, messages, Keyword.put(opts, :stream, true), adapter),
-         {:ok, events} <- stream_events.(model, body, opts) do
-      metadata = stream_metadata(model, body, opts, adapter)
-      mux_typed_events(events, adapter.source, metadata, opts)
+  def stream_exact_events(module, source, model, body, opts) when is_binary(body) do
+    with {:ok, events} <- module.send_request(:exact_stream_events, model, body, opts) do
+      mux_typed_events(events, source, Keyword.get(opts, :exact_request_metadata, %{}), opts)
     end
   end
 
-  def stream_events(_model, _messages, _opts, %Adapter{}) do
-    {:error, Error.new(:unsupported_feature, "provider does not support typed stream events")}
-  end
-
-  @doc false
-  def stream_exact_events(model, body, opts, %Adapter{exact_stream_events: stream_events} = adapter)
-      when is_binary(body) and is_function(stream_events, 3) do
-    with {:ok, events} <- stream_events.(model, body, opts) do
-      metadata = Keyword.get(opts, :exact_request_metadata, %{})
-      mux_typed_events(events, adapter.source, metadata, opts)
-    end
-  end
-
-  def stream_exact_events(_model, _body, _opts, %Adapter{}) do
-    {:error, Error.new(:unsupported_feature, "provider does not support exact typed stream events")}
-  end
-
-  def default_response_header_opt(%{include_response_headers: include_response_headers}, opts) do
-    Keyword.put_new(opts, :include_response_headers, include_response_headers)
-  end
-
-  def mux_typed_events(events, source, metadata, opts) do
+  # The mux reads the provider's events in a producer of its own. Its `Debug`
+  # events for that producer's start and stop are not part of the model call,
+  # so the typed stream leaves them out, as Anthropic's and Gemini's, which
+  # have no mux, do; a run streaming the call has its own.
+  defp mux_typed_events(events, source, metadata, opts) do
     stream =
-      BWStream.mux(
-        [
-          {:sink, source,
-           fn sink ->
-             Enum.each(events, &Sink.emit(sink, put_stream_metadata(&1, metadata)))
-             :ok
-           end}
-        ],
+      [
+        {:sink, source,
+         fn sink ->
+           Enum.each(events, &Sink.emit(sink, put_stream_metadata(&1, metadata)))
+           :ok
+         end}
+      ]
+      |> BWStream.mux(
         run_id: Keyword.get(opts, :run_id),
         graph: Keyword.get(opts, :graph),
         namespace: Keyword.get(opts, :namespace, []),
@@ -99,31 +68,18 @@ defmodule BeamWeaver.Provider.ChatRuntime do
         cancel_timeout: Keyword.get(opts, :cancel_timeout, 100),
         producer_supervisor: Keyword.get(opts, :producer_supervisor)
       )
+      |> Stream.reject(&producer_event?/1)
 
     {:ok, stream}
   end
 
-  def put_stream_metadata(%BeamWeaver.Stream.Envelope{} = envelope, metadata) do
-    %{envelope | metadata: Map.merge(envelope.metadata || %{}, metadata)}
-  end
+  defp producer_event?(%Envelope{event: %Events.Debug{payload: %{type: type}}}),
+    do: type in [:producer_start, :producer_stop]
 
-  def put_stream_metadata(event, metadata) do
-    BWStream.envelope(event, metadata: metadata)
-  end
+  defp producer_event?(_envelope), do: false
 
-  defp request_body(model, messages, opts, %Adapter{} = adapter),
-    do: adapter.request.(model, messages, opts)
+  defp put_stream_metadata(%Envelope{} = envelope, metadata),
+    do: %{envelope | metadata: Map.merge(envelope.metadata || %{}, metadata)}
 
-  defp parse_response(model, message, opts, %Adapter{} = adapter) do
-    case adapter.parse do
-      nil -> {:ok, message}
-      parser when is_function(parser, 3) -> parser.(model, message, opts)
-      parser when is_function(parser, 2) -> parser.(message, opts)
-    end
-  end
-
-  defp stream_metadata(model, body, opts, %Adapter{metadata: metadata}) when is_function(metadata, 3),
-    do: metadata.(model, body, opts)
-
-  defp stream_metadata(_model, _body, _opts, %Adapter{}), do: %{}
+  defp put_stream_metadata(event, metadata), do: BWStream.envelope(event, metadata: metadata)
 end

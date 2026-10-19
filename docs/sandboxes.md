@@ -1,476 +1,394 @@
-# Sandboxes
+# Sandboxes and Command Execution
 
-Sandboxes let an agent work with files and run shell commands without giving it
-direct access to your application host. In BeamWeaver, a sandbox is a
-`BeamWeaver.Sandbox` implementation adapted into the agent filesystem through
-`BeamWeaver.Filesystem.Sandbox`.
+Choose an execution boundary before giving an agent command access. A local
+workspace runs as your application user. Docker provides a container boundary;
+its configuration determines network, filesystem and resource access. A shell
+allowlist is a command policy, not operating-system isolation.
 
-When a sandbox-backed filesystem is configured, the agent can use:
 
-- `ls`, `read_file`, `write_file`, `edit_file`, `glob`, and `grep`
-- `execute` for shell commands
-- application-side file transfer with `upload_files` and `download_files`
+Run this page’s examples in order in one IEx session; later blocks reuse the modules and values defined earlier.
 
-{% hint style="warning" %}
-**Sandbox Quality Depends On The Implementation**
+## Run an agent in Docker
 
-`BeamWeaver.Sandbox.Local` is useful for development and tests, but it is not a
-hardened isolation boundary. Use Docker with a hardened runtime, a VM, a remote
-sandbox provider, or a custom `BeamWeaver.Sandbox` adapter for untrusted input
-or production multi-tenant work.
-{% endhint %}
-
-## Why Use Sandboxes
-
-Use a sandbox when an agent needs to:
-
-- create, edit, and inspect code or data files,
-- run package managers, tests, compilers, scripts, or CLIs,
-- execute commands that should not run directly on the host,
-- produce artifacts that your application retrieves after the run.
-
-Sandboxes reduce blast radius. They do not make prompt injection harmless. An
-attacker who controls context can still convince the agent to run commands
-inside the sandbox, read sandbox files, or exfiltrate sandbox-accessible data if
-network access exists.
-
-## Basic Usage
-
-Create a `BeamWeaver.Sandbox`, adapt it into a filesystem, and pass it to the
-agent:
-
-```elixir
-alias BeamWeaver.Agent
-alias BeamWeaver.Core.Message
-alias BeamWeaver.Filesystem
-alias BeamWeaver.Sandbox
-
-sandbox = Sandbox.local(root: "/tmp/my-agent-workspace")
-
-filesystem =
-  Filesystem.Sandbox.new(sandbox: sandbox)
-
-{:ok, agent} =
-  Agent.build(
-    model: "openai:gpt-5.4",
-    filesystem: filesystem,
-    system_prompt: "You are a coding assistant with sandboxed shell access."
-  )
-
-{:ok, _state} =
-  Agent.invoke(agent, %{
-    messages: [Message.user("Create a hello world script and run it.")]
-  })
-```
-
-Because `BeamWeaver.Filesystem.Sandbox` implements
-`BeamWeaver.Filesystem.Executable`, the filesystem middleware includes the
-`execute` tool automatically.
-
-## Docker Sandbox
-
-`BeamWeaver.Sandbox.Docker` keeps the BeamWeaver runtime outside the container
-and runs filesystem and command operations inside Docker:
-
-```elixir
-alias BeamWeaver.Filesystem
-alias BeamWeaver.Sandbox
-
-sandbox =
-  Sandbox.Docker.new(
-    image: "docker.io/library/python:3.11-slim",
-    root: "/workspace",
-    max_output_bytes: 100_000,
-    runtime: "runsc",
-    mounts: [
-      %{source: "/srv/my-app", target: "/workspace", read_only: false},
-      %{source: "/srv/reference", target: "/reference", read_only: true}
-    ],
-    read_only: true,
-    cap_drop: ["ALL"],
-    security_opts: ["no-new-privileges"],
-    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
-  )
-
-filesystem =
-  Filesystem.Sandbox.new(sandbox: sandbox)
-```
-
-The Docker adapter starts a container on first use with:
-
-- `--network none`
-- `--cpus 1`
-- `--memory 1g`
-- `--pids-limit 256`
-- `--workdir` set to the sandbox root
-
-Applications may override those resource limits and add canonical host bind
-mounts, a read-only container root, dropped capabilities, security options, and
-temporary filesystems. These are adapter options, not a claim that Docker alone
-is a complete containment boundary. Call `Sandbox.Docker.stop/1` when an
-application owns the sandbox lifecycle explicitly.
-
-Plain Docker is still not a complete security boundary for hostile workloads.
-For production, use a hardened runtime such as gVisor or Kata when available,
-or implement a remote sandbox adapter backed by your infrastructure provider.
-
-## Direct Sandbox API
-
-You can call the sandbox directly from application code:
+Complete [Installation](installation.md) and start Docker. The image must
+contain Python 3 and the GNU utilities used by file operations. This example
+starts one disposable container, makes a real OpenAI call and checks the
+command's exit code and output before removing the container.
 
 ```elixir
 alias BeamWeaver.Sandbox
+sandbox = Sandbox.Docker.new(image: "python:3.12-slim") |> Sandbox.Docker.start!()
 
-sandbox = Sandbox.local(root: "/tmp/my-agent-workspace")
+try do
+  %Sandbox.WriteResult{error: nil} = Sandbox.write(sandbox, "/statuses.txt", "refunded\npending\nrefunded\n")
 
-%Sandbox.WriteResult{error: nil} =
-  Sandbox.write(sandbox, "/src/index.py", "print('hello')\n")
+  {:ok, agent} =
+    BeamWeaver.Agent.build(
+      model: "openai:gpt-5.4-mini",
+      model_opts: [max_tokens: 512, timeout: 60_000],
+      system_prompt: "Run the requested command with execute, then report its output. Do not modify the input file.",
+      filesystem: BeamWeaver.Filesystem.Sandbox.new(sandbox: sandbox),
+      recursion_limit: 20
+    )
 
-%Sandbox.ExecuteResult{exit_code: 0, output: output} =
-  Sandbox.execute(sandbox, "python /tmp/my-agent-workspace/src/index.py")
+  {:ok, result} =
+    BeamWeaver.Agent.invoke(agent, %{messages: ["Run grep -c refunded statuses.txt and report the count."]})
 
-%Sandbox.ReadResult{file_data: %{"content" => content, "encoding" => "utf-8"}} =
-  Sandbox.read(sandbox, "/src/index.py")
-```
-
-For agent-facing use, prefer going through `BeamWeaver.Filesystem.Sandbox` so
-the same virtual paths, file tools, and permissions pipeline are used.
-
-## File Access Planes
-
-There are two distinct file paths into a sandbox:
-
-| Plane | Who uses it | BeamWeaver surface | Use |
-| --- | --- | --- | --- |
-| Agent filesystem tools | The model | `read_file`, `write_file`, `edit_file`, `ls`, `glob`, `grep`, `execute` | Work performed during the agent run. |
-| File transfer API | Application code | `BeamWeaver.Sandbox.upload_files/3`, `download_files/3`, or `BeamWeaver.Filesystem.upload_files/3`, `download_files/3` | Seed inputs before a run and retrieve artifacts after a run. |
-
-Seed files before invocation:
-
-```elixir
-alias BeamWeaver.Filesystem
-
-filesystem = Filesystem.Sandbox.new(sandbox: sandbox)
-
-[
-  %Filesystem.UploadResult{path: "/src/index.py", error: nil},
-  %Filesystem.UploadResult{path: "/pyproject.toml", error: nil}
-] =
-  Filesystem.upload_files(filesystem, [
-    {"/src/index.py", "print('hello')\n"},
-    {"/pyproject.toml", "[project]\nname = 'my-app'\n"}
-  ])
-```
-
-Retrieve artifacts after the run:
-
-```elixir
-[%Filesystem.DownloadResult{path: "/src/index.py", content: content, error: nil}] =
-  Filesystem.download_files(filesystem, ["/src/index.py"])
-```
-
-Use absolute virtual paths. BeamWeaver rejects path traversal such as `..`, `~`,
-Windows drive paths, and null bytes.
-
-## Command Execution
-
-`execute` returns an exit code, output, optional error, truncation flag, and
-redacted native metadata:
-
-```elixir
-%BeamWeaver.Filesystem.Executable.ExecuteResult{
-  exit_code: 0,
-  output: "Python 3.11.8\n",
-  error: nil,
-  truncated: false,
-  metadata: %{command_id: command_id}
-} =
-  BeamWeaver.Filesystem.Executable.execute(filesystem, "python --version")
-```
-
-Timeouts must be integers from 1 to 3600 seconds:
-
-```elixir
-BeamWeaver.Filesystem.Executable.execute(
-  filesystem,
-  "pytest",
-  timeout: 120
-)
-```
-
-`BeamWeaver.Sandbox.Local` and `BeamWeaver.Sandbox.Docker` truncate large
-command output according to `max_output_bytes`. `BeamWeaver.Filesystem.Sandbox`
-exposes constants for the current adapter limits used by the filesystem bridge:
-
-```elixir
-BeamWeaver.Filesystem.Sandbox.max_binary_bytes()
-BeamWeaver.Filesystem.Sandbox.max_output_bytes()
-```
-
-For a narrower command surface, use `BeamWeaver.Agent.Middleware.ShellTool`
-with an allow-list policy instead of exposing a general-purpose `execute` tool.
-
-## Durable Docker Exec And Owned Cleanup
-
-`BeamWeaver.Sandbox.Docker` also exposes an application-facing durable exec
-contract for commands whose identity and output must survive the initiating
-Elixir process. Unlike the ordinary filesystem `execute` callback,
-`start_exec/3` never starts a container implicitly: call `start!/1` first and
-persist the returned handle before treating the command as admitted.
-
-```elixir
-sandbox =
-  BeamWeaver.Sandbox.Docker.new(
-    image: "docker.io/library/python:3.11-slim",
-    labels: %{"owner" => "run-018f", "generation" => "3"}
-  )
-  |> BeamWeaver.Sandbox.Docker.start!()
-
-{:ok, handle} =
-  BeamWeaver.Sandbox.Docker.start_exec(
-    sandbox,
-    "python -m pytest",
-    workdir: "/workspace"
-  )
-
-{:ok, window} = BeamWeaver.Sandbox.Docker.read_exec(sandbox, handle, 0, 64_000)
-
-if window.status == nil do
-  :ok = BeamWeaver.Sandbox.Docker.stop_exec(sandbox, handle, 2_000)
+  command_result = Enum.find(result.messages, &(&1.role == :tool and &1.name == "execute"))
+  0 = command_result.metadata.exit_code
+  true = BeamWeaver.Core.Message.text(command_result) =~ "2"
+after
+  :ok = Sandbox.Docker.stop(sandbox)
 end
 ```
 
-`read_exec/4` returns a bounded output window, the next byte offset, the total
-observed output size, and a terminal status when one exists. A handle is bound
-to the exact container and scratch directory; using it with another sandbox
-returns an identity-mismatch error. `stop_exec/3` requests TERM, waits for the
-bounded grace period, escalates to KILL when needed, and returns only after a
-terminal status is observable.
+The model runs outside the container; only workspace operations run inside it.
+Provider credentials are not needed in the container. Initial image download
+requires host Docker access; the running container defaults to no network.
 
-For recovery and cleanup, inspect immutable container evidence and remove only
-the container whose complete expected label subset still matches:
+## Docker sandbox
+
+`Docker.new/1` describes a container; `start!/1` returns the started value to
+use for operations. Unstarted containers return `container_not_started` rather
+than launching implicitly. `container:` can reference an existing container
+your application owns.
+
+Defaults include one CPU, 1 GiB memory, 256 processes, no network and a
+`/workspace` working directory. Options control image/runtime, mounts, labels,
+CPU/memory/process limits, network, read-only root, tmpfs, dropped capabilities
+and security options. Host mount paths must be absolute.
+
+Plain Docker shares the host kernel. Choose the runtime and mounted data for
+your workload; a configured hardened runtime can provide a different boundary.
+File-tool permissions do not constrain arbitrary commands inside it.
+
+## Local sandbox
+
+`Sandbox.local/1` maps virtual paths into `root:` and executes commands with
+`sh` on the host. It is useful for trusted development tasks. A root directory
+is not isolation from other host files accessible to that user.
+
+Commands receive baseline environment variables plus explicit `env:` values.
+`inherit_env: true` exposes the whole application environment, potentially
+including credentials. Prefer explicit inputs. Local output defaults to a
+512,000-byte limit; Docker defaults to 100,000 bytes. Truncated output keeps
+its beginning and end and marks the omission.
+
+## Use a sandbox directly
+
+`Sandbox` exposes read/write/edit, list/glob/grep, batch upload/download and
+execute operations. File operations return result structs with error fields;
+batch operations report each file separately. Paths are virtual absolute
+paths, while commands start in the sandbox working directory.
+
+Uploads and writes replace existing files. Download artifacts you need before
+cleanup. Successful construction or an empty result object is not evidence
+that a command completed; inspect error, exit code and expected artifacts.
+
+This complete local example creates a file, counts matching lines, and removes its workspace:
 
 ```elixir
-{:ok, evidence} = BeamWeaver.Sandbox.Docker.inspect_container(sandbox)
+alias BeamWeaver.Sandbox
+root = Path.join(System.tmp_dir!(), "beam-weaver-local-#{System.unique_integer([:positive])}")
 
-:ok =
-  BeamWeaver.Sandbox.Docker.stop_owned(sandbox, %{
-    "owner" => "run-018f",
-    "generation" => "3"
-  })
+try do
+  local = Sandbox.local(root: root)
+  %Sandbox.WriteResult{error: nil} = Sandbox.write(local, "/orders.csv", "refunded\npending\nrefunded\n")
+  result = Sandbox.execute(local, "grep -c refunded orders.csv", timeout: 5)
+  {0, "2\n", nil} = {result.exit_code, result.output, result.error}
+after
+  File.rm_rf!(root)
+end
 ```
 
-`stop_owned/2` rejects an empty or malformed expected-label map before Docker
-I/O. A mismatch fails closed instead of deleting a container that may have been
-reused or replaced. Plain `stop/1` remains available when the application does
-not need label-qualified ownership evidence.
+## Exit codes
 
-## Execution Metadata And Telemetry
+The execute tool can return a successful tool message even when the command
+exits nonzero: the tool delivered the command result successfully. Inspect
+`metadata.exit_code`, not only tool status. Timeouts or backend failures may
+produce an error without a usable command exit code. Offloading long output
+keeps its metadata.
 
-`BeamWeaver.Sandbox.execute/3` adds native execution metadata without changing
-successful return semantics. Local adapters get command IDs and timeout
-metadata automatically. Remote adapters can add provider-specific facts such as:
+## Command timeouts
 
-- `:provider_id`
-- `:sandbox_id`
-- `:snapshot_id`
-- `:command_id`
-- `:reconnect_count`
-- `:timeout_ms`
-- `:exit_code`
-- `:retryable`
-- `:raw_status`
-- `:output_unavailable`
+Sandbox execute timeouts are **seconds**, 1–3,600, default 120. Agent/node
+budgets and the policy-checked Shell tool use **milliseconds**.
+Timed-out commands and their process groups are terminated, then killed if
+needed. A direct timeout result reports exit code 124 and error `timeout`.
+Stopping a command does not undo file or external side effects already made.
 
-Credential-shaped fields such as API keys, tokens, private keys, signed URLs,
-and secret mount/env fields are redacted before metadata reaches telemetry or
-tracing.
-
-Sandbox execution emits native telemetry:
-
-| Event | Use |
-| --- | --- |
-| `[:beam_weaver, :sandbox, :execute, :start]` | Command execution started. |
-| `[:beam_weaver, :sandbox, :execute, :stop]` | Command execution completed. |
-| `[:beam_weaver, :sandbox, :execute, :timeout]` | Backend reported a timeout-shaped result. |
-| `[:beam_weaver, :sandbox, :execute, :exception]` | The adapter raised or exited before returning a result. |
-
-## Provider Registry
-
-Use `BeamWeaver.Sandbox.Registry` when sandbox providers come from runtime
-configuration:
+The shell tool uses milliseconds for its policy timeout:
 
 ```elixir
-alias BeamWeaver.Sandbox.Registry
-
-{:ok, registry} =
-  Registry.new(
-    providers: [
-      %{
-        id: :remote,
-        module: MyApp.RemoteSandboxProvider,
-        config: %{region: "us-east-1", api_key: System.fetch_env!("SANDBOX_API_KEY")},
-        capabilities: %{sandbox_id: true, snapshot: true, mounts: true}
-      }
-    ]
-  )
-
-{:ok, sandbox} =
-  Registry.build(registry, :remote,
-    sandbox_id: "sbx_123",
-    snapshot_id: "snap_456",
-    mounts: [%{name: "repo", path: "/workspace"}]
-  )
+slow = BeamWeaver.Tools.Shell.new(policy: [allow: ["sleep"], timeout: 50])
+BeamWeaver.Core.Tool.invoke(slow, %{"command" => "sleep 5"})
+#=> {:error, %BeamWeaver.Core.Error{type: :shell_timeout}}
 ```
 
-Provider modules implement `c:BeamWeaver.Sandbox.Provider.build/2` and return a
-normal sandbox backend. The registry validates duplicate IDs, provider modules,
-unsupported lifecycle options, and whether the built value implements
-`BeamWeaver.Sandbox`.
+## Shell tool and policies
 
-## Lifecycle And Scoping
-
-BeamWeaver does not manage hosted sandbox lifecycles for you. Your application
-chooses how sandboxes are created, reused, and cleaned up.
-
-Common patterns:
-
-| Scope | Pattern | Use |
-| --- | --- | --- |
-| Per invocation | Create a sandbox before invoking the agent, tear it down afterward. | One-off tasks and strongest cleanup guarantees. |
-| Per thread | Store a sandbox ID by `thread_id` and reuse it for follow-up turns. | Coding sessions where files and dependencies should persist within one conversation. |
-| Per agent or assistant | Store a sandbox ID by agent name or assistant ID. | Shared workspaces, cached dependencies, or long-lived coding environments. |
-
-For per-thread reuse, resolve the sandbox from trusted runtime config or
-application state before building or invoking the agent:
+`BeamWeaver.Tools.Shell` requires a `ShellPolicy`. Deny rules win. Command
+prefix rules and regex rules normally cover one command, not shell chaining:
 
 ```elixir
-thread_id = get_in(config, ["configurable", "thread_id"])
-sandbox = MyApp.Sandboxes.get_or_create_for_thread!(thread_id)
-
-{:ok, agent} =
-  BeamWeaver.Agent.build(
-    model: "openai:gpt-5.4",
-    filesystem: BeamWeaver.Filesystem.Sandbox.new(sandbox: sandbox)
-  )
+policy = BeamWeaver.ShellPolicy.new!(allow: ["grep", "wc -l"], deny: [~r/--recursive/])
+true = BeamWeaver.ShellPolicy.allowed?(policy, "grep -c refunded statuses.txt")
+false = BeamWeaver.ShellPolicy.allowed?(policy, "grep -c x statuses.txt; rm statuses.txt")
+false = BeamWeaver.ShellPolicy.allowed?(policy, "grep --recursive x /")
 ```
 
-Always configure cleanup. Docker containers, VM instances, and remote devboxes
-consume resources until they are stopped or expire through provider TTL.
+Compound commands need `allow_compound: true` and a suitably anchored rule.
+Options include cwd, explicit environment, timeout, output size, redactions
+and an executor for one-shot commands in another environment.
 
-## Integration Patterns
+### Commands that run other commands
 
-### Agent Outside Sandbox
+The policy examines supported wrappers and nested commands. Execution-mode
+wrappers such as `env`, `timeout` or `sh -c` do not bypass checking the wrapped
+command. User/host/fan-out wrappers such as sudo, ssh or xargs need suitable
+rules for both wrapper behavior and invoked command. Deny checks inspect
+nested forms too.
 
-The BeamWeaver application runs on your server. The agent receives sandbox tools
-and uses provider APIs through a `BeamWeaver.Sandbox` adapter.
-
-This is the recommended BeamWeaver pattern because:
-
-- model and application credentials stay outside the sandbox,
-- agent logic can change without rebuilding sandbox images,
-- sandbox failures do not erase the graph or agent state,
-- multiple sandboxes can be used by different agents or tasks.
-
-### Agent Inside Sandbox
-
-You can also run the whole BeamWeaver application inside a container or remote
-environment and talk to it over HTTP, RPC, or a queue. That pattern can mirror
-local development, but it usually means secrets and agent state live inside the
-sandbox. Treat that as a separate deployment architecture rather than a
-BeamWeaver filesystem adapter.
-
-## Custom Sandbox Adapters
-
-Write a module that calls `use BeamWeaver.Sandbox` to support another
-provider. `use BeamWeaver.Sandbox` declares the behaviour and implements the
-`BeamWeaver.Sandbox.Backend` protocol for the module's struct. The
-`BeamWeaver.Sandbox` functions dispatch through that protocol, so
-`@behaviour BeamWeaver.Sandbox` alone is not enough:
+The policy recognizes supported command wrappers; these strings are checked, not executed:
 
 ```elixir
-defmodule MyApp.RemoteSandbox do
+policy = BeamWeaver.ShellPolicy.new!(allow: ["pytest", "make"], deny: ["rm "])
+
+cmds = [
+  "timeout 30 pytest -q",
+  "env FOO=1 make",
+  "DEBUG=* make",
+  "sh -c 'make'",
+  "sh -c 'rm -rf .'",
+  "timeout 5 rm -rf ."
+]
+
+Enum.map(cmds, &BeamWeaver.ShellPolicy.allowed?(policy, &1))
+#=> [true, true, true, true, false, false]
+```
+
+### Code the policy can't read
+
+Inline interpreter code, scripts, dynamically formed commands and shell
+constructs whose behavior cannot be inspected are rejected unless explicitly
+allowed by the relevant prefix or `allow_opaque:`. Such permission also means
+the policy cannot inspect everything that code later does. A permitted test
+suite or Makefile can itself run commands. Use an isolated execution boundary
+for untrusted code rather than relying on string filtering.
+
+`Agent.Middleware.ShellTool` provides a persistent host shell session instead
+of one-shot execution. It requires a policy and checks startup commands too.
+Sessions can retain cwd/environment across calls and a review pause; idle
+sessions expire (default 15 minutes). A custom one-shot executor is not
+supported for this persistent session form.
+
+Check the whole command before execution:
+
+```elixir
+policy = BeamWeaver.ShellPolicy.new!(allow: ["grep", "wc -l"], deny: [~r/--recursive/])
+commands = ["grep -c refunded orders.csv", "grep -c x a; rm a", "wc orders.csv", "grep --recursive x /"]
+
+Enum.map(commands, &BeamWeaver.ShellPolicy.allowed?(policy, &1))
+#=> [true, false, false, false]
+```
+
+Compound commands require explicit opt-in and an appropriately narrow rule:
+
+```elixir
+build = BeamWeaver.ShellPolicy.new!(allow: [~r/^mix compile && mix test$/], allow_compound: true)
+Enum.map(["mix compile && mix test", "mix compile && rm -rf ~"], &BeamWeaver.ShellPolicy.allowed?(build, &1))
+#=> [true, false]
+```
+
+An allowlist can restrict a script name, but cannot inspect what the allowed script does:
+
+```elixir
+tools = BeamWeaver.ShellPolicy.new!(allow: ["python3 report.py", "python3 -c"])
+Enum.map(["python3 report.py", "python3 -c 'print(1)'", "python3 evil.py"], &BeamWeaver.ShellPolicy.allowed?(tools, &1))
+#=> [true, true, false]
+```
+
+## Interpreters
+
+An interpreter adapter gives stateful evaluation a narrower API than a shell.
+This complete local adapter demonstrates state and snapshot restoration:
+
+```elixir
+defmodule MyApp.TallyInterpreter do
+  @behaviour BeamWeaver.Sandbox.Interpreter
+  @impl true
+  def open(_opts), do: {:ok, 0}
+  @impl true
+  def eval(total, "add " <> number, _opts) do
+    next = total + String.to_integer(number)
+    {:ok, next, next}
+  end
+
+  def eval(total, "total", _opts), do: {:ok, total, total}
+  @impl true
+  def snapshot(total, _opts), do: {:ok, total}
+  @impl true
+  def restore(total, _opts), do: {:ok, total}
+end
+
+alias BeamWeaver.Sandbox.Interpreter.Session
+{:ok, session} = Session.start(adapter: MyApp.TallyInterpreter, timeout: 1_000)
+{:ok, restored} = Session.start(adapter: MyApp.TallyInterpreter)
+
+try do
+  {:ok, 25} = Session.eval(session, "add 25")
+  {:ok, snapshot} = Session.snapshot(session)
+  {:ok, 65} = Session.eval(session, "add 40")
+  :ok = Session.restore(restored, snapshot)
+  {:ok, 25} = Session.eval(restored, "total")
+after
+  Session.close(session)
+  Session.close(restored)
+end
+```
+
+Timeouts and raised failures preserve session state. An adapter can explicitly
+return a changed state alongside an error; that state is retained. Snapshots must be plain
+bounded data (default maximum 1,000,000 bytes). An adapter defines what code
+means and what isolation exists; the session process alone is not a language
+security boundary.
+
+This complete interpreter keeps an integer tally and supports snapshot/restore:
+
+```elixir
+defmodule MyApp.RefundTally do
+  @behaviour BeamWeaver.Sandbox.Interpreter
+
+  @impl true
+  def open(_opts), do: {:ok, 0}
+
+  @impl true
+  def eval(total, "refund " <> amount, _opts) do
+    total = total + String.to_integer(amount)
+    {:ok, total, total}
+  end
+
+  def eval(total, "total", _opts), do: {:ok, total, total}
+
+  @impl true
+  def snapshot(total, _opts), do: {:ok, total}
+
+  @impl true
+  def restore(total, _opts), do: {:ok, total}
+end
+
+alias BeamWeaver.Sandbox.Interpreter.Session
+
+{:ok, session} = Session.start(adapter: MyApp.RefundTally, timeout: 1_000)
+{:ok, 25} = Session.eval(session, "refund 25")
+{:ok, snapshot} = Session.snapshot(session)
+{:ok, 65} = Session.eval(session, "refund 40")
+
+{:ok, restored} = Session.start(adapter: MyApp.RefundTally)
+:ok = Session.restore(restored, snapshot)
+answers = {Session.eval(restored, "total"), Session.eval(restored, "delete everything")}
+
+Enum.each([session, restored], &Session.close/1)
+answers
+#=> {{:ok, 25}, {:error, %BeamWeaver.Core.Error{type: :interpreter_execution_failed}}}
+```
+
+## Custom sandbox adapters
+
+Implement the `BeamWeaver.Sandbox` behavior on a struct. Return operation
+results consistently and provide canonical-path resolution when storage has
+symlinks. `Filesystem.Sandbox` then adapts it for agent tools. Wrappers must
+forward link resolution so permission checks see actual targets.
+
+A sandbox wrapper can attach an identifier to command results:
+
+```elixir
+defmodule MyApp.TaggedSandbox do
   use BeamWeaver.Sandbox
 
   alias BeamWeaver.Sandbox
 
-  defstruct [:id, :client]
+  defstruct [:id, :inner]
 
-  def execute(%__MODULE__{} = sandbox, command, opts) do
-    case MyProvider.run_command(sandbox.client, sandbox.id, command, opts) do
-      {:ok, %{exit_code: code, output: output, command_id: command_id}} ->
-        %Sandbox.ExecuteResult{
-          exit_code: code,
-          output: output,
-          metadata: %{
-            provider_id: "my_provider",
-            sandbox_id: sandbox.id,
-            command_id: command_id,
-            raw_status: "finished"
-          }
-        }
-
-      {:error, reason} ->
-        %Sandbox.ExecuteResult{
-          exit_code: nil,
-          output: "",
-          error: to_string(reason),
-          metadata: %{provider_id: "my_provider", sandbox_id: sandbox.id}
-        }
-    end
+  @impl true
+  def execute(sandbox, command, opts) do
+    result = Sandbox.execute(sandbox.inner, command, opts)
+    %{result | metadata: Map.put(result.metadata, :sandbox_id, sandbox.id)}
   end
 
-  def upload_files(%__MODULE__{} = sandbox, files, _opts) do
-    Enum.map(files, fn {path, content} ->
-      case MyProvider.upload(sandbox.client, sandbox.id, path, IO.iodata_to_binary(content)) do
-        :ok -> %Sandbox.UploadResult{path: path}
-        {:error, reason} -> %Sandbox.UploadResult{path: path, error: to_string(reason)}
-      end
-    end)
-  end
-
-  # Implement write/read/edit/ls/glob/grep/download_files as provider-native
-  # calls or by composing them from execute.
+  @impl true
+  def write(sandbox, path, content, opts), do: Sandbox.write(sandbox.inner, path, content, opts)
+  @impl true
+  def read(sandbox, path, opts), do: Sandbox.read(sandbox.inner, path, opts)
+  @impl true
+  def edit(sandbox, path, old, new, opts), do: Sandbox.edit(sandbox.inner, path, old, new, opts)
+  @impl true
+  def ls(sandbox, path, opts), do: Sandbox.ls(sandbox.inner, path, opts)
+  @impl true
+  def glob(sandbox, pattern, opts), do: Sandbox.glob(sandbox.inner, pattern, opts)
+  @impl true
+  def grep(sandbox, pattern, opts), do: Sandbox.grep(sandbox.inner, pattern, opts)
+  @impl true
+  def upload_files(sandbox, files, opts), do: Sandbox.upload_files(sandbox.inner, files, opts)
+  @impl true
+  def download_files(sandbox, paths, opts), do: Sandbox.download_files(sandbox.inner, paths, opts)
+  @impl true
+  def canonical_paths(sandbox, paths, opts), do: Sandbox.canonical_paths(sandbox.inner, paths, opts)
 end
 ```
 
-Then adapt it into the agent filesystem:
+## Provider registry
+
+`Sandbox.Registry` selects configured providers implementing `Sandbox.Provider`.
+Provider capabilities describe supported lifecycle inputs such as sandbox IDs,
+snapshots, mounts and working directories. Unsupported lifecycle options fail
+rather than silently disappear. The registry builds adapters; it does not
+supply an undocumented hosted service.
+
+Register and build that wrapper with an explicit tenant workspace. Derive the sandbox ID from trusted application data:
 
 ```elixir
-filesystem =
-  BeamWeaver.Filesystem.Sandbox.new(
-    sandbox: %MyApp.RemoteSandbox{id: sandbox_id, client: client}
-  )
+alias BeamWeaver.Sandbox
+
+defmodule MyApp.TenantSandboxes do
+  @behaviour BeamWeaver.Sandbox.Provider
+
+  @impl true
+  def build(spec, opts) do
+    id = Keyword.fetch!(opts, :sandbox_id)
+    {:ok, %MyApp.TaggedSandbox{id: id, inner: Sandbox.local(root: Path.join(spec.config.base_dir, id))}}
+  end
+end
+
+alias BeamWeaver.Sandbox.Registry
+
+tenants = %{
+  id: :tenants,
+  module: MyApp.TenantSandboxes,
+  config: %{base_dir: Path.join(System.tmp_dir!(), "beam-weaver-tenants-#{System.unique_integer([:positive])}")},
+  capabilities: %{sandbox_id: true}
+}
+
+{:ok, registry} = Registry.new(providers: [tenants])
+{:ok, sandbox} = Registry.build(registry, :tenants, sandbox_id: "sbx_ada")
+
+try do
+  result = Sandbox.execute(sandbox, "printf ok")
+  {0, "ok", "sbx_ada"} = {result.exit_code, result.output, result.metadata.sandbox_id}
+after
+  File.rm_rf!(tenants.config.base_dir)
+end
 ```
 
-## Security Considerations
+## Lifecycle and cleanup
 
-Sandboxes protect the host from direct filesystem and shell access, but they do
-not protect secrets placed inside the sandbox from the agent.
+A container's starting process owns its default automatic removal. Start
+thread/customer workspaces in a suitable long-lived owner, not inside an
+agent declaration evaluated per call. Stop owned resources explicitly.
+After a VM crash, `stop_owned/2` checks labels before cleaning an orphan.
+`remove: false` changes automatic cleanup, not responsibility for removal.
 
-Do not put API keys, database credentials, cloud tokens, or production secrets
-inside a sandbox. Prefer host-side tools that perform authenticated operations
-without revealing credentials to the model or sandbox.
-
-If a sandbox must access external services:
-
-- use short-lived, least-privilege credentials,
-- block or restrict outbound network access where possible,
-- add human-in-the-loop approval before expensive or risky commands,
-- audit command output and generated artifacts before using them,
-- treat everything produced inside the sandbox as untrusted input.
-
-`BeamWeaver.Filesystem.Permission` rules apply to model-visible file tools, but
-they do not restrict `execute`. A shell command can read or write files through
-the sandbox environment directly. Enforce command policy in the sandbox adapter,
-with `ShellTool`, through provider network/filesystem controls, or with human
-review.
-
-## Related
-
-- [Composed Agent Capabilities](agent_harness.md)
-- [Filesystem](filesystem.md)
-- [Filesystem Permissions](permissions.md)
-- [Skills](skills.md)
-- [Human-In-The-Loop](human_in_the_loop.md)
-- [Tools](tools.md)
+Docker `start_exec`, `read_exec` and `stop_exec` support longer commands whose
+output must outlive the caller. Store the required identifiers and reconcile
+completion before restarting work. Local cleanup means removing only the
+application-owned root after artifacts are collected.

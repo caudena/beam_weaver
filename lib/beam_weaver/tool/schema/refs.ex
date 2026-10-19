@@ -3,7 +3,7 @@ defmodule BeamWeaver.Tool.Schema.Refs do
 
   alias BeamWeaver.Core.Error
 
-  def dereference_refs(schema, opts \\ []) do
+  def dereference_refs(schema, opts) do
     skip_keys =
       opts
       |> Keyword.get(:skip_keys, ["$defs", "definitions"])
@@ -24,17 +24,8 @@ defmodule BeamWeaver.Tool.Schema.Refs do
     end
   end
 
-  defp dereference(values, root, skip_keys, seen_refs) when is_list(values) do
-    case Enum.reduce_while(values, {:ok, []}, fn value, {:ok, acc} ->
-           case dereference(value, root, skip_keys, seen_refs) do
-             {:ok, dereferenced} -> {:cont, {:ok, [dereferenced | acc]}}
-             {:error, %Error{} = error} -> {:halt, {:error, error}}
-           end
-         end) do
-      {:ok, dereferenced} -> {:ok, Enum.reverse(dereferenced)}
-      {:error, %Error{} = error} -> {:error, error}
-    end
-  end
+  defp dereference(values, root, skip_keys, seen_refs) when is_list(values),
+    do: BeamWeaver.Result.traverse(values, &dereference(&1, root, skip_keys, seen_refs))
 
   defp dereference(value, _root, _skip_keys, _seen_refs), do: {:ok, value}
 
@@ -44,10 +35,10 @@ defmodule BeamWeaver.Tool.Schema.Refs do
   defp remove_titles(schema, properties_context?) when is_map(schema) do
     Enum.reduce(schema, %{}, fn {key, value}, acc ->
       cond do
-        title_key?(key) and not properties_context? ->
+        key in [:title, "title"] and not properties_context? ->
           acc
 
-        properties_key?(key) and is_map(value) ->
+        key in [:properties, "properties"] and is_map(value) ->
           Map.put(acc, key, remove_titles(value, true))
 
         true ->
@@ -58,11 +49,8 @@ defmodule BeamWeaver.Tool.Schema.Refs do
 
   defp remove_titles(value, _properties_context?), do: value
 
-  defp title_key?(key), do: key in [:title, "title"]
-  defp properties_key?(key), do: key in [:properties, "properties"]
-
   defp dereference_ref(value, ref, root, skip_keys, seen_refs) do
-    rest = delete_ref(value)
+    rest = Map.drop(value, ["$ref", :"$ref"])
 
     with {:ok, rest} <- dereference_map(rest, root, skip_keys, seen_refs),
          {:ok, resolved} <- resolve_or_break_cycle(ref, root, skip_keys, seen_refs) do
@@ -70,7 +58,7 @@ defmodule BeamWeaver.Tool.Schema.Refs do
     end
   end
 
-  defp resolve_or_break_cycle(ref, root, skip_keys, seen_refs) when is_binary(ref) do
+  defp resolve_or_break_cycle(ref, root, skip_keys, seen_refs) do
     if ref in seen_refs do
       {:ok, %{}}
     else
@@ -101,12 +89,6 @@ defmodule BeamWeaver.Tool.Schema.Refs do
   defp fetch_ref(%{:"$ref" => ref}) when is_binary(ref), do: {:ok, ref}
   defp fetch_ref(_value), do: :error
 
-  defp delete_ref(map) do
-    map
-    |> Map.delete("$ref")
-    |> Map.delete(:"$ref")
-  end
-
   defp skip_key?(key, skip_keys), do: to_string(key) in skip_keys
 
   defp resolve_ref(root, "#"), do: {:ok, root}
@@ -131,18 +113,9 @@ defmodule BeamWeaver.Tool.Schema.Refs do
   end
 
   defp fetch_pointer(%{} = map, segment) do
-    cond do
-      Map.has_key?(map, segment) ->
-        {:ok, Map.fetch!(map, segment)}
-
-      atom = existing_atom(segment) ->
-        Map.fetch(map, atom)
-
-      integer = integer_key(segment) ->
-        Map.fetch(map, integer)
-
-      true ->
-        :error
+    with :error <- Map.fetch(map, segment),
+         :error <- fetch_key(map, existing_atom(segment)) do
+      fetch_key(map, integer_key(segment))
     end
   end
 
@@ -160,6 +133,9 @@ defmodule BeamWeaver.Tool.Schema.Refs do
     |> String.replace("~1", "/")
     |> String.replace("~0", "~")
   end
+
+  defp fetch_key(_map, nil), do: :error
+  defp fetch_key(map, key), do: Map.fetch(map, key)
 
   defp existing_atom(segment) do
     String.to_existing_atom(segment)

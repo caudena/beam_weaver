@@ -13,6 +13,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.DeepSeek do
     timezone: "UTC",
     default_mode: :off_peak,
     peak_iso_weekdays: [1, 2, 3, 4, 5],
+    excluded_holidays: :chinese_public_holidays,
     peak_windows: [%{start_minute: 60, end_minute: 240}, %{start_minute: 360, end_minute: 600}]
   }
   @old_flash_rates %{input_price_per_mtok: 0.22, cached_input_price_per_mtok: 0.007, output_price_per_mtok: 0.66}
@@ -55,7 +56,6 @@ defmodule BeamWeaver.Models.ProfileRegistry.DeepSeek do
     openai_compatible: true,
     thinking_modes: [:enabled, :disabled],
     default_thinking_mode: :enabled,
-    reasoning_efforts: [:low, :high, :max],
     compatibility_reasoning_efforts: %{minimal: :low, medium: :high, xhigh: :high, ultra: :max},
     chat_prefix_completion: :beta,
     fim_completion: %{status: :beta, thinking: :disabled},
@@ -63,17 +63,25 @@ defmodule BeamWeaver.Models.ProfileRegistry.DeepSeek do
     automatic_context_caching: true,
     cost_currency: "USD",
     pricing_source_url: @pricing_source,
-    pricing_last_checked: "2026-09-29"
+    pricing_last_checked: "2026-10-19",
+    standalone_tools: [:search, :fetch],
+    tool_pricing: %{
+      search: %{price_per_1000_requests: 0.75, billing: :successful_nonempty_response, qps_limit: 100},
+      fetch: %{price_per_1000_requests: 0.75, billing: :successful_nonempty_response, qps_limit: 25}
+    },
+    tool_pricing_source_url: "https://api-docs.deepseek.com/guides/search/",
+    integration_server_tools_free_until: "2026-10-31T16:00:00Z"
   }
   @common_profile %{
     provider: :deepseek,
     status: :active,
-    last_updated: "2026-09-29",
+    last_updated: "2026-10-19",
     max_input_tokens: 1_048_576,
     max_output_tokens: 393_216,
     text_inputs: true,
     text_outputs: true,
     reasoning_output: true,
+    reasoning_effort_levels: [:low, :high, :max],
     tool_calling: true,
     tool_call_streaming: true,
     tool_choice: true,
@@ -102,7 +110,8 @@ defmodule BeamWeaver.Models.ProfileRegistry.DeepSeek do
                @common_extra
                |> Map.merge(@flash_pricing)
                |> Map.merge(%{
-                 model_version: "DeepSeek-V4.1-Flash",
+                 model_version: "DeepSeek-V4.1-Flash-1017",
+                 model_version_date: "2026-10-17",
                  concurrency_limit: 2_500,
                  supported_image_formats: [:jpeg, :png, :gif, :webp],
                  max_images_per_request: 600,
@@ -156,10 +165,9 @@ defmodule BeamWeaver.Models.ProfileRegistry.DeepSeek do
 
   def supported_models, do: @supported_models
   def vision_model?(model), do: model in @vision_models
-  def profiles_map, do: @profiles
   def profiles, do: Map.values(@profiles)
 
-  def resolve(model) when is_binary(model) do
+  def resolve(model) do
     cond do
       model in @retired_models -> retired_model_error(model)
       profile = Map.get(@profiles, {:deepseek, model}) -> {:ok, profile}

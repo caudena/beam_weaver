@@ -1,20 +1,11 @@
 defmodule BeamWeaver.Options do
   @moduledoc false
 
-  def atom_enum!(name, value, allowed) when is_atom(value) do
-    if value in allowed do
-      value
-    else
-      raise ArgumentError, invalid_atom_message(name, value, allowed)
-    end
-  end
-
-  def atom_enum!(name, value, allowed) when is_binary(value) do
-    raise ArgumentError, binary_atom_message(name, value, allowed)
-  end
-
   def atom_enum!(name, value, allowed) do
-    raise ArgumentError, invalid_atom_message(name, value, allowed)
+    case atom_enum_error(name, value, allowed) do
+      :ok -> value
+      {:error, message} -> raise ArgumentError, message
+    end
   end
 
   def atom_enum_error(name, value, allowed) when is_atom(value) do
@@ -49,8 +40,5 @@ defmodule BeamWeaver.Options do
 
   defp known_string?(value, allowed), do: value in Enum.map(allowed, &Atom.to_string/1)
 
-  defp format_allowed(allowed) do
-    allowed
-    |> Enum.map_join(", ", &inspect/1)
-  end
+  defp format_allowed(allowed), do: Enum.map_join(allowed, ", ", &inspect/1)
 end

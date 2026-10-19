@@ -1,13 +1,26 @@
 defmodule BeamWeaver.DeepSeek.ChatModel do
-  @moduledoc """
-  DeepSeek OpenAI-compatible Chat Completions model.
+  @moduledoc ~S"""
+  DeepSeek chat model implementing the BeamWeaver chat contract.
+
+  Prefer `BeamWeaver.Models.init_chat_model/2` for provider-prefixed identifiers,
+  then call `BeamWeaver.Core.ChatModel` or declare the model in an agent.
+  Construction does not contact the provider. Model/profile options describe
+  local compatibility; account access is established only by a real request.
+
+  See [DeepSeek](providers/deepseek.md) for endpoint-specific parameters, reasoning,
+  media and tools. Preserve complete messages for multi-turn replay. Streaming
+  consumers must enumerate once and handle terminal errors; display text is not
+  a lossless representation of a native provider turn.
   """
+
+  use BeamWeaver.Provider.RedactedInspect
 
   alias BeamWeaver.Core.LanguageModel
   alias BeamWeaver.DeepSeek.Client
-  alias BeamWeaver.DeepSeek.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.DeepSeek.Messages
   alias BeamWeaver.DeepSeek.Options
+  alias BeamWeaver.MapShape
   alias BeamWeaver.Models.InvocationMetadata
   alias BeamWeaver.Provider.ChatModel.Options, as: ChatOptions
   alias BeamWeaver.Provider.StructuredOutput
@@ -24,7 +37,7 @@ defmodule BeamWeaver.DeepSeek.ChatModel do
             beta_endpoint: @default_beta_endpoint,
             api_key: nil,
             default_headers: [],
-            model_kwargs: %{},
+            extra_body: %{},
             thinking: nil,
             reasoning_effort: nil,
             temperature: nil,
@@ -51,57 +64,46 @@ defmodule BeamWeaver.DeepSeek.ChatModel do
 
   @type t :: %__MODULE__{}
 
-  use BeamWeaver.Provider.ChatModel
+  use BeamWeaver.Provider.ChatModel, stream_source: :deepseek_chat_completions
 
   @spec new(keyword() | map()) :: t()
-  def new(opts \\ []) do
-    opts = ChatOptions.keyword_options(opts)
-    opts = normalize_endpoint_opts(opts)
-    model = Keyword.get(opts, :model, @default_model)
-    profile = ChatOptions.profile_option(opts, :deepseek, model)
+  def new(opts \\ []), do: build(__MODULE__, opts, &normalize_endpoint_opts/1)
 
-    struct!(
-      __MODULE__,
-      opts
-      |> Keyword.put(:model, model)
-      |> Keyword.put(:profile, profile)
-    )
+  @doc false
+  def build(module, opts, normalize_endpoint_opts) do
+    opts = opts |> ChatOptions.keyword_options() |> normalize_endpoint_opts.()
+    model = Keyword.get(opts, :model, @default_model)
+
+    struct!(module, Keyword.merge(opts, model: model, profile: ChatOptions.profile_option(opts, :deepseek, model)))
   end
 
   @spec request_body(t(), [BeamWeaver.Core.Message.t()], keyword()) ::
           {:ok, map()} | {:error, Error.t()}
+  @impl true
   def request_body(%__MODULE__{} = model, messages, opts \\ []),
     do: Options.to_body(model, messages, opts)
 
   def count_tokens(%__MODULE__{} = model, input, opts \\ []) do
-    case model.tokenizer || BeamWeaver.Models.tokenizer_for(model) do
+    case BeamWeaver.Models.tokenizer_for(model) do
       {:ok, tokenizer} -> LanguageModel.count_tokens({:tokenizer, tokenizer}, input, opts)
-      tokenizer when not is_nil(tokenizer) -> LanguageModel.count_tokens({:tokenizer, tokenizer}, input, opts)
-      _missing -> {:ok, LanguageModel.count_tokens_approximately(input)}
+      nil -> {:ok, LanguageModel.count_tokens_approximately(input)}
     end
   end
 
   defp normalize_endpoint_opts(opts) do
     base_url = Keyword.get(opts, :base_url, @default_base_url) || @default_base_url
 
-    client_opts =
+    client =
       [base_url: base_url]
-      |> maybe_put_client_endpoint(:endpoint, Keyword.get(opts, :endpoint))
-      |> maybe_put_client_endpoint(
-        :beta_chat_completions_endpoint,
-        Keyword.get(opts, :beta_endpoint)
-      )
-
-    client = Client.new(client_opts)
+      |> MapShape.put_present(:endpoint, Keyword.get(opts, :endpoint))
+      |> MapShape.put_present(:beta_chat_completions_endpoint, Keyword.get(opts, :beta_endpoint))
+      |> Client.new()
 
     opts
     |> Keyword.put(:base_url, base_url)
     |> Keyword.put_new(:endpoint, client.chat_completions_endpoint)
     |> Keyword.put_new(:beta_endpoint, client.beta_chat_completions_endpoint)
   end
-
-  defp maybe_put_client_endpoint(opts, _key, nil), do: opts
-  defp maybe_put_client_endpoint(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp client(%__MODULE__{} = model) do
     Client.new(
@@ -117,37 +119,30 @@ defmodule BeamWeaver.DeepSeek.ChatModel do
     )
   end
 
-  defp model_stream_metadata(%__MODULE__{} = model, body, opts) do
+  @impl true
+  def stream_metadata(%__MODULE__{} = model, body, opts) do
     model
     |> InvocationMetadata.provider(:deepseek, body, opts, :chat_completions)
     |> InvocationMetadata.to_metadata_map()
   end
 
-  defp runtime_adapter do
-    %ChatRuntime.Adapter{
-      request: &request_body/3,
-      invoke: fn model, body, opts -> Client.chat_completions(client(model), body, opts) end,
-      stream: fn model, body, opts ->
-        Client.chat_completions_stream(client(model), body, opts)
-      end,
-      stream_response: fn model, body, opts ->
-        Client.chat_completions_stream_response(client(model), body, opts)
-      end,
-      stream_events: fn model, body, opts ->
-        Client.chat_completions_stream_typed_events(client(model), body, opts)
-      end,
-      decode: fn
-        %BeamWeaver.Core.Message{} = message, _opts -> {:ok, message}
-        response, _opts -> Messages.chat_response_to_message(response)
-      end,
-      parse: fn model, message, opts ->
-        StructuredOutput.maybe_parse(message, Options.response_parse_opts(model, opts),
-          error_module: Error,
-          provider_name: "DeepSeek"
-        )
-      end,
-      metadata: &model_stream_metadata/3,
-      source: :deepseek_chat_completions
-    }
-  end
+  @impl true
+  def send_request(:invoke, model, body, opts), do: Client.chat_completions(client(model), body, opts)
+  def send_request(:stream, model, body, opts), do: Client.chat_completions_stream(client(model), body, opts)
+
+  def send_request(:stream_response, model, body, opts),
+    do: Client.chat_completions_stream_response(client(model), body, opts)
+
+  def send_request(:stream_events, model, body, opts),
+    do: Client.chat_completions_stream_typed_events(client(model), body, opts)
+
+  @impl true
+  def forced_tool_choice?(%__MODULE__{} = model, opts), do: Options.forced_tool_choice?(model, opts)
+
+  @impl true
+  def decode_response(response, _opts), do: Messages.chat_response_to_message(response)
+
+  @impl true
+  def parse_response(model, message, opts),
+    do: StructuredOutput.maybe_parse(message, Options.response_parse_opts(model, opts), provider_name: "DeepSeek")
 end

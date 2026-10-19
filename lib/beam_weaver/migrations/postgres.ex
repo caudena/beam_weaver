@@ -12,23 +12,24 @@ defmodule BeamWeaver.Migrations.Postgres do
     :checkpoint,
     :memory,
     :cache,
-    :vector_store,
-    :record_manager
+    :vector_store
   ]
 
-  @current_versions Map.new(@adapter_order, &{&1, if(&1 == :checkpoint, do: 2, else: 1)})
+  # Tables of adapters BeamWeaver no longer has: `:all` doesn't create them,
+  # and `down/1` with `:all` drops them from a database that has them.
+  @retired [:record_manager]
 
-  @doc false
-  def initial_version, do: @initial_version
+  @current_versions %{checkpoint: 2, memory: 2, cache: 1, vector_store: 1, record_manager: 1}
+  @vector_indexes [:ivfflat, :hnsw, false]
+  @max_indexed_dimensions 2_000
 
-  @doc false
-  def current_version(opts \\ []) do
+  def current_version(opts) do
     opts
     |> normalize_specs()
     |> versions_result(&Map.fetch!(@current_versions, &1.key))
   end
 
-  def up(opts \\ []) do
+  def up(opts) do
     opts = with_defaults(opts)
     maybe_create_schema(opts)
 
@@ -40,7 +41,7 @@ defmodule BeamWeaver.Migrations.Postgres do
         initial == :infinity ->
           :ok
 
-        initial == 0 ->
+        initial == 0 and target >= @initial_version ->
           change(spec, @initial_version..target, :up)
           record_version(opts, spec, target)
 
@@ -56,10 +57,10 @@ defmodule BeamWeaver.Migrations.Postgres do
     :ok
   end
 
-  def down(opts \\ []) do
+  def down(opts) do
     opts = with_defaults(opts)
 
-    for spec <- normalize_specs(opts) do
+    for spec <- normalize_specs(opts, @retired) do
       initial = migrated_version(opts, spec)
       target = Keyword.get(opts, :version, @initial_version)
 
@@ -79,7 +80,7 @@ defmodule BeamWeaver.Migrations.Postgres do
     :ok
   end
 
-  def migrated_version(opts \\ []) do
+  def migrated_version(opts) do
     opts = with_defaults(opts)
 
     opts
@@ -87,7 +88,7 @@ defmodule BeamWeaver.Migrations.Postgres do
     |> versions_result(&migrated_version(opts, &1))
   end
 
-  def verify_migrated!(opts \\ []) do
+  def verify_migrated!(opts) do
     opts = with_defaults(opts)
 
     for spec <- normalize_specs(opts) do
@@ -156,7 +157,7 @@ defmodule BeamWeaver.Migrations.Postgres do
     SELECT pg_catalog.obj_description(to_regclass($1), 'pg_class')
     """
 
-    case repo.query(query, [Util.regclass(opts[:prefix], spec.primary_table)], log: false) do
+    case repo.query(query, [Util.qualify(opts[:prefix], spec.primary_table)], log: false) do
       {:ok, %{rows: [["∞"]]}} -> :infinity
       {:ok, %{rows: [[version]]}} when is_binary(version) -> parse_version(version)
       _other -> 0
@@ -194,18 +195,11 @@ defmodule BeamWeaver.Migrations.Postgres do
     |> Keyword.put_new(:create_schema, prefix not in [nil, false, "", @default_prefix])
   end
 
-  defp versions_result(specs, fun) do
-    result = Map.new(specs, fn spec -> {spec.key, fun.(spec)} end)
+  defp versions_result([spec], fun), do: fun.(spec)
+  defp versions_result(specs, fun), do: Map.new(specs, &{&1.key, fun.(&1)})
 
-    if length(specs) == 1 do
-      [{_key, version}] = Map.to_list(result)
-      version
-    else
-      result
-    end
-  end
-
-  defp normalize_specs(opts) do
+  # `retired` adapters join `:all`.
+  defp normalize_specs(opts, retired \\ []) do
     selector =
       cond do
         Keyword.has_key?(opts, :adapter) -> Keyword.fetch!(opts, :adapter)
@@ -214,14 +208,13 @@ defmodule BeamWeaver.Migrations.Postgres do
       end
 
     selector
-    |> normalize_selector()
-    |> Enum.map(&normalize_spec(&1, opts))
-    |> Enum.map(&Map.put(&1, :prefix, Keyword.get(opts, :prefix, @default_prefix)))
+    |> normalize_selector(retired)
+    |> Enum.map(&Map.put(normalize_spec(&1, opts), :prefix, Keyword.get(opts, :prefix, @default_prefix)))
   end
 
-  defp normalize_selector(:all), do: @adapter_order
-  defp normalize_selector(adapter) when is_atom(adapter), do: [adapter]
-  defp normalize_selector(adapters) when is_list(adapters), do: adapters
+  defp normalize_selector(:all, retired), do: @adapter_order ++ retired
+  defp normalize_selector(adapter, _retired) when is_atom(adapter), do: [adapter]
+  defp normalize_selector(adapters, _retired) when is_list(adapters), do: adapters
 
   defp normalize_spec({adapter, adapter_opts}, opts)
        when is_atom(adapter) and is_list(adapter_opts) do
@@ -229,51 +222,69 @@ defmodule BeamWeaver.Migrations.Postgres do
   end
 
   defp normalize_spec(:checkpoint = key, opts) do
-    adapter_opts = [
+    spec(key,
       checkpoints_table: Keyword.get(opts, :checkpoints_table, "beam_weaver_checkpoints"),
       writes_table: Keyword.get(opts, :writes_table, "beam_weaver_checkpoint_writes")
-    ]
-
-    spec(key, Keyword.fetch!(adapter_opts, :checkpoints_table), adapter_opts)
+    )
   end
 
+  # `default_ttl:` only shapes how schema version 2 fills in the lifetime of
+  # existing records.
   defp normalize_spec(:memory = key, opts) do
-    adapter_opts = [table: Keyword.get(opts, :table, "beam_weaver_memory_items")]
-    spec(key, Keyword.fetch!(adapter_opts, :table), adapter_opts)
+    table = Keyword.get(opts, :table, "beam_weaver_memory_items")
+
+    case memory_default_ttl!(Keyword.get(opts, :default_ttl)) do
+      nil -> spec(key, table: table)
+      default_ttl -> spec(key, table: table, default_ttl: default_ttl)
+    end
   end
 
-  defp normalize_spec(:cache = key, opts) do
-    adapter_opts = [table: Keyword.get(opts, :table, "beam_weaver_cache_entries")]
-    spec(key, Keyword.fetch!(adapter_opts, :table), adapter_opts)
-  end
+  defp normalize_spec(:cache = key, opts), do: spec(key, table: Keyword.get(opts, :table, "beam_weaver_cache_entries"))
 
   defp normalize_spec(:vector_store = key, opts) do
-    adapter_opts = [
+    spec(key,
       table: Keyword.get(opts, :table, "beam_weaver_vectors"),
       dimensions: Keyword.get(opts, :dimensions, 1_536),
       distance: Util.normalize_distance(Keyword.get(opts, :distance, :cosine)),
-      index: Keyword.get(opts, :index, :ivfflat),
+      index: vector_index!(Keyword.get(opts, :index, :ivfflat), Keyword.get(opts, :dimensions, 1_536)),
       index_opts: Keyword.get(opts, :index_opts, []),
       create_extension?: Keyword.get(opts, :create_extension?, true)
-    ]
-
-    spec(key, Keyword.fetch!(adapter_opts, :table), adapter_opts)
+    )
   end
 
-  defp normalize_spec(:record_manager = key, opts) do
-    adapter_opts = [table: Keyword.get(opts, :table, "beam_weaver_indexing_records")]
-    spec(key, Keyword.fetch!(adapter_opts, :table), adapter_opts)
-  end
+  defp normalize_spec(:record_manager = key, opts),
+    do: spec(key, table: Keyword.get(opts, :table, "beam_weaver_indexing_records"))
 
   defp normalize_spec(adapter, _opts) do
     raise ArgumentError, "unknown BeamWeaver migration adapter: #{inspect(adapter)}"
   end
 
-  defp spec(key, primary_table, adapter_opts) do
+  defp memory_default_ttl!(default_ttl) when is_nil(default_ttl) or (is_number(default_ttl) and default_ttl > 0),
+    do: default_ttl
+
+  defp memory_default_ttl!(default_ttl) do
+    raise ArgumentError, "memory default_ttl must be a positive number of minutes, got: #{inspect(default_ttl)}"
+  end
+
+  defp vector_index!(index, _dimensions) when index not in @vector_indexes do
+    raise ArgumentError, "vector_store index must be :ivfflat, :hnsw or false, got: #{inspect(index)}"
+  end
+
+  defp vector_index!(index, dimensions) when index != false and dimensions > @max_indexed_dimensions do
+    raise ArgumentError, """
+    pgvector can't index embeddings with more than #{@max_indexed_dimensions} dimensions, \
+    and the vector_store migration has dimensions: #{dimensions}. Pass index: false to search \
+    without an index, or use an embedding model with fewer dimensions.
+    """
+  end
+
+  defp vector_index!(index, _dimensions), do: index
+
+  defp spec(key, adapter_opts) do
     %{
       key: key,
       adapter_spec: {key, adapter_opts},
-      primary_table: to_string(primary_table),
+      primary_table: to_string(adapter_opts[:table] || adapter_opts[:checkpoints_table]),
       opts: Map.new(adapter_opts)
     }
   end

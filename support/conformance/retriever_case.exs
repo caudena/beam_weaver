@@ -9,13 +9,14 @@ defmodule BeamWeaver.TestSupport.Conformance.RetrieverCase do
 
       alias BeamWeaver.Core.Document
       alias BeamWeaver.Retriever
+      alias BeamWeaver.TestSupport.Conformance.Subject
 
       @beamweaver_retriever Keyword.fetch!(opts, :retriever)
       @beamweaver_query Keyword.get(opts, :query, "query")
       @beamweaver_k_query Keyword.get(opts, :k_query)
 
       test "retriever returns documents for a query" do
-        retriever = beamweaver_standard_value(@beamweaver_retriever)
+        retriever = Subject.standard_value(@beamweaver_retriever)
 
         assert {:ok, docs} = Retriever.retrieve(retriever, @beamweaver_query)
         assert is_list(docs)
@@ -24,7 +25,7 @@ defmodule BeamWeaver.TestSupport.Conformance.RetrieverCase do
 
       if @beamweaver_k_query do
         test "retriever honors native k override at the call boundary" do
-          retriever = beamweaver_standard_value(@beamweaver_retriever)
+          retriever = Subject.standard_value(@beamweaver_retriever)
 
           assert {:ok, [_one]} = Retriever.retrieve(retriever, @beamweaver_k_query)
           assert {:ok, [_one]} = Retriever.retrieve(retriever, @beamweaver_k_query, k: 1)
@@ -33,9 +34,6 @@ defmodule BeamWeaver.TestSupport.Conformance.RetrieverCase do
           assert Enum.all?(docs, &match?(%Document{}, &1))
         end
       end
-
-      defp beamweaver_standard_value(value),
-        do: BeamWeaver.TestSupport.Conformance.Subject.standard_value(value)
     end
   end
 end

@@ -1,7 +1,15 @@
 defmodule BeamWeaver.Graph.UI do
   @moduledoc """
-  UI message helpers equivalent to LangGraph's UI message reducer surface.
+  Helpers for UI messages kept in graph state.
+
+  A UI message names a client-side component and the props to render it with.
+  Nodes send them with `push_ui_message/4` and `delete_ui_message/3`. The
+  `reducer/2` behind `channel/1` and `state_schema/1` keeps one entry per id:
+  new ids are appended, known ids are replaced (or their props merged when sent
+  with `merge: true`), and removals drop the entry.
   """
+
+  import BeamWeaver.MapShape, only: [put_present: 3]
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Graph
@@ -19,20 +27,29 @@ defmodule BeamWeaver.Graph.UI do
   @type remove_message :: %{required(:type) => :remove_ui, required(:id) => String.t()}
   @type message :: ui_message() | remove_message()
 
+  @doc """
+  Returns the ui state channel declaration with an empty-list default.
+  """
   @spec state_schema(keyword()) :: map()
   def state_schema(opts \\ []), do: %{ui: channel(opts)}
 
-  @spec channel(keyword()) :: Graph.ChannelSpec.t()
+  @doc """
+  Builds the ID-aware UI-message reducer channel.
+  """
+  @spec channel(keyword()) :: Graph.channel_spec()
   def channel(opts \\ []),
     do: Graph.channel({BinaryOperatorAggregate, &reducer/2}, Keyword.put_new(opts, :initial, []))
 
+  @doc """
+  Creates component-name/props data with a stable supplied or generated ID. No component is rendered here.
+  """
   @spec message(String.t(), map(), keyword()) :: ui_message()
   def message(name, props, opts \\ []) when is_binary(name) and is_map(props) do
     metadata =
       opts
       |> Keyword.get(:metadata, %{})
       |> Map.merge(%{merge: Keyword.get(opts, :merge, false)})
-      |> maybe_put(:message_id, message_id(Keyword.get(opts, :message)))
+      |> put_present(:message_id, message_id(Keyword.get(opts, :message)))
 
     %{
       type: :ui,
@@ -43,9 +60,15 @@ defmodule BeamWeaver.Graph.UI do
     }
   end
 
+  @doc """
+  Creates an ID-based UI removal marker.
+  """
   @spec remove(String.t()) :: remove_message()
   def remove(id) when is_binary(id), do: %{type: :remove_ui, id: id}
 
+  @doc """
+  Emits UI-message data through the runtime writer and returns it for inclusion in state.
+  """
   @spec push_ui_message(Runtime.t(), String.t(), map(), keyword()) ::
           {:ok, ui_message()} | {:error, Error.t()}
   def push_ui_message(%Runtime{} = runtime, name, props, opts \\ []) do
@@ -67,6 +90,9 @@ defmodule BeamWeaver.Graph.UI do
       {:error, Error.new(:invalid_ui_message, Exception.message(exception))}
   end
 
+  @doc """
+  Emits an ID-based UI removal and returns its marker for inclusion in state.
+  """
   @spec delete_ui_message(Runtime.t(), String.t(), keyword()) ::
           {:ok, remove_message()} | {:error, Error.t()}
   def delete_ui_message(%Runtime{} = runtime, id, opts \\ []) when is_binary(id) do
@@ -81,19 +107,19 @@ defmodule BeamWeaver.Graph.UI do
     {:ok, remove}
   end
 
+  @doc """
+  Appends new IDs, updates existing IDs and applies removals. merge metadata merges props; unknown removal IDs raise.
+  """
   @spec reducer(term(), term()) :: [message()]
   def reducer(left, right) do
     left = ui_list(left)
     right = ui_list(right)
 
-    {merged, by_id, removals} =
-      Enum.reduce(Enum.with_index(left), {left, %{}, MapSet.new()}, fn {message, index}, {messages, ids, removals} ->
-        {messages, Map.put(ids, id!(message), index), removals}
-      end)
+    by_id = left |> Enum.with_index() |> Map.new(fn {message, index} -> {message.id, index} end)
 
     {merged, _by_id, removals} =
-      Enum.reduce(right, {merged, by_id, removals}, fn message, {messages, by_id, removals} ->
-        message_id = id!(message)
+      Enum.reduce(right, {left, by_id, MapSet.new()}, fn message, {messages, by_id, removals} ->
+        message_id = message.id
 
         case {Map.fetch(by_id, message_id), remove?(message)} do
           {{:ok, _index}, true} ->
@@ -112,7 +138,7 @@ defmodule BeamWeaver.Graph.UI do
         end
       end)
 
-    Enum.reject(merged, &(id!(&1) in removals))
+    Enum.reject(merged, &(&1.id in removals))
   end
 
   defp ui_list(nil), do: []
@@ -154,15 +180,6 @@ defmodule BeamWeaver.Graph.UI do
 
   defp remove?(%{type: :remove_ui}), do: true
   defp remove?(_message), do: false
-
-  defp id!(%{id: id}) when is_binary(id), do: id
-
-  defp id!(other) do
-    raise ArgumentError, "UI message is missing an ID: #{inspect(other)}"
-  end
-
-  defp maybe_put(metadata, _key, nil), do: metadata
-  defp maybe_put(metadata, key, value), do: Map.put(metadata, key, value)
 
   defp message_id(%{id: id}) when is_binary(id), do: id
   defp message_id(%{"id" => id}) when is_binary(id), do: id

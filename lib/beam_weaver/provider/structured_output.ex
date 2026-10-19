@@ -1,6 +1,7 @@
 defmodule BeamWeaver.Provider.StructuredOutput do
   @moduledoc false
 
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
 
   @default_keys [:response_format, :structured_output]
@@ -27,14 +28,11 @@ defmodule BeamWeaver.Provider.StructuredOutput do
   defp tool_call_turn?(%Message{tool_calls: calls}) when is_list(calls) and calls != [], do: true
   defp tool_call_turn?(_message), do: false
 
-  @doc false
-  def requested?(opts, keys \\ @default_keys) when is_list(opts) and is_list(keys) do
-    Enum.any?(keys, &Keyword.has_key?(opts, &1))
-  end
+  defp requested?(opts, keys), do: Enum.any?(keys, &Keyword.has_key?(opts, &1))
 
   @doc false
-  def parse(%Message{} = message, parser, opts \\ []) do
-    with :ok <- maybe_ensure_not_refusal(message, opts),
+  def parse(%Message{} = message, parser, opts) do
+    with :ok <- ensure_not_refusal(message, opts),
          :ok <- maybe_ensure_complete(message, opts),
          {:ok, parsed} <- decode_json(message),
          {:ok, parsed} <- run_parser(parser, parsed, message, opts) do
@@ -87,35 +85,22 @@ defmodule BeamWeaver.Provider.StructuredOutput do
 
   defp schema_parser(schema) when is_map(schema) do
     schema = BeamWeaver.MapShape.normalize_value(schema)
-    fn parsed -> BeamWeaver.OutputParser.validate_schema(schema, parsed) end
+    fn parsed -> BeamWeaver.Schema.Validator.validate(schema, parsed) end
   end
 
   defp schema_parser(_schema), do: nil
 
-  defp maybe_ensure_not_refusal(message, opts) do
-    if Keyword.get(opts, :refusal?, false) do
-      ensure_not_refusal(message, opts)
-    else
-      :ok
-    end
-  end
-
   defp ensure_not_refusal(message, opts) do
-    case refusal_block(message.content) do
-      nil ->
-        :ok
-
-      refusal ->
+    case Keyword.get(opts, :refusal?, false) && refusal_block(message.content) do
+      refusal when is_map(refusal) ->
         {:error,
-         provider_error(
-           :openai_refusal,
-           "#{provider_name(opts)} refused the structured output request",
-           opts,
-           %{
-             refusal: refusal,
-             response: response_details(message)
-           }
-         )}
+         Error.new(:openai_refusal, "#{provider_name(opts)} refused the structured output request", %{
+           refusal: refusal,
+           response: response_details(message)
+         })}
+
+      _none ->
+        :ok
     end
   end
 
@@ -131,10 +116,9 @@ defmodule BeamWeaver.Provider.StructuredOutput do
     case finish_reason(message) do
       reason when reason in ["max_tokens", "length", "max_output_tokens", "incomplete"] ->
         {:error,
-         provider_error(
+         Error.new(
            :structured_output_parse_error,
            "#{provider_name(opts)} structured output was truncated before valid JSON",
-           opts,
            %{
              reason: "finish_reason=#{reason}",
              finish_reason: reason,
@@ -147,9 +131,7 @@ defmodule BeamWeaver.Provider.StructuredOutput do
     end
   end
 
-  defp finish_reason(%Message{status: status}) when is_binary(status), do: normalize_finish_reason(status)
-
-  defp finish_reason(%Message{status: status}) when is_atom(status) and not is_nil(status),
+  defp finish_reason(%Message{status: status}) when is_binary(status) or (is_atom(status) and not is_nil(status)),
     do: normalize_finish_reason(status)
 
   defp finish_reason(%Message{metadata: metadata, response_metadata: response_metadata}) do
@@ -159,8 +141,7 @@ defmodule BeamWeaver.Provider.StructuredOutput do
 
   defp metadata_reason(metadata) when is_map(metadata) do
     case metadata_value(metadata, :finish_reason) do
-      reason when is_binary(reason) -> normalize_finish_reason(reason)
-      reason when is_atom(reason) -> normalize_finish_reason(reason)
+      reason when is_binary(reason) or (is_atom(reason) and not is_nil(reason)) -> normalize_finish_reason(reason)
       _other -> nil
     end
   end
@@ -207,15 +188,10 @@ defmodule BeamWeaver.Provider.StructuredOutput do
       {:ok, message}
     else
       {:error,
-       provider_error(
-         :structured_output_parse_error,
-         "#{provider_name(opts)} structured output was not valid JSON",
-         opts,
-         %{
-           reason: Exception.message(error),
-           response: response_details(message)
-         }
-       )}
+       Error.new(:structured_output_parse_error, "#{provider_name(opts)} structured output was not valid JSON", %{
+         reason: Exception.message(error),
+         response: response_details(message)
+       })}
     end
   end
 
@@ -237,16 +213,11 @@ defmodule BeamWeaver.Provider.StructuredOutput do
 
   defp parser_error(reason, parsed, message, opts) do
     {:error,
-     provider_error(
-       :structured_output_parse_error,
-       "#{provider_name(opts)} structured output failed validation",
-       opts,
-       %{
-         reason: inspect(reason),
-         parsed: clip_value(parsed),
-         response: response_details(message)
-       }
-     )}
+     Error.new(:structured_output_parse_error, "#{provider_name(opts)} structured output failed validation", %{
+       reason: inspect(reason),
+       parsed: clip_value(parsed),
+       response: response_details(message)
+     })}
   end
 
   defp response_details(%Message{} = message) do
@@ -309,11 +280,6 @@ defmodule BeamWeaver.Provider.StructuredOutput do
     else
       text
     end
-  end
-
-  defp provider_error(type, message, opts, details) do
-    error_module = Keyword.fetch!(opts, :error_module)
-    error_module.new(type, message, details)
   end
 
   defp provider_name(opts), do: Keyword.get(opts, :provider_name, "Provider")

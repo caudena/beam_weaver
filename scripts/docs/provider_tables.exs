@@ -1,0 +1,160 @@
+# Renders the model tables in docs/providers.md and docs/providers/*.md from
+# the checked-in model profiles. `mix docs.providers` rewrites them.
+#
+# The page title identifies the provider, and the table header identifies the
+# generated table. No build metadata is embedded in the reader-facing page.
+defmodule BeamWeaver.Docs.ProviderTables do
+  alias BeamWeaver.Provider.Compatibility
+
+  @root Path.expand("../..", __DIR__)
+  @providers [
+    openai: "OpenAI",
+    anthropic: "Anthropic",
+    google: "Google Gemini",
+    xai: "xAI",
+    moonshot: "Moonshot (Kimi)",
+    zai: "Z.ai",
+    deepseek: "DeepSeek",
+    typesafe: "TypeSafe"
+  ]
+
+  def pages, do: [Path.join(@root, "docs/providers.md") | Path.wildcard(Path.join(@root, "docs/providers/*.md"))]
+
+  @doc "Pages whose generated tables differ from the profiles."
+  def stale do
+    for path <- pages(),
+        File.exists?(path),
+        text = File.read!(path),
+        render_page(text) != text,
+        do: Path.relative_to(path, @root)
+  end
+
+  def write! do
+    for path <- pages(), File.exists?(path) do
+      text = File.read!(path)
+      updated = render_page(text)
+      if updated != text, do: File.write!(path, updated)
+      IO.puts("#{if updated == text, do: "unchanged", else: "updated  "} #{Path.relative_to(path, @root)}")
+    end
+  end
+
+  def render_page(text) do
+    name =
+      case String.split(text, "\n", parts: 2) |> hd() do
+        "# Providers" ->
+          "provider-overview"
+
+        "# " <> title ->
+          case Enum.find(@providers, fn {_provider, label} -> label == title end) do
+            {provider, _label} -> "provider-models #{provider}"
+            nil -> raise ArgumentError, "Unknown provider page #{inspect(title)}"
+          end
+      end
+
+    table = render(name)
+    first_column = if name == "provider-overview", do: "Provider", else: "Model"
+    pattern = Regex.compile!("^\\| #{first_column} \\|[^\\n]*\\n(?:\\|[^\\n]*\\|\\n)+", "m")
+
+    case Regex.scan(pattern, text) do
+      [_match] -> Regex.replace(pattern, text, fn _old -> table end)
+      matches -> raise ArgumentError, "Expected one #{name} table, found #{length(matches)}"
+    end
+  end
+
+  def render("provider-overview") do
+    rows =
+      for {provider, label} <- @providers do
+        models = rows(provider)
+        chat = Enum.filter(models, &("chat" in kinds(&1)))
+
+        [
+          "[#{label}](providers/#{provider}.md) (`#{provider}:`)",
+          models
+          |> Enum.flat_map(&kinds/1)
+          |> Enum.frequencies()
+          |> Enum.sort()
+          |> Enum.map_join(", ", fn {kind, n} -> "#{n} #{kind}" end),
+          if(chat == [],
+            do: "Typed decisions; no chat model",
+            else:
+              "Tools: #{coverage(chat, :tool_calling)}; " <>
+                "structured output: #{coverage(chat, :structured_output, :structured_output_with_tools)}; " <>
+                "reasoning: #{coverage(chat, :reasoning)}; images: #{coverage(chat, :image_input)}"
+          )
+        ]
+      end
+
+    table(["Provider", "Model IDs", "Chat capabilities"], rows)
+  end
+
+  def render("provider-models " <> provider) do
+    provider = String.to_existing_atom(provider)
+
+    rows =
+      for row <- rows(provider) do
+        [
+          "`#{provider}:#{row.model}`",
+          "#{tokens(row.max_input_tokens)} / #{tokens(row.max_output_tokens)}",
+          Enum.join(kinds(row), ", ") <> "; " <> inputs(row) <> features(row)
+        ]
+      end
+
+    table(["Model", "Input / output tokens", "Operations and capabilities"], rows)
+  end
+
+  defp features(row) do
+    [
+      {row.features[:tool_calling], "tools"},
+      {row.features[:structured_output] or row.features[:structured_output_with_tools], "structured output"},
+      {row.features[:reasoning], "reasoning"}
+    ]
+    |> Enum.filter(&elem(&1, 0))
+    |> Enum.map_join("", &("; " <> elem(&1, 1)))
+  end
+
+  defp rows(provider), do: Enum.filter(Compatibility.matrix(), &(&1.provider == provider))
+
+  # A model chats, answers typed questions, or both; any other model embeds.
+  defp kinds(%{features: features}) do
+    kinds =
+      for {kind, true} <- [
+            chat: features[:tool_calling] or features[:streaming],
+            decision: features[:decision_output]
+          ],
+          do: Atom.to_string(kind)
+
+    if kinds == [], do: ["embedding"], else: kinds
+  end
+
+  defp coverage(rows, feature, alternative \\ nil)
+  defp coverage([], _feature, _alternative), do: "—"
+
+  defp coverage(rows, feature, alternative) do
+    supported = Enum.count(rows, &(&1.features[feature] or (alternative && &1.features[alternative])))
+
+    cond do
+      supported == length(rows) -> "all"
+      supported == 0 -> "—"
+      true -> "#{supported} of #{length(rows)}"
+    end
+  end
+
+  defp inputs(row) do
+    [text_input: "text", image_input: "image", pdf_input: "PDF", audio_input: "audio", video_input: "video"]
+    |> Enum.filter(fn {feature, _label} -> row.features[feature] end)
+    |> Enum.map_join(", ", &elem(&1, 1))
+  end
+
+  defp tokens(nil), do: "—"
+
+  defp tokens(count),
+    do:
+      count |> Integer.to_string() |> String.reverse() |> String.replace(~r/(\d{3})(?=\d)/, "\\1,") |> String.reverse()
+
+  defp table(header, rows) do
+    [header, Enum.map(header, fn _column -> "---" end) | rows]
+    |> Enum.map_join("", &("| " <> Enum.join(&1, " | ") <> " |\n"))
+  end
+end
+
+if "--write" in System.argv(), do: BeamWeaver.Docs.ProviderTables.write!()

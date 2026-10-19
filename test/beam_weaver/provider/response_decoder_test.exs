@@ -76,8 +76,63 @@ defmodule BeamWeaver.Provider.ResponseDecoderTest do
         body: ~s({"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"Too many requests. Try again later."}})
       )
 
-    assert {:error, %{type: :http_error, details: %{retryable: true}}} =
+    assert {:error, %{type: :rate_limit, details: %{retryable: true}}} =
              ResponseDecoder.json({:ok, rate_limit}, provider: :google)
+  end
+
+  # Every provider decodes its HTTP errors here, so a status gets the same
+  # type, and `retryable`, from every provider.
+  test "an HTTP error's type and retryable follow its status" do
+    for {status, type, retryable} <- [
+          {400, :invalid_request, false},
+          {401, :authentication, false},
+          {402, :billing_exhausted, false},
+          {403, :permission_denied, false},
+          {404, :not_found, false},
+          {409, :http_error, true},
+          {413, :http_error, false},
+          {422, :invalid_request, false},
+          {429, :rate_limit, true},
+          {500, :server_error, true},
+          {501, :server_error, true},
+          {529, :server_error, true}
+        ] do
+      response = Response.new(status: status, body: ~s({"error":{"message":"The request failed."}}))
+
+      assert %Error{type: ^type, details: %{status: ^status, retryable: ^retryable}} =
+               ResponseDecoder.http_error(response, provider: :openai)
+    end
+  end
+
+  # OpenAI-compatible servers word an overflow their own way, and some answer
+  # it with a 413 or 422, so those statuses count when the message says so.
+  test "context overflow errors of OpenAI-compatible servers" do
+    for {status, message} <- [
+          {400, "the request exceeds the available context size, try increasing it"},
+          {400, "litellm.ContextWindowExceededError: litellm.BadRequestError: prompt too long"},
+          {400, "Context limit exceeded for model"},
+          {413, "prompt is too long: 250000 tokens > 200000 maximum"},
+          {422, "This model's maximum context length is 4096 tokens."}
+        ] do
+      response = Response.new(status: status, body: BeamWeaver.JSON.encode!(%{"error" => %{"message" => message}}))
+
+      assert %Error{type: :context_overflow, details: %{status: ^status, retryable: false}} =
+               ResponseDecoder.http_error(response, provider: :openai)
+    end
+  end
+
+  # Text Generation Inference answers with the message in a plain `error`
+  # string and a 422.
+  test "context overflow errors of Text Generation Inference" do
+    for message <- [
+          "Input validation error: `inputs` tokens + `max_new_tokens` must be <= 4096. Given: 5000 `inputs` tokens and 100 `max_new_tokens`",
+          "Input validation error: `inputs` must have less than 4096 tokens. Given: 5000"
+        ] do
+      body = BeamWeaver.JSON.encode!(%{"error" => message, "error_type" => "validation"})
+
+      assert %Error{type: :context_overflow, details: %{status: 422}} =
+               ResponseDecoder.http_error(Response.new(status: 422, body: body), provider: :openai)
+    end
   end
 
   test "json decodes successful responses and can attach response headers" do
@@ -135,73 +190,28 @@ defmodule BeamWeaver.Provider.ResponseDecoderTest do
   end
 
   test "http client shared SSE helper streams parsed events with transport opts" do
-    client =
-      HTTPClient.new(
-        endpoint: "https://example.test/stream",
-        transport: StreamTransport,
-        transport_opts: [parent: self()],
-        timeout: 123
-      )
-
-    assert {:ok, stream} =
-             HTTPClient.stream_sse(
-               client,
-               %{"stream" => true},
-               [],
-               fn events -> Enum.map(events, &get_in(&1, ["data", "text"])) end,
-               &ResponseDecoder.json(&1, provider_name: "TestProvider")
-             )
+    assert {:ok, stream} = stream_sse(StreamTransport, [], &texts/1)
 
     assert Enum.to_list(stream) == ["hel", "lo"]
     assert_received {:stream_timeout, 123}
   end
 
   test "http client shared SSE helper carries state between parser batches" do
-    client =
-      HTTPClient.new(
-        endpoint: "https://example.test/stream",
-        transport: StreamTransport,
-        transport_opts: [parent: self()],
-        timeout: 123
-      )
-
     parser = fn events, prefix ->
       text = Enum.map_join(events, &get_in(&1, ["data", "text"]))
       value = to_string(prefix || "") <> text
       {if(text == "", do: [], else: [value]), value}
     end
 
-    assert {:ok, stream} =
-             HTTPClient.stream_sse(
-               client,
-               %{"stream" => true},
-               [],
-               parser,
-               &ResponseDecoder.json(&1, provider_name: "TestProvider")
-             )
+    assert {:ok, stream} = stream_sse(StreamTransport, [], parser)
 
     assert Enum.to_list(stream) == ["hel", "hello"]
   end
 
   test "http client shared SSE helper invokes the opt-in response callback once and stays lazy" do
     parent = self()
-
-    client =
-      HTTPClient.new(
-        endpoint: "https://example.test/stream",
-        transport: StreamTransport,
-        transport_opts: [parent: parent],
-        timeout: 123
-      )
-
-    assert {:ok, stream} =
-             HTTPClient.stream_sse(
-               client,
-               %{"stream" => true},
-               [on_response: fn response -> send(parent, {:lazy_sse_response, response}) end],
-               fn events -> Enum.map(events, &get_in(&1, ["data", "text"])) end,
-               &ResponseDecoder.json(&1, provider_name: "TestProvider")
-             )
+    on_response = fn response -> send(parent, {:lazy_sse_response, response}) end
+    assert {:ok, stream} = stream_sse(StreamTransport, [on_response: on_response], &texts/1)
 
     refute_received {:lazy_sse_response, _response}
     assert Enum.to_list(stream) == ["hel", "lo"]
@@ -218,25 +228,12 @@ defmodule BeamWeaver.Provider.ResponseDecoderTest do
 
   test "http client shared SSE helper invokes the response callback for HTTP failures" do
     parent = self()
-
-    client =
-      HTTPClient.new(
-        endpoint: "https://example.test/stream",
-        transport: ErrorStreamTransport
-      )
-
-    assert {:ok, stream} =
-             HTTPClient.stream_sse(
-               client,
-               %{"stream" => true},
-               [on_response: fn response -> send(parent, {:failed_sse_response, response}) end],
-               fn _events -> [] end,
-               &ResponseDecoder.json(&1, provider_name: "TestProvider")
-             )
+    on_response = fn response -> send(parent, {:failed_sse_response, response}) end
+    assert {:ok, stream} = stream_sse(ErrorStreamTransport, [on_response: on_response], fn _events -> [] end)
 
     assert [
              %BeamWeaver.Stream.Events.Error{
-               error: %Error{type: :http_error, message: "slow down"}
+               error: %Error{type: :rate_limit, message: "slow down"}
              }
            ] = Enum.to_list(stream)
 
@@ -288,4 +285,17 @@ defmodule BeamWeaver.Provider.ResponseDecoderTest do
     refute metadata_text =~ "response-secret"
     refute metadata_text =~ "query-secret"
   end
+
+  defp stream_sse(transport, opts, parser) do
+    [endpoint: "https://example.test/stream", transport: transport, transport_opts: [parent: self()], timeout: 123]
+    |> HTTPClient.new()
+    |> HTTPClient.stream_sse(
+      %{"stream" => true},
+      opts,
+      parser,
+      &ResponseDecoder.json(&1, provider_name: "TestProvider")
+    )
+  end
+
+  defp texts(events), do: Enum.map(events, &get_in(&1, ["data", "text"]))
 end

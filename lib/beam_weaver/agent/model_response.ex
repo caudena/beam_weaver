@@ -8,7 +8,7 @@ defmodule BeamWeaver.Agent.ModelResponse do
   @type t :: %__MODULE__{
           messages: [BeamWeaver.Core.Message.t()],
           structured_response: term(),
-          tool_set: BeamWeaver.Agent.ToolSet.t() | nil,
+          tool_set: term(),
           usage: BeamWeaver.Agent.Usage.t() | nil,
           commands: [BeamWeaver.Graph.Command.t()]
         }

@@ -7,6 +7,10 @@ defmodule BeamWeaver.ToolKit do
 
   @callback tools(keyword()) :: [term()] | {:ok, [term()]} | {:error, Error.t()}
 
+  @doc false
+  @spec implemented_by?(module()) :: boolean()
+  def implemented_by?(module) when is_atom(module), do: BeamWeaver.Behaviour.implemented_by?(module, __MODULE__)
+
   @doc """
   Loads tools from a toolkit module or struct.
   """

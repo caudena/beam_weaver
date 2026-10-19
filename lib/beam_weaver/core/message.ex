@@ -1,10 +1,32 @@
 defmodule BeamWeaver.Core.Message do
   @moduledoc """
-  Chat message exchanged with model providers.
+  A chat message: what a user, the model, a tool or the system said.
+
+  ```elixir
+  alias BeamWeaver.Core.Message
+
+  messages = [
+    Message.system("You are Acme's support agent."),
+    Message.user("Where is my order A-1001?"),
+    Message.assistant("Order A-1001 shipped on Monday.")
+  ]
+
+  messages |> List.last() |> Message.text()
+  #=> "Order A-1001 shipped on Monday."
+  ```
+
+  `role` is `:system`, `:user`, `:assistant` or `:tool`. `content` is a string
+  or a list of content blocks (text, images, files); `text/1` joins the text.
+  An assistant message lists the tools the model wants to call in
+  `tool_calls`, and each `:tool` message answers one of them through
+  `tool_call_id`. Replies from a model carry token counts in `usage_metadata`.
+  See [Messages](messages.md).
   """
 
   alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Core.ToolCallParser
+  alias BeamWeaver.MapShape
 
   @roles [:system, :user, :assistant, :tool]
 
@@ -76,12 +98,7 @@ defmodule BeamWeaver.Core.Message do
   Builds a message and raises on invalid input.
   """
   @spec new!(role(), content(), keyword()) :: t()
-  def new!(role, content, opts \\ []) do
-    case new(role, content, opts) do
-      {:ok, message} -> message
-      {:error, error} -> raise ArgumentError, error.message
-    end
-  end
+  def new!(role, content, opts \\ []), do: role |> new(content, opts) |> BeamWeaver.Policy.bang()
 
   @doc """
   Builds a system message.
@@ -108,24 +125,107 @@ defmodule BeamWeaver.Core.Message do
   def tool(content, opts \\ []), do: new!(:tool, content, opts)
 
   @doc """
+  Builds a message from a message, a string (a user message), a
+  `{role, content}` tuple, or a message map with `role` and `content` keys.
+
+  Maps may use atom or string keys and may carry OpenAI-style `tool_calls` and
+  `refusal` fields. A map field of the wrong shape, such as a `metadata` that
+  isn't a map, is an `:invalid_message` error, as in `validate/1`. The
+  `"developer"` role becomes a system message tagged with
+  `metadata.openai_role: :developer`.
+  """
+  @spec from(term()) :: {:ok, t()} | {:error, Error.t()}
+  def from(%__MODULE__{} = message), do: {:ok, message}
+  def from(content) when is_binary(content), do: {:ok, user(content)}
+
+  def from({role, content}) do
+    {role, opts} = input_role(role)
+    new(role, content, opts)
+  end
+
+  def from(map) when is_map(map) and not is_struct(map) do
+    map = Map.new(map, fn {key, value} -> {input_key(key), value} end)
+
+    if Map.has_key?(map, "content") do
+      from_map(map)
+    else
+      {:error, Error.new(:invalid_message, "message maps must include role and content", %{map: inspect(map)})}
+    end
+  end
+
+  def from(value),
+    do: {:error, Error.new(:invalid_message, "value cannot be converted to a message", %{value: inspect(value)})}
+
+  # A field of the wrong shape, such as a string `metadata`, is an error, as in
+  # `validate/1`.
+  defp from_map(map) do
+    {role, role_opts} = input_role(map["role"])
+    metadata = map["metadata"] || %{}
+
+    with :ok <- validate_map_field(metadata, :metadata),
+         {:ok, tool_calls, invalid_tool_calls} <- input_tool_calls(map["tool_calls"] || []),
+         metadata =
+           metadata
+           |> MapShape.put_optional(:refusal, map["refusal"])
+           |> MapShape.put_optional(:invalid_tool_calls, invalid_tool_calls),
+         opts = Keyword.merge(map_opts(map, metadata, tool_calls), role_opts, &merge_role_opt/3),
+         {:ok, message} <- new(role, map["content"] || "", opts),
+         :ok <- validate(message) do
+      {:ok, message}
+    end
+  end
+
+  defp map_opts(map, metadata, tool_calls) do
+    [
+      id: map["id"],
+      name: map["name"],
+      metadata: metadata,
+      response_metadata: map["response_metadata"] || %{},
+      usage_metadata: map["usage_metadata"],
+      status: map["status"],
+      artifacts: List.wrap(map["artifacts"]),
+      server_tool_calls: map["server_tool_calls"] || [],
+      server_tool_results: map["server_tool_results"] || [],
+      tool_calls: tool_calls,
+      tool_call_id: map["tool_call_id"]
+    ]
+  end
+
+  defp input_key(key) when is_atom(key), do: Atom.to_string(key)
+  defp input_key(key), do: key
+
+  defp input_role(role) when role in ["developer", :developer], do: {:system, [metadata: %{openai_role: :developer}]}
+  defp input_role("system"), do: {:system, []}
+  defp input_role("user"), do: {:user, []}
+  defp input_role("assistant"), do: {:assistant, []}
+  defp input_role("tool"), do: {:tool, []}
+  defp input_role(role), do: {role, []}
+
+  defp merge_role_opt(:metadata, left, right), do: Map.merge(left, right)
+  defp merge_role_opt(_key, _left, right), do: right
+
+  defp input_tool_calls(tool_calls) when is_list(tool_calls) do
+    results = Enum.map(tool_calls, &ToolCallParser.normalize_openai_call/1)
+    {:ok, for({:ok, call} <- results, do: call), for({:error, call} <- results, do: call)}
+  end
+
+  defp input_tool_calls(_tool_calls), do: {:error, Error.new(:invalid_tool_call, "tool calls must be a list")}
+
+  @doc """
   Extracts text from string content and text content blocks.
   """
   @spec text(t()) :: String.t()
   def text(%__MODULE__{content: content}) when is_binary(content), do: content
 
   def text(%__MODULE__{content: content}) when is_list(content) do
-    content
-    |> Enum.flat_map(fn
-      text when is_binary(text) -> [text]
-      %ContentBlock.Text{text: text} when is_binary(text) -> [text]
-      %ContentBlock.PlainText{text: text} when is_binary(text) -> [text]
-      %{type: :text, text: text} when is_binary(text) -> [text]
-      %{type: :plain_text, text: text} when is_binary(text) -> [text]
-      %{content: text} when is_binary(text) -> [text]
-      %{text: text} when is_binary(text) -> [text]
-      _other -> []
+    Enum.map_join(content, fn
+      text when is_binary(text) -> text
+      %{type: :text, text: text} when is_binary(text) -> text
+      %{type: :plain_text, text: text} when is_binary(text) -> text
+      %{content: text} when is_binary(text) -> text
+      %{text: text} when is_binary(text) -> text
+      _other -> ""
     end)
-    |> Enum.join("")
   end
 
   @doc """
@@ -138,8 +238,10 @@ defmodule BeamWeaver.Core.Message do
     end
   end
 
+  defp normalize_message_content_blocks(""), do: ContentBlock.normalize_many([])
+
   defp normalize_message_content_blocks(content) when is_binary(content),
-    do: ContentBlock.normalize_many(if(content == "", do: [], else: [content]))
+    do: ContentBlock.normalize_many([content])
 
   defp normalize_message_content_blocks(content) when is_list(content),
     do: ContentBlock.normalize_many(content)
@@ -193,69 +295,33 @@ defmodule BeamWeaver.Core.Message do
     end
   end
 
-  defp normalize_id(nil), do: nil
-  defp normalize_id(id) when is_binary(id), do: id
   defp normalize_id(id) when is_integer(id) or is_float(id), do: to_string(id)
   defp normalize_id(id), do: id
 
   defp normalize_tool_call_id(:tool, id), do: normalize_id(id)
   defp normalize_tool_call_id(_role, id), do: id
 
-  defp stringify_tool_content(content) when is_map(content) or is_list(content) do
-    case BeamWeaver.JSON.encode(content) do
-      {:ok, json} -> json
-      {:error, _error} -> inspect(content)
-    end
-  end
+  defp stringify_tool_content(content) when is_map(content) or is_list(content),
+    do: BeamWeaver.JSON.encode_or_inspect(content)
 
-  defp stringify_tool_content(content) do
-    to_string(content)
-  rescue
-    _exception -> inspect(content)
-  end
+  defp stringify_tool_content(content),
+    do: if(String.Chars.impl_for(content), do: to_string(content), else: inspect(content))
 
-  defp message_extra_blocks(%__MODULE__{role: :assistant, metadata: metadata}) do
-    case metadata_value(metadata, :reasoning_content) do
-      reasoning when is_binary(reasoning) and reasoning != "" ->
-        [ContentBlock.reasoning(reasoning)]
-
-      _other ->
-        []
-    end
-  end
+  defp message_extra_blocks(%__MODULE__{role: :assistant, metadata: %{reasoning_content: reasoning}})
+       when is_binary(reasoning) and reasoning != "",
+       do: [ContentBlock.reasoning(reasoning)]
 
   defp message_extra_blocks(_message), do: []
 
-  defp append_missing_tool_calls(blocks, %__MODULE__{role: :assistant, tool_calls: calls})
-       when is_list(calls) and calls != [] do
-    existing_ids =
-      blocks
-      |> Enum.filter(&tool_call_block?/1)
-      |> Enum.map(&block_id/1)
-      |> Enum.reject(&is_nil/1)
-      |> MapSet.new()
-
-    missing =
-      calls
-      |> Enum.reject(fn call ->
-        id = block_id(call)
-        not is_nil(id) and MapSet.member?(existing_ids, id)
-      end)
-      |> Enum.map(&tool_call_block/1)
-
-    blocks ++ missing
+  defp append_missing_tool_calls(blocks, %__MODULE__{role: :assistant, tool_calls: calls}) when is_list(calls) do
+    existing_ids = for %{type: :tool_call, id: id} when not is_nil(id) <- blocks, into: MapSet.new(), do: id
+    blocks ++ for(call <- calls, Map.get(call, :id) not in existing_ids, do: tool_call_block(call))
   end
 
   defp append_missing_tool_calls(blocks, _message), do: blocks
 
-  defp tool_call_block?(block) when is_map(block) do
-    Map.get(block, :type) == :tool_call
-  end
-
-  defp tool_call_block?(_block), do: false
-
   defp tool_call_block(call) when is_map(call) do
-    %{
+    MapShape.reject_nil_values(%{
       type: :tool_call,
       id: Map.get(call, :id),
       provider_id: Map.get(call, :provider_id),
@@ -263,20 +329,10 @@ defmodule BeamWeaver.Core.Message do
       name: Map.get(call, :name),
       thought_signature: Map.get(call, :thought_signature),
       args: Map.get(call, :args, %{})
-    }
-    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-    |> Map.new()
+    })
   end
 
-  defp block_id(block) when is_map(block), do: Map.get(block, :id)
-  defp block_id(_block), do: nil
-
-  defp metadata_value(map, key) when is_map(map), do: Map.get(map, key)
-
-  defp metadata_value(_map, _key), do: nil
-
-  defp validate_content(content) when is_binary(content), do: :ok
-  defp validate_content(content) when is_list(content), do: :ok
+  defp validate_content(content) when is_binary(content) or is_list(content), do: :ok
 
   defp validate_content(content) do
     {:error,

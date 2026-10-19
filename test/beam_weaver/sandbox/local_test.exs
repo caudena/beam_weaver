@@ -12,16 +12,18 @@ defmodule BeamWeaver.Sandbox.LocalTest do
     %{sandbox: Sandbox.local(root: root), root: root}
   end
 
-  test "writes, reads, executes, edits, and lists files", %{sandbox: sandbox, root: root} do
-    assert BeamWeaver.Sandbox.Backend.impl_for(sandbox)
+  test "writes, reads, executes, edits, and lists files", %{sandbox: sandbox} do
+    assert BeamWeaver.Sandbox.sandbox?(sandbox)
 
-    path = Path.join(root, "nested/hello.txt")
+    path = "/nested/hello.txt"
 
     assert %Sandbox.WriteResult{path: ^path, error: nil} =
              Sandbox.write(sandbox, path, "Hello sandbox\nLine 2")
 
+    # `execute` runs on the host with the sandbox root as its cwd, so it uses
+    # the file's path relative to the root, not the sandbox-absolute path.
     assert %Sandbox.ExecuteResult{exit_code: 0, output: output, truncated: false} =
-             Sandbox.execute(sandbox, "cat #{shell_quote(path)}")
+             Sandbox.execute(sandbox, "cat nested/hello.txt")
 
     assert output == "Hello sandbox\nLine 2"
 
@@ -33,10 +35,9 @@ defmodule BeamWeaver.Sandbox.LocalTest do
     assert %Sandbox.EditResult{occurrences: 1, error: nil} =
              Sandbox.edit(sandbox, path, "Line 2", "Line 3")
 
-    assert %Sandbox.ListResult{entries: entries, error: nil} =
-             Sandbox.ls(sandbox, Path.join(root, "nested"))
+    assert %Sandbox.ListResult{entries: entries, error: nil} = Sandbox.ls(sandbox, "/nested")
 
-    assert Enum.any?(entries, &(&1["path"] == Path.join(root, "nested/hello.txt")))
+    assert Enum.any?(entries, &(&1["path"] == "/nested/hello.txt"))
   end
 
   test "round trips uploads and downloads in input order", %{sandbox: sandbox, root: root} do
@@ -64,10 +65,7 @@ defmodule BeamWeaver.Sandbox.LocalTest do
     assert Base.decode64!(encoded) == <<0, 1, 2, 255>>
   end
 
-  test "binary reads enforce preview limits through sync and async calls", %{
-    sandbox: sandbox,
-    root: root
-  } do
+  test "binary reads enforce the preview size limit", %{sandbox: sandbox, root: root} do
     small_path = Path.join(root, "binary_100kib.bin")
     small_content = :binary.copy(:binary.list_to_bin(Enum.to_list(0..255)), 400)
 
@@ -86,44 +84,41 @@ defmodule BeamWeaver.Sandbox.LocalTest do
     large_content = :binary.copy(:binary.list_to_bin(Enum.to_list(0..255)), 4_096)
 
     assert [%Sandbox.UploadResult{error: nil}] =
-             sandbox
-             |> Sandbox.async_upload_files([{large_path, large_content}])
-             |> Task.await()
+             Sandbox.upload_files(sandbox, [{large_path, large_content}])
 
-    assert %Sandbox.ReadResult{file_data: nil, error: error} =
-             sandbox
-             |> Sandbox.async_read(large_path)
-             |> Task.await()
+    assert %Sandbox.ReadResult{file_data: nil, error: error} = Sandbox.read(sandbox, large_path)
 
     assert error ==
              "File '#{large_path}': Binary file exceeds maximum preview size of 512000 bytes"
+
+    nul_path = Path.join(root, "large.bin")
+    Sandbox.upload_files(sandbox, [{nul_path, :binary.copy(<<0>>, 513_000)}])
+    assert %Sandbox.ReadResult{file_data: nil, error: error} = Sandbox.read(sandbox, nul_path)
+    assert error =~ "Binary file exceeds maximum preview size"
   end
 
-  test "glob returns relative matches and grep returns absolute plus relative paths", %{
-    sandbox: sandbox,
-    root: root
+  test "glob returns relative matches and grep returns sandbox plus relative paths", %{
+    sandbox: sandbox
   } do
     Sandbox.upload_files(sandbox, [
-      {Path.join(root, "src/a.ex"), "defmodule A do\n  def hello, do: :ok\nend\n"},
-      {Path.join(root, "src/b.txt"), "nothing\n"}
+      {"/src/a.ex", "defmodule A do\n  def hello, do: :ok\nend\n"},
+      {"/src/b.txt", "nothing\n"}
     ])
 
-    assert %Sandbox.GlobResult{matches: [%{"path" => "a.ex", "is_dir" => false}]} =
-             Sandbox.glob(sandbox, "*.ex", path: Path.join(root, "src"))
-
-    expected_path = Path.join(root, "src/a.ex")
+    assert %Sandbox.GlobResult{matches: [%{"path" => "/src/a.ex", "is_dir" => false}]} =
+             Sandbox.glob(sandbox, "*.ex", path: "/src")
 
     assert %Sandbox.GrepResult{
              matches: [
                %{
-                 "path" => ^expected_path,
+                 "path" => "/src/a.ex",
                  "relative_path" => "a.ex",
                  "line" => 2,
                  "text" => "  def hello, do: :ok"
                }
              ]
            } =
-             Sandbox.grep(sandbox, "def hello", path: Path.join(root, "src"))
+             Sandbox.grep(sandbox, "def hello", path: "/src")
   end
 
   test "text reads paginate by lines and handle EOF boundaries", %{sandbox: sandbox, root: root} do
@@ -140,6 +135,25 @@ defmodule BeamWeaver.Sandbox.LocalTest do
 
     assert %Sandbox.ReadResult{file_data: %{"content" => ""}} =
              Sandbox.read(sandbox, path, offset: 0, limit: 0)
+  end
+
+  test "text reads slice lines as the other backends do: no extra line for the final newline, \\r\\n read as \\n",
+       %{sandbox: sandbox, root: root} do
+    content = "one\r\ntwo\rthree\n"
+    assert %Sandbox.WriteResult{error: nil} = Sandbox.write(sandbox, "/lines.txt", content)
+    local = BeamWeaver.Filesystem.Local.new(root: root)
+
+    for {opts, expected} <- [
+          {[], "one\ntwo\nthree"},
+          {[offset: 2], "three"},
+          {[offset: 1, limit: 1], "two"},
+          {[offset: -1, limit: 1], "one"}
+        ] do
+      assert %Sandbox.ReadResult{file_data: %{"content" => ^expected}} = Sandbox.read(sandbox, "/lines.txt", opts)
+
+      assert %BeamWeaver.Filesystem.ReadResult{file_data: %{content: ^expected}} =
+               BeamWeaver.Filesystem.read(local, "/lines.txt", opts)
+    end
   end
 
   test "glob marks directories and supports hidden and character-class patterns", %{
@@ -169,22 +183,59 @@ defmodule BeamWeaver.Sandbox.LocalTest do
     assert Enum.map(char_matches, & &1["path"]) == ["file1.txt", "file2.txt"]
   end
 
-  test "grep recurses with glob filters and reports stable line numbers", %{
-    sandbox: sandbox,
-    root: root
-  } do
-    base = Path.join(root, "grep")
-    target = Path.join(base, "a/b/target.py")
+  test "grep recurses with glob filters and reports stable line numbers", %{sandbox: sandbox} do
+    base = "/grep"
+    target = "/grep/a/b/target.py"
 
     Sandbox.upload_files(sandbox, [
       {target, "Line 1\nneedle\nLine 3"},
-      {Path.join(base, "ignore.txt"), "needle"}
+      {"/grep/ignore.txt", "needle"}
     ])
 
     assert %Sandbox.GrepResult{
              matches: [%{"path" => ^target, "relative_path" => "a/b/target.py", "line" => 2}]
            } =
              Sandbox.grep(sandbox, "needle", path: base, glob: "*.py")
+  end
+
+  test "grep leaves out binary files and .git directories, keeping the text matches", %{sandbox: sandbox} do
+    Sandbox.upload_files(sandbox, [
+      {"/repo/notes.md", "TODO: ship it\n"},
+      {"/repo/cache.db", <<0xFF, 0xFE, "TODO", 0x00, 0xC3>>},
+      {"/repo/.git/objects/pack", "TODO in git\n"}
+    ])
+
+    assert %Sandbox.GrepResult{matches: [%{"path" => "/repo/notes.md", "line" => 1}]} =
+             Sandbox.grep(sandbox, "TODO", path: "/repo")
+
+    assert %Sandbox.GrepResult{matches: [%{"path" => "/repo/.git/objects/pack"}]} =
+             Sandbox.grep(sandbox, "TODO", path: "/repo/.git")
+  end
+
+  test "binary reads return the whole file, whatever the line window", %{sandbox: sandbox, root: root} do
+    path = Path.join(root, "image.bin")
+    content = :binary.copy(<<0, 1, 2, 255>>, 1_000)
+    assert [%Sandbox.UploadResult{error: nil}] = Sandbox.upload_files(sandbox, [{path, content}])
+
+    assert %Sandbox.ReadResult{file_data: %{"encoding" => "base64", "content" => encoded}} =
+             Sandbox.read(sandbox, path, offset: 0, limit: 2_000)
+
+    assert Base.decode64!(encoded) == content
+  end
+
+  test "reading or editing a directory reports is_directory", %{sandbox: sandbox} do
+    assert %Sandbox.ExecuteResult{exit_code: 0} = Sandbox.execute(sandbox, "mkdir -p a_dir")
+    assert %Sandbox.ReadResult{error: "is_directory"} = Sandbox.read(sandbox, "/a_dir")
+    assert %Sandbox.EditResult{error: "is_directory"} = Sandbox.edit(sandbox, "/a_dir", "a", "b")
+  end
+
+  test "an empty old string is rejected, even in an empty file", %{sandbox: sandbox} do
+    assert %Sandbox.WriteResult{error: nil} = Sandbox.write(sandbox, "/empty.txt", "")
+
+    assert %Sandbox.EditResult{error: "old_string must not be empty"} =
+             Sandbox.edit(sandbox, "/empty.txt", "", "text")
+
+    assert {:ok, ""} = File.read(Path.join(sandbox.root, "empty.txt"))
   end
 
   test "edit handles multiple matches, literals, multiline content, and missing files", %{
@@ -223,26 +274,24 @@ defmodule BeamWeaver.Sandbox.LocalTest do
              Sandbox.edit(sandbox, Path.join(root, "missing.txt"), "old", "new")
   end
 
-  test "download and path validation return tagged error strings", %{sandbox: sandbox, root: root} do
-    dir = Path.join(root, "download_dir")
-    path = Path.join(root, "no_read.txt")
+  test "download and path validation return tagged error strings", %{sandbox: sandbox} do
+    dir = "/download_dir"
+    path = "/no_read.txt"
 
-    assert %Sandbox.ExecuteResult{exit_code: 0} =
-             Sandbox.execute(sandbox, "mkdir -p #{shell_quote(dir)}")
+    assert %Sandbox.ExecuteResult{exit_code: 0} = Sandbox.execute(sandbox, "mkdir -p download_dir")
 
     assert [%Sandbox.DownloadResult{path: ^dir, content: nil, error: "is_directory"}] =
              Sandbox.download_files(sandbox, [dir])
 
     assert %Sandbox.WriteResult{error: nil} = Sandbox.write(sandbox, path, "secret")
 
-    assert %Sandbox.ExecuteResult{exit_code: 0} =
-             Sandbox.execute(sandbox, "chmod 000 #{shell_quote(path)}")
+    assert %Sandbox.ExecuteResult{exit_code: 0} = Sandbox.execute(sandbox, "chmod 000 no_read.txt")
 
     try do
       assert [%Sandbox.DownloadResult{path: ^path, content: nil, error: "permission_denied"}] =
                Sandbox.download_files(sandbox, [path])
     after
-      Sandbox.execute(sandbox, "chmod 644 #{shell_quote(path)} || true")
+      Sandbox.execute(sandbox, "chmod 644 no_read.txt || true")
     end
 
     malicious_path = "'; echo INJECTED; #"
@@ -255,6 +304,9 @@ defmodule BeamWeaver.Sandbox.LocalTest do
 
     assert [%Sandbox.UploadResult{path: "relative.txt", error: "invalid_path"}] =
              Sandbox.upload_files(sandbox, [{"relative.txt", "nope"}])
+
+    assert [%Sandbox.DownloadResult{path: "relative.txt", content: nil, error: "invalid_path"}] =
+             Sandbox.download_files(sandbox, ["relative.txt"])
   end
 
   test "blocks symlink escapes for reads, writes, listings, and recursive grep", %{
@@ -276,7 +328,10 @@ defmodule BeamWeaver.Sandbox.LocalTest do
     assert %Sandbox.ReadResult{file_data: nil, error: "invalid_path"} =
              Sandbox.read(sandbox, "/escape")
 
-    assert %Sandbox.ReadResult{file_data: nil, error: "invalid_path"} =
+    # A host path is taken literally as a sandbox path (`/<root>/escape`), which
+    # resolves under the root and does not exist, rather than reaching the
+    # symlink at `<root>/escape`.
+    assert %Sandbox.ReadResult{file_data: nil, error: "file_not_found"} =
              Sandbox.read(sandbox, Path.join(root, "escape"))
 
     assert %Sandbox.WriteResult{path: "/outdir/owned.txt", error: "invalid_path"} =
@@ -293,50 +348,67 @@ defmodule BeamWeaver.Sandbox.LocalTest do
     assert %Sandbox.GrepResult{matches: []} = Sandbox.grep(sandbox, "outside-secret", path: "/")
   end
 
-  test "large payloads and async helpers preserve full contents", %{sandbox: sandbox, root: root} do
+  test "a `..` after a symlink can't climb out of the root", %{sandbox: sandbox, root: root} do
+    outside = Path.join(Path.dirname(root), "#{Path.basename(root)}_outside.txt")
+    File.write!(outside, "needle outside-secret")
+    on_exit(fn -> File.rm(outside) end)
+
+    # /x/up is the root, so `../x/up/../<name>` from /notes is the file next
+    # to the root. Read as text it is /x/<name>, a decoy inside the root.
+    File.mkdir_p!(Path.join(root, "x"))
+    File.mkdir_p!(Path.join(root, "notes"))
+    File.ln_s!("..", Path.join(root, "x/up"))
+    File.write!(Path.join([root, "x", Path.basename(outside)]), "decoy")
+    File.ln_s!("../x/up/../#{Path.basename(outside)}", Path.join(root, "notes/escape"))
+
+    assert %Sandbox.ReadResult{file_data: nil, error: "invalid_path"} = Sandbox.read(sandbox, "/notes/escape")
+    assert [%Sandbox.DownloadResult{error: "invalid_path"}] = Sandbox.download_files(sandbox, ["/notes/escape"])
+    assert %Sandbox.GrepResult{matches: []} = Sandbox.grep(sandbox, "outside-secret", path: "/")
+    assert %Sandbox.ListResult{entries: []} = Sandbox.ls(sandbox, "/notes")
+    assert Sandbox.canonical_paths(sandbox, ["/notes/escape"]) == [{:error, "invalid_path"}]
+
+    assert %Sandbox.EditResult{error: "invalid_path"} = Sandbox.edit(sandbox, "/notes/escape", "needle", "changed")
+
+    assert [%Sandbox.UploadResult{error: "invalid_path"}] =
+             Sandbox.upload_files(sandbox, [{"/notes/escape", "changed"}])
+
+    assert File.read!(outside) == "needle outside-secret"
+  end
+
+  test "large payloads preserve full contents", %{sandbox: sandbox, root: root} do
     path = Path.join(root, "large.txt")
     content = 1..2_500 |> Enum.map_join("\n", &"#{&1}:0123456789abcdef")
 
-    assert %Sandbox.WriteResult{error: nil} =
-             sandbox
-             |> Sandbox.async_write(path, content)
-             |> Task.await()
+    assert %Sandbox.WriteResult{error: nil} = Sandbox.write(sandbox, path, content)
 
     assert %Sandbox.ReadResult{file_data: %{"content" => page}} =
-             sandbox
-             |> Sandbox.async_read(path, offset: 100, limit: 2)
-             |> Task.await()
+             Sandbox.read(sandbox, path, offset: 100, limit: 2)
 
     assert page == "101:0123456789abcdef\n102:0123456789abcdef"
 
     assert [%Sandbox.DownloadResult{path: ^path, content: ^content, error: nil}] =
-             sandbox
-             |> Sandbox.async_download_files([path])
-             |> Task.await()
+             Sandbox.download_files(sandbox, [path])
 
     assert %Sandbox.ExecuteResult{exit_code: 0, output: output, truncated: false} =
-             sandbox
-             |> Sandbox.async_execute("python3 -c \"import sys; sys.stdout.write('x' * (500 * 1024))\"")
-             |> Task.await()
+             Sandbox.execute(sandbox, "python3 -c \"import sys; sys.stdout.write('x' * (500 * 1024))\"")
 
     assert byte_size(output) == 500 * 1024
   end
 
-  test "execute caps command output while preserving exit status", %{root: root} do
+  test "execute keeps the start and the end of long output, and the exit status", %{root: root} do
     sandbox = Sandbox.local(root: root, max_output_bytes: 1_024)
 
-    assert %Sandbox.ExecuteResult{exit_code: 0, output: output, truncated: true} =
-             Sandbox.execute(sandbox, "python3 -c \"import sys; sys.stdout.write('x' * 2048)\"")
+    assert %Sandbox.ExecuteResult{exit_code: 3, output: output, truncated: true} =
+             Sandbox.execute(
+               sandbox,
+               "python3 -c \"import sys; sys.stdout.write('a' * 1500 + 'b' * 1500); sys.exit(3)\""
+             )
 
-    assert byte_size(output) == 1_024
-    assert output == :binary.copy("x", 1_024)
+    assert output == :binary.copy("a", 512) <> "\n... [1976 bytes cut] ...\n" <> :binary.copy("b", 512)
   end
 
-  test "large upload and download preserve bytes and report expected size", %{
-    sandbox: sandbox,
-    root: root
-  } do
-    path = Path.join(root, "large_upload.bin")
+  test "large upload and download preserve bytes and report expected size", %{sandbox: sandbox} do
+    path = "/large_upload.bin"
     content = :binary.copy("0123456789abcdef", 640 * 1024)
 
     assert byte_size(content) == 10 * 1024 * 1024
@@ -345,7 +417,7 @@ defmodule BeamWeaver.Sandbox.LocalTest do
              Sandbox.upload_files(sandbox, [{path, content}])
 
     assert %Sandbox.ExecuteResult{exit_code: 0, output: output} =
-             Sandbox.execute(sandbox, "wc -c #{shell_quote(path)}")
+             Sandbox.execute(sandbox, "wc -c large_upload.bin")
 
     assert output =~ Integer.to_string(byte_size(content))
 
@@ -353,33 +425,31 @@ defmodule BeamWeaver.Sandbox.LocalTest do
              Sandbox.download_files(sandbox, [path])
   end
 
-  test "invalid paths and preview limits return standard error markers", %{
+  test "a host path is taken literally as a sandbox path, not reinterpreted", %{
     sandbox: sandbox,
     root: root
   } do
-    assert [%Sandbox.DownloadResult{path: "relative.txt", content: nil, error: "invalid_path"}] =
-             Sandbox.download_files(sandbox, ["relative.txt"])
+    File.mkdir_p!(Path.join(root, "secrets"))
+    File.write!(Path.join([root, "secrets", "key.txt"]), "TOP-SECRET")
 
-    path = Path.join(root, "large.bin")
-    Sandbox.upload_files(sandbox, [{path, :binary.copy(<<0>>, 513_000)}])
+    # The sandbox path reads the file (it is in the sandbox).
+    assert %Sandbox.ReadResult{file_data: %{"content" => "TOP-SECRET"}} =
+             Sandbox.read(sandbox, "/secrets/key.txt")
 
-    assert %Sandbox.ReadResult{file_data: nil, error: error} = Sandbox.read(sandbox, path)
-    assert error =~ "Binary file exceeds maximum preview size"
+    # A full host path pointing inside the root is treated as the sandbox path
+    # `/<root>/secrets/key.txt`, which resolves under the root and does not
+    # exist, so it can't reach `/secrets/key.txt` behind a permission rule.
+    host_path = Path.join([root, "secrets", "key.txt"])
+
+    assert %Sandbox.ReadResult{file_data: nil, error: "file_not_found"} =
+             Sandbox.read(sandbox, host_path)
   end
 
-  test "async helpers are Task-backed facade calls", %{sandbox: sandbox, root: root} do
-    path = Path.join(root, "async.txt")
+  test "glob and grep return an error for a malformed pattern", %{sandbox: sandbox} do
+    assert %Sandbox.GlobResult{matches: nil, error: "invalid_pattern"} =
+             Sandbox.glob(sandbox, "{a")
 
-    assert %Sandbox.WriteResult{error: nil} =
-             sandbox
-             |> Sandbox.async_write(path, "async")
-             |> Task.await()
-
-    assert %Sandbox.ReadResult{file_data: %{"content" => "async"}} =
-             sandbox
-             |> Sandbox.async_read(path)
-             |> Task.await()
+    assert %Sandbox.GrepResult{matches: nil, error: "invalid_pattern"} =
+             Sandbox.grep(sandbox, "needle", glob: "{a")
   end
-
-  defp shell_quote(path), do: "'" <> String.replace(path, "'", "'\\''") <> "'"
 end

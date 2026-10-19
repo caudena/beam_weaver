@@ -1,989 +1,429 @@
-# Tools
+# Tool DSL
 
-Tools let models and agents take actions: search data, call internal services,
-run policy-governed commands, update graph state, and return observations to the
-model.
+Tools connect a model to your application's functions. A tool declares a
+model-visible name, description and argument schema, then implements
+`invoke/3`. The model requests an action; your Elixir code performs it.
 
-BeamWeaver tools are normal Elixir values that implement
-`BeamWeaver.Core.Tool`. You can create them at runtime with
-`BeamWeaver.Core.Tool.from_function!/1`, define stable application tools with
-`use BeamWeaver.Tool`, or implement the behaviour directly.
+Complete [Installation](installation.md). Run this page's blocks in order.
+Its local help-center data is illustrative; no external service is modified.
 
-{% hint style="info" %}
-**Tool Definition**
-
-LangChain's Python docs start with the `@tool` decorator because Python can
-attach schema metadata to function objects. Elixir functions are not mutable
-metadata containers, and compile-time macros should produce ordinary modules.
-BeamWeaver therefore offers two native paths: `%BeamWeaver.Core.Tool{}` values
-for runtime-created tools and `use BeamWeaver.Tool` modules for stable tools.
-{% endhint %}
-
-## Create Tools
-
-### Runtime Tool
-
-Use `Tool.from_function!/1` when the tool is built from configuration, tests, or
-runtime data:
+## Define and run an action
 
 ```elixir
-alias BeamWeaver.Core.Tool
-
-search_database =
-  Tool.from_function!(
-    name: "search_database",
-    description: "Search customer records matching a query.",
-    input_schema: %{
-      "type" => "object",
-      "properties" => %{
-        "query" => %{"type" => "string", "description" => "Search terms"},
-        "limit" => %{"type" => "integer", "default" => 10}
-      },
-      "required" => ["query"]
-    },
-    handler: fn input, _opts ->
-      query = input["query"] || input[:query]
-      limit = input["limit"] || input[:limit] || 10
-
-      "Found #{limit} results for #{inspect(query)}"
-    end
-  )
-```
-
-The handler receives a map of validated input and a keyword list of call options.
-Returning a plain value is accepted; returning `{:ok, value}` or
-`{:error, %BeamWeaver.Core.Error{}}` is preferred when the tool does real work.
-
-Tool names should use provider-safe characters: letters, numbers, underscores,
-and hyphens. Provider renderers validate this before sending the tool schema to
-OpenAI or Anthropic.
-
-Runtime tools can also declare execution and parsing options:
-
-```elixir
-tool =
-  Tool.from_function!(
-    name: "lookup_order",
-    description: "Lookup an order by numeric ID.",
-    input_schema: %{
-      "type" => "object",
-      "properties" => %{"order_id" => %{"type" => "integer"}},
-      "required" => ["order_id"]
-    },
-    parse_args: fn
-      %{"order_id" => id} when is_binary(id) -> {:ok, %{"order_id" => String.to_integer(id)}}
-      _args -> :ok
-    end,
-    concurrent: false,
-    max_result_chars: 2_000,
-    handler: fn %{"order_id" => id}, _opts ->
-      MyApp.Orders.fetch_summary!(id)
-    end
-  )
-```
-
-`parse_args` runs after model tool-call normalization and before schema
-validation, so it can coerce raw LLM arguments before strict validation. It must
-return `:ok`, `{:ok, parsed_map}`, or `{:error, reason}`. Parser errors,
-exceptions, and invalid return shapes become `:invalid_input` errors and use the
-same `handle_validation_error` policy as schema failures.
-
-For callers that validate before creating their own operation record,
-`BeamWeaver.Core.Tool.normalize_input/2` returns a string-keyed input map. It
-enforces required and closed properties, basic JSON types, enums, string and
-numeric bounds, array sizes, and nested object/array schemas. Atom and string
-keys that normalize to the same JSON key are rejected instead of silently
-overwriting one value.
-
-### Module Tool
-
-Use `use BeamWeaver.Tool` for application tools that should compile to a normal
-module:
-
-```elixir
-defmodule MyApp.Tools.SearchDatabase do
+defmodule MyApp.RefundPolicy do
   use BeamWeaver.Tool
 
-  name "search_database"
-  description "Search customer records matching a query."
-  tags [:customer_data]
-  metadata %{owner: "support"}
-  concurrent false
-  max_result_chars 2_000
+  name "refund_policy"
+  description "Read the published refund policy for standard or express shipping."
 
   schema do
-    field :query, :string, description: "Search terms"
-    field :limit, :integer, required: false, default: 10
+    field :shipping, :string, enum: ["standard", "express"], default: "standard"
   end
 
   @impl true
-  def invoke(_tool, input, _opts) do
-    {:ok, "Found #{input["limit"]} results for #{inspect(input["query"])}"}
+  def invoke(_tool, %{"shipping" => shipping}, _opts) do
+    {:ok, %{shipping: shipping, refund_days: 5}}
   end
 end
-```
 
-`invoke/3` receives the fields of the `schema` block under string keys. A model
-sends its arguments as a JSON object, and the generated schema uses string
-property names, so a default arrives under a string key too: `input["limit"]`
-is 10 when the model leaves it out. Injected arguments arrive under their atom
-names, such as `input.context`. `Tool.invoke/3` passes the map it is given
-through unchanged, so call a tool directly the way a model does, with string
-keys:
-
-```elixir
 alias BeamWeaver.Core.Tool
-
-{:ok, "Found 10 results for \"Ada\""} = Tool.invoke(MyApp.Tools.SearchDatabase, %{"query" => "Ada"})
-{:ok, "Found 3 results for \"Ada\""} = Tool.invoke(MyApp.Tools.SearchDatabase, %{"query" => "Ada", "limit" => 3})
+{:ok, %{shipping: "standard", refund_days: 5}} = Tool.invoke(MyApp.RefundPolicy, %{})
+{:error, error} = Tool.invoke(MyApp.RefundPolicy, %{"shipping" => "overnight"})
+:invalid_input = error.type
 ```
 
-Module tools can be passed as modules or structs:
+Calling a tool directly is useful for debugging without a model. Inputs use
+string keys because model arguments arrive as JSON. Tools return
+`{:ok, value}` or `{:error, reason}`. Defaults are applied before the handler.
+A missing `name` defaults to the module's snake-case name; a missing
+`description` falls back to the module documentation.
+
+## Give tools to an agent
 
 ```elixir
-tools = [MyApp.Tools.SearchDatabase, %MyApp.Tools.SearchDatabase{}]
-```
+defmodule MyApp.PolicyAgent do
+  use BeamWeaver.Agent
 
-For lists that may include modules, structs, runtime tools, toolkits, or
-runnable-compatible values, use `BeamWeaver.Tool.Converter.to_tools/2`.
-
-Module tools can override `parse_args/2` directly when they need the same
-pre-validation coercion:
-
-```elixir
-@impl true
-def parse_args(_tool, %{"limit" => limit} = args) when is_binary(limit) do
-  {:ok, %{args | "limit" => String.to_integer(limit)}}
+  model "openai:gpt-5.4-mini", max_tokens: 256, timeout: 60_000
+  system_prompt "Read refund_policy before answering. Use the returned number of days."
+  tools [MyApp.RefundPolicy]
+  validate_tools true
+  tool_timeout 5_000
+  recursion_limit 10
 end
 
-def parse_args(_tool, _args), do: :ok
+{:ok, result} = MyApp.PolicyAgent.invoke(%{messages: ["How long does a standard-shipping refund take?"]})
+call = result.messages |> Enum.flat_map(&(&1.tool_calls || [])) |> Enum.find(&(&1.name == "refund_policy"))
+%{"shipping" => "standard"} = call.args
+tool_result = Enum.find(result.messages, &(&1.role == :tool and &1.tool_call_id == call.id))
+true = BeamWeaver.Core.Message.text(tool_result) =~ "5"
+answer = result.messages |> List.last() |> BeamWeaver.Core.Message.text()
+true = byte_size(answer) > 0
+IO.puts(answer)
 ```
 
-### Direct Behaviour Tool
+The agent validates the request, invokes the tool and sends its result back
+to the model. Descriptions should explain when to use a tool and what its
+result means. Authorization and business validation belong inside the handler.
 
-When you need full control, implement `BeamWeaver.Core.Tool` directly:
+## Arguments
+
+`schema do` groups `field name, type, opts` declarations. Tool declarations
+are evaluated when the module compiles. Fields are required by default;
+`required: false` makes one optional.
+
+| Type | Model input |
+| --- | --- |
+| `:string`, `:integer`, `:boolean` | Corresponding JSON value |
+| `:number`, `:float` | A number |
+| `:map` | An object |
+| `{:array, type}` | A list of typed values |
+| `{:object, fields}` | Nested fields, for example `[{:city, :string}]` |
+| `{:union, types}` | One of several schema types |
+| `:date`, `:utc_datetime` | ISO 8601 text |
+| `:any` | Any JSON value |
+| A JSON Schema map | The constraints described by that map |
+
+Options include `description:`, `default:`, `enum:` and `nullable:`.
+A `nullable: true` field also accepts `nil`, which its schema adds to any
+`enum:` values; any other value is checked as usual. Validation rejects
+missing required values, wrong types, enum violations and supported numeric
+bounds. Union members and date formats are not validated; check
+application-specific constraints in your code.
+
+This local help-center example supplies an optional section and a default limit:
 
 ```elixir
-defmodule MyApp.Tools.Uppercase do
-  @behaviour BeamWeaver.Core.Tool
+defmodule MyApp.Tools.SearchHelpCenter do
+  use BeamWeaver.Tool
 
-  defstruct []
+  name "search_help_center"
+  description "Search Acme's help center for policies, such as refunds and returns."
 
-  def name(_tool), do: "uppercase"
-  def description(_tool), do: "Uppercase a string."
+  schema do
+    field :query, :string, description: "What the customer wants to know"
+    field :section, :string, required: false, enum: ["billing", "shipping", "returns"]
+    field :limit, :integer, required: false, default: 3
+  end
 
-  def input_schema(_tool) do
+  @impl true
+  def invoke(_tool, %{"query" => query, "limit" => limit} = args, _opts) do
+    section = Map.get(args, "section", "all sections")
+    {:ok, "Top #{limit} results for #{inspect(query)} in #{section}: Refunds take 5 business days."}
+  end
+end
+
+alias BeamWeaver.Core.Tool
+
+Tool.invoke(MyApp.Tools.SearchHelpCenter, %{"query" => "refund"})
+#=> {:ok, "Top 3 results for \"refund\" in all sections: Refunds take 5 business days."}
+```
+
+An unsupported section fails before the handler is called:
+
+```elixir
+Tool.invoke(MyApp.Tools.SearchHelpCenter, %{"query" => "refund", "section" => "toys"})
+#=> {:error, %BeamWeaver.Core.Error{type: :invalid_input, message: "tool input is not in enum"}}
+```
+
+## Results and errors
+
+| Handler result | What happens |
+| --- | --- |
+| `{:ok, text}` | Text becomes the tool result |
+| `{:ok, map_or_list}` | Data is JSON-encoded for the model |
+| `{:ok, ToolResult}` | Content goes to the model; artifact stays with the application |
+| `{:ok, Message.tool(...)}` | The tool message can include media blocks |
+| `{:ok, Graph.Command}` | Tool message plus state updates |
+| `{:error, reason}` | The agent returns an error tool message to the model |
+
+A tool error normally lets the agent continue: the model may correct its
+arguments or explain the failure. Tool messages mark errors in
+`metadata.status`. `ToolError` middleware can change that policy.
+Exceptions in agent-run tools become tool errors; a direct call to a module's
+handler can raise. Function-backed tools normalize handler exceptions to
+`:tool_exception`.
+
+## Injected arguments
+
+Declare `injected :context, :context` to receive trusted caller data under
+an atom key alongside the model's string keys. Injected fields are excluded
+from the model-visible schema.
+
+| Source | Value |
+| --- | --- |
+| `:context` | The call's trusted context map |
+| `:state` | Public agent state |
+| `{:state, key_or_path}` | A selected state value, including private channels |
+| `:tool_call_id` | ID needed to correlate a result with its request |
+| `:store`, `:checkpointer`, `:config` | Call storage and configuration |
+| `:tool_runtime` | `BeamWeaver.Core.ToolRuntime` containing tool runtime data |
+| `:runtime` | Graph runtime, including its stream writer |
+
+[Runtime Context](runtime_context.md) demonstrates an ownership-scoped lookup.
+Use the injected identity in the actual query; injection does not by itself
+enforce access control.
+
+## Updating state
+
+Return a command when an action also changes the agent's state. Include
+exactly one tool message answering the current call:
+
+```elixir
+defmodule MyApp.SetPriority do
+  use BeamWeaver.Tool
+
+  name "set_priority"
+  description "Set the ticket priority."
+  injected :call_id, :tool_call_id
+
+  schema do
+    field :priority, :string, enum: ["normal", "urgent"]
+  end
+
+  @impl true
+  def invoke(_tool, %{"priority" => priority, call_id: id}, _opts) do
+    message = BeamWeaver.Core.Message.tool("Priority updated.", tool_call_id: id)
+    {:ok, %BeamWeaver.Graph.Command{update: %{priority: priority, messages: [message]}}}
+  end
+end
+
+defmodule MyApp.PriorityAgent do
+  use BeamWeaver.Agent
+
+  model "openai:gpt-5.4-mini", max_tokens: 256, timeout: 60_000
+  system_prompt "Use set_priority for every priority change."
+  tools [MyApp.SetPriority]
+end
+
+{:ok, result} = MyApp.PriorityAgent.invoke(%{messages: ["Set this ticket's priority to urgent."]})
+"urgent" = result.priority
+```
+
+Updates replace a value unless a reducer is declared for the channel. Parallel
+writes to the same unreduced key fail. [Middleware](middleware.md#add-tools-and-state)
+explains agent state channels; [Graph State](graph_state.md) explains reducers.
+
+## Artifacts
+
+Keep large records outside the model's text while retaining them for your app:
+
+```elixir
+defmodule MyApp.Receipt do
+  use BeamWeaver.Tool
+
+  name "receipt"
+  description "Read the sample receipt."
+  response_format :content_and_artifact
+
+  @impl true
+  def invoke(_tool, _input, _opts),
+    do: {:ok, {"Total: 49.00", %{lines: [%{sku: "MUG-1", price: 49.0}]}}}
+end
+
+{:ok, receipt} = Tool.invoke(MyApp.Receipt, %{})
+"Total: 49.00" = receipt.content
+[%{sku: "MUG-1", price: 49.0}] = receipt.artifact.lines
+```
+
+Returning `BeamWeaver.Core.ToolResult` directly has the same purpose. An
+agent keeps the artifact in the tool message's `metadata.artifact`; providers
+receive the content. `Message.tool/2` also supports application-only `artifacts:`.
+
+## End the run with a tool result
+
+`return_direct true` ends the loop after a successful tool result, without
+asking the model to rephrase it. Failure still returns to the model. A mixed
+batch containing a tool that does not return directly continues normally.
+Use this for outputs that your application already formats completely.
+
+A direct-return tool ends the loop with its result. This local example does not actually send an email:
+
+```elixir
+defmodule MyApp.Tools.EscalateTicket do
+  use BeamWeaver.Tool
+
+  name "escalate_ticket"
+  description "Hand the conversation to a human support specialist."
+  return_direct true
+
+  schema do
+    field :reason, :string
+  end
+
+  @impl true
+  def invoke(_tool, %{"reason" => reason}, _opts),
+    do: {:ok, "A specialist will take over (#{reason}). Expect an email within a day."}
+end
+
+defmodule MyApp.SupportAgent do
+  use BeamWeaver.Agent
+
+  model "openai:gpt-5.4-mini", max_tokens: 512, timeout: 60_000
+
+  system_prompt "Use escalate_ticket to hand the request to a specialist. Set the reason to refund dispute."
+  tools [MyApp.Tools.EscalateTicket]
+end
+
+{:ok, result} = MyApp.SupportAgent.invoke(%{messages: ["I want to talk to a person."]})
+last = List.last(result.messages)
+:tool = last.role
+"escalate_ticket" = last.name
+true = BeamWeaver.Core.Message.text(last) =~ "specialist will take over"
+```
+
+## Other options
+
+| Declaration | Use |
+| --- | --- |
+| `concurrent false` | Serialize this tool within a tool batch |
+| `max_result_chars 2_000` | Bound model-visible text, with a truncation marker |
+| `tags`, `metadata` | Tool selection and trace attributes |
+| `provider_opts` | Provider-specific declaration fields |
+| `output_schema` | Describe structured tool output |
+
+Concurrency settings are not a database lock across independent runs. Use
+transactions or idempotency keys where actions can race or be retried.
+
+## Group tools
+
+A module implementing `BeamWeaver.ToolKit.tools/1` returns a list of tools.
+List that toolkit in `tools`, or pass its options with
+`tool MyApp.OrderTools, region: "eu"` inside a `tools do` block.
+Ordinary tool modules take no options in that position.
+
+A toolkit packages existing tools. Run the same policy lookup through that group:
+
+```elixir
+defmodule MyApp.PolicyTools do
+  @behaviour BeamWeaver.ToolKit
+  @impl true
+  def tools(_opts), do: [MyApp.RefundPolicy]
+end
+
+defmodule MyApp.ToolkitAgent do
+  use BeamWeaver.Agent
+  model "openai:gpt-5.4-mini", max_tokens: 256, timeout: 60_000
+  system_prompt "Read refund_policy before answering."
+  tools [MyApp.PolicyTools]
+end
+
+{:ok, result} = MyApp.ToolkitAgent.invoke(%{messages: ["Read the refund policy for standard shipping."]})
+true = Enum.any?(result.messages, &(&1.role == :tool and &1.name == "refund_policy"))
+```
+
+## Tools built at runtime
+
+Use `BeamWeaver.Core.Tool.from_function!/1` for dynamic tools. Supply `name:`,
+`description:`, a JSON `input_schema:` and a two-argument `handler:` receiving
+input and options. It also accepts injection, direct-return, concurrency,
+truncation, tags and metadata options. Keep dynamic descriptions and tool
+sets within your application's authorization rules.
+
+A runtime tool can close over application configuration. Its local handler is executable without a model:
+
+```elixir
+defmodule MyApp.HelpCenter do
+  alias BeamWeaver.Core.Tool
+
+  def search_tool(section) do
+    Tool.from_function!(
+      name: "search_#{section}_articles",
+      description: "Search Acme's #{section} help articles.",
+      input_schema: %{
+        "type" => "object",
+        "properties" => %{"query" => %{"type" => "string"}},
+        "required" => ["query"]
+      },
+      handler: fn %{"query" => query}, _opts ->
+        {:ok, "Top #{section} article for #{inspect(query)}: Refunds take 5 business days."}
+      end
+    )
+  end
+end
+
+billing_search = MyApp.HelpCenter.search_tool("billing")
+Tool.invoke(billing_search, %{"query" => "refund"})
+#=> {:ok, "Top billing article for \"refund\": Refunds take 5 business days."}
+```
+
+Supply the constructed tool to an agent and verify its call:
+
+```elixir
+{:ok, agent} =
+  BeamWeaver.Agent.build(
+    model: "openai:gpt-5.4-mini",
+    model_opts: [max_tokens: 256, timeout: 60_000],
+    system_prompt: "Search the billing articles before answering.",
+    tools: [billing_search]
+  )
+
+{:ok, result} = BeamWeaver.Agent.invoke(agent, %{messages: ["Search the refund article."]})
+true = Enum.any?(result.messages, &(&1.role == :tool and &1.name == "search_billing_articles"))
+```
+
+## Tools with a computed schema
+
+`use BeamWeaver.Tool` fixes the schema when the module compiles. When the
+schema depends on data, such as a struct's fields, call
+`use BeamWeaver.Core.Tool` and write the callbacks yourself. Define
+`name/1`, `description/1`, `input_schema/1` and `invoke/3`; every other
+callback gets a default unless the module defines it. Each callback's first
+argument is the tool, here the struct.
+
+This search tool offers only the sections its struct names:
+
+```elixir
+defmodule MyApp.Tools.SectionSearch do
+  use BeamWeaver.Core.Tool
+
+  defstruct sections: ["billing", "shipping", "returns"]
+
+  @impl true
+  def name(_tool), do: "search_section"
+
+  @impl true
+  def description(_tool), do: "Search one section of Acme's help center."
+
+  @impl true
+  def input_schema(%__MODULE__{sections: sections}) do
     %{
       "type" => "object",
-      "properties" => %{"value" => %{"type" => "string"}},
-      "required" => ["value"]
+      "properties" => %{
+        "query" => %{"type" => "string"},
+        "section" => %{"type" => "string", "enum" => sections}
+      },
+      "required" => ["query", "section"]
     }
   end
 
-  def injected(_tool), do: %{}
-  def return_direct(_tool), do: false
-  def response_format(_tool), do: nil
-  def output_schema(_tool), do: %{"type" => "string"}
-  def tags(_tool), do: []
-  def metadata(_tool), do: %{}
-  def provider_opts(_tool), do: %{}
-
-  def invoke(_tool, input, _opts) do
-    {:ok, String.upcase(input["value"] || input[:value])}
-  end
-end
-```
-
-## Schemas
-
-The model sees the tool name, description, and public input schema. BeamWeaver
-uses JSON Schema-shaped maps at the provider boundary:
-
-```elixir
-weather_schema = %{
-  "type" => "object",
-  "properties" => %{
-    "location" => %{"type" => "string", "description" => "City name or coordinates"},
-    "units" => %{
-      "type" => "string",
-      "enum" => ["celsius", "fahrenheit"],
-      "default" => "celsius"
-    },
-    "include_forecast" => %{"type" => "boolean", "default" => false}
-  },
-  "required" => ["location"]
-}
-```
-
-The tool DSL builds the same shape from fields:
-
-```elixir
-schema do
-  field :location, :string, description: "City name or coordinates"
-  field :units, :string,
-    required: false,
-    default: "celsius",
-    enum: ["celsius", "fahrenheit"]
-
-  field :include_forecast, :boolean, required: false, default: false
-end
-```
-
-`BeamWeaver.Tool.Schema.from/1` can convert explicit field declarations,
-NimbleOptions-style specs, Ecto-style schema modules, and already-shaped JSON
-Schema maps:
-
-```elixir
-{:ok, schema} =
-  BeamWeaver.Tool.Schema.from([
-    {:query, :string, description: "Search query"},
-    {:limit, :integer, required: false, default: 5},
-    {:filters, {:object, [{:section, :string, required: false}]}, required: false}
-  ])
-```
-
-{% hint style="warning" %}
-**Schema Inputs**
-
-LangChain examples often use Pydantic models because Python can inspect those
-classes at runtime and derive JSON Schema. Elixir structs and typespecs do not
-carry runtime validation, field descriptions, and nested schema rules in that
-way. BeamWeaver keeps schemas explicit: use the tool DSL for stable modules,
-`BeamWeaver.Tool.Schema.from/1` for native schema-like values, or JSON Schema
-maps when building dynamic tools at runtime.
-{% endhint %}
-
-### Runtime-Injected Arguments
-
-Some inputs are for the tool implementation, not the model. Declare them on the
-tool module and mark them as injected:
-
-```elixir
-defmodule MyApp.Tools.SearchPrivate do
-  use BeamWeaver.Tool
-
-  name "search_private"
-  description "Search private data for the current user."
-
-  injected :context, :context, type: :object
-  injected :tool_call_id, :tool_call_id, type: :string
-
-  schema do
-    field :query, :string, required: true
-  end
-
   @impl true
-  def invoke(_tool, input, _opts) do
-    user_id = input.context[:user_id] || input.context["user_id"]
-
-    {:ok, "Searching for #{input["query"]} as #{user_id}"}
+  def invoke(_tool, %{"query" => query, "section" => section}, _opts) do
+    {:ok, "Top #{section} article for #{inspect(query)}: Refunds take 5 business days."}
   end
 end
 ```
 
-Injected arguments arrive under their atom names (`input.context`), and the
-fields of the `schema` block under string keys (`input["query"]`).
+List the struct in `tools`, or call it directly. A section it doesn't offer
+fails before `invoke/3`:
 
 ```elixir
-BeamWeaver.Core.Tool.raw_input_schema(MyApp.Tools.SearchPrivate)
-BeamWeaver.Core.Tool.input_schema(MyApp.Tools.SearchPrivate)
+search = %MyApp.Tools.SectionSearch{sections: ["billing", "returns"]}
+{:ok, "Top billing article for \"refund\": Refunds take 5 business days."} =
+  Tool.invoke(search, %{"query" => "refund", "section" => "billing"})
+{:error, %{type: :invalid_input}} = Tool.invoke(search, %{"query" => "refund", "section" => "shipping"})
 ```
 
-`Tool.raw_input_schema/1` includes injected fields. `Tool.input_schema/1`
-removes them before the schema is exposed to a model.
-
-For dynamic runtime tools, pass `:injected` alongside the generated input
-schema:
-
-```elixir
-Tool.from_function!(
-  name: "search_private",
-  description: "Search private data for the current user.",
-  input_schema: %{
-    "type" => "object",
-    "properties" => %{
-      "query" => %{"type" => "string"},
-      "context" => %{"type" => "object"}
-    },
-    "required" => ["query", "context"]
-  },
-  injected: [context: :context],
-  handler: fn input, _opts ->
-    {:ok, "Searching for #{input["query"] || input[:query]}"}
-  end
-)
-```
-
-{% hint style="info" %}
-**Injected Arguments**
-
-LangChain hides `ToolRuntime` parameters by inspecting Python type
-annotations, and reserves names such as `runtime` and `config`. BeamWeaver
-makes injection declarative with the `:injected` map. The model-visible schema
-stays clean, and the implementation still receives state, context, store,
-runtime, config, checkpointer, or tool call ID when the tool runs inside an
-agent or `ToolNode`.
-{% endhint %}
-
-Injected sources:
-
-| Source | Value |
-|---|---|
-| `:state` | full graph or agent state |
-| `{:state, field_or_path}` | one state field or nested path |
-| `:context` | per-run context |
-| `:store` | long-term memory store |
-| `:runtime` | graph runtime struct/map |
-| `:tool_runtime` | `%BeamWeaver.Core.ToolRuntime{}` |
-| `:tool_call_id` | current model tool call ID |
-| `:config` | runtime config |
-| `:checkpointer` | checkpoint adapter |
-
-## Access Runtime Data
-
-Runtime injection is available when a tool is executed by an agent or
-`BeamWeaver.Graph.Nodes.ToolNode`. Direct `Tool.invoke/3` calls are plain
-function calls; pass any implementation-only values yourself when calling tools
-outside a graph runtime.
-
-### State
-
-State is short-term conversation data. Inject the full state or a specific
-field:
-
-```elixir
-get_last_user_message =
-  Tool.from_function!(
-    name: "get_last_user_message",
-    description: "Get the most recent user message.",
-    input_schema: %{
-      "type" => "object",
-      "properties" => %{"state" => %{"type" => "object"}},
-      "required" => ["state"]
-    },
-    injected: [state: :state],
-    handler: fn input, _opts ->
-      state = input[:state] || input["state"] || %{}
-
-      state
-      |> Map.get(:messages, Map.get(state, "messages", []))
-      |> Enum.reverse()
-      |> Enum.find(&match?(%BeamWeaver.Core.Message{role: :user}, &1))
-      |> case do
-        nil -> "No user messages found."
-        message -> BeamWeaver.Core.Message.text(message)
-      end
-    end
-  )
-```
-
-### Context
-
-Context is immutable per-run data passed to the agent invocation:
-
-```elixir
-account_tool =
-  Tool.from_function!(
-    name: "get_account_info",
-    description: "Get account information for the current user.",
-    input_schema: %{
-      "type" => "object",
-      "properties" => %{"context" => %{"type" => "object"}},
-      "required" => ["context"]
-    },
-    injected: [context: :context],
-    handler: fn input, _opts ->
-      context = input[:context] || input["context"] || %{}
-      user_id = context[:user_id] || context["user_id"]
-
-      "Account for #{user_id}: Premium"
-    end
-  )
-```
-
-Invoke the agent with both a stable `thread_id` for checkpoints and per-run
-context for tools:
-
-```elixir
-MyApp.Agent.invoke(
-  %{messages: [BeamWeaver.Core.Message.user("What is my balance?")]},
-  config: %{"configurable" => %{"thread_id" => "thread-123"}},
-  context: %{user_id: "user-123"}
-)
-```
-
-### Store
-
-Stores are long-term memory. Inject the store and use the `BeamWeaver.Memory`
-API. Inject the context as well and take the owner of the data from it, so the
-model cannot write into another user's namespace:
-
-```elixir
-save_user_info =
-  Tool.from_function!(
-    name: "save_user_info",
-    description: "Save information about the current user.",
-    input_schema: %{
-      "type" => "object",
-      "properties" => %{
-        "info" => %{"type" => "object"},
-        "context" => %{"type" => "object"},
-        "store" => %{"type" => "object"}
-      },
-      "required" => ["info", "context", "store"]
-    },
-    injected: [context: :context, store: :store],
-    handler: fn input, _opts ->
-      store = input[:store] || input["store"]
-      context = input[:context] || input["context"] || %{}
-      user_id = context[:user_id] || context["user_id"]
-      info = input["info"] || input[:info]
-
-      {:ok, _item} = BeamWeaver.Memory.put(store, ["users", user_id, "profile"], "info", info)
-      "Saved user information."
-    end
-  )
-```
-
-[Long-Term Memory](long_term_memory.md#namespaces-and-keys) explains how
-namespaces and keys keep the data of different users and projects apart.
-
-Use `BeamWeaver.Memory.ETS` for local/test storage and
-`BeamWeaver.Memory.Ecto` for durable Postgres-backed storage.
-
-### Stream Writer
-
-Inject `:tool_runtime` to emit tool progress events:
-
-```elixir
-streaming_tool =
-  Tool.from_function!(
-    name: "stream_tool",
-    description: "Emit progress while running.",
-    input_schema: %{
-      "type" => "object",
-      "properties" => %{
-        "text" => %{"type" => "string"},
-        "tool_runtime" => %{"type" => "object"}
-      },
-      "required" => ["text", "tool_runtime"]
-    },
-    injected: [tool_runtime: :tool_runtime],
-    handler: fn input, _opts ->
-      runtime = input[:tool_runtime] || input["tool_runtime"]
-      text = input["text"] || input[:text]
-
-      BeamWeaver.Core.ToolRuntime.emit_output_delta(runtime, "starting")
-      BeamWeaver.Core.ToolRuntime.emit_output_delta(runtime, "finished")
-
-      text
-    end
-  )
-```
-
-Tool progress is visible in agent or graph streams that use typed events.
-
-### Execution And Deployment Metadata
-
-`%BeamWeaver.Core.ToolRuntime{}` includes `tool_call_id`, `tool_call`,
-`execution_info`, and `server_info` fields:
-
-```elixir
-handler = fn input, _opts ->
-  runtime = input[:tool_runtime] || input["tool_runtime"]
-  %{tool_call_id: runtime.tool_call_id, execution: runtime.execution_info}
-end
-```
-
-{% hint style="info" %}
-**Server Metadata**
-
-LangChain's docs include LangGraph Server-specific `server_info`. BeamWeaver's
-runtime has a `server_info` slot so your own OTP service can pass deployment
-metadata through the graph runtime. The public tool API does not depend on a
-hosted LangGraph server, SDK, or CLI.
-{% endhint %}
-
-## Tool Execution
-
-### Direct Invocation
-
-Call tools directly with `Tool.invoke/3`:
-
-```elixir
-{:ok, result} = BeamWeaver.Core.Tool.invoke(search_database, %{"query" => "Ada", "limit" => 3})
-```
-
-For a single-input tool, scalar input is accepted:
-
-```elixir
-echo =
-  Tool.from_function!(
-    name: "echo",
-    description: "Echo one value.",
-    input_schema: %{
-      "type" => "object",
-      "properties" => %{"query" => %{"type" => "string"}},
-      "required" => ["query"]
-    },
-    handler: fn input, _opts -> input["query"] || input[:query] end
-  )
-
-{:ok, "beam"} = Tool.invoke(echo, "beam")
-```
-
-Use Task-backed helpers for explicit async work:
-
-```elixir
-task = BeamWeaver.Core.Tool.async_invoke(echo, "beam")
-{:ok, "beam"} = BeamWeaver.Core.Async.await(task)
-```
-
-### Model Tool Calls
-
-When the input is a tool-call map, BeamWeaver validates the call, injects the
-tool call ID, and wraps the result as a tool message:
-
-```elixir
-tool_call = %{
-  "type" => "tool_call",
-  "name" => "echo",
-  "id" => "call_123",
-  "args" => %{"query" => "beam"}
-}
-
-{:ok, %BeamWeaver.Core.Message{role: :tool} = message} =
-  BeamWeaver.Core.Tool.invoke(echo, tool_call)
-```
-
-Standalone model calls only request tool execution. Agents and `ToolNode` run
-the loop automatically.
-
-### ToolNode
-
-`BeamWeaver.Graph.Nodes.ToolNode` executes one or more tool calls, handles
-parallel calls with supervised tasks, injects runtime data, emits stream events,
-and returns tool messages or graph commands:
-
-```elixir
-alias BeamWeaver.Graph.Nodes.ToolNode
-
-node = ToolNode.new([search_database], timeout: 5_000)
-
-messages =
-  ToolNode.invoke(node, [
-    %{id: "call_search", name: "search_database", args: %{"query" => "Ada"}}
-  ])
-```
-
-In graph state, the node reads assistant tool calls from `:messages` and returns
-tool messages that a reducer can append.
-
-ToolNode preserves the model's original tool-call order in its returned
-messages. Consecutive tools are executed concurrently by default. Set
-`concurrent: false` on `Tool.from_function!/1` tools, or declare
-`concurrent false` in `use BeamWeaver.Tool`, when a tool must act as an ordering
-barrier. Consecutive concurrent tools before and after that barrier run in
-separate supervised groups.
-
-`max_result_chars` limits only model-visible textual tool message content. It
-does not change direct handler return values before normalization, graph
-commands, artifacts, structured metadata, or non-text values.
-
-## Return Values
-
-Tools can return several shapes.
-
-### String Or Structured Data
-
-Return text when the model should read a simple observation:
-
-```elixir
-handler: fn input, _opts ->
-  "It is sunny in #{input["city"] || input[:city]}."
-end
-```
-
-Return maps or lists when structure helps model reasoning. Tool messages encode
-non-text values as JSON:
-
-```elixir
-handler: fn input, _opts ->
-  %{city: input["city"] || input[:city], temperature_c: 22, conditions: "sunny"}
-end
-```
-
-### ToolResult And Artifacts
-
-Use `%BeamWeaver.Core.ToolResult{}` or `response_format: :content_and_artifact`
-when model-visible content and application-only data should differ:
-
-```elixir
-lookup =
-  Tool.from_function!(
-    name: "lookup",
-    description: "Look up a record.",
-    input_schema: %{
-      "type" => "object",
-      "properties" => %{"id" => %{"type" => "string"}},
-      "required" => ["id"]
-    },
-    handler: fn input, _opts ->
-      id = input["id"] || input[:id]
-
-      BeamWeaver.Core.ToolResult.success("record #{id}",
-        artifact: %{id: id, raw: %{score: 10}},
-        metadata: %{source: "records"}
-      )
-    end
-  )
-```
-
-The model sees `"record #{id}"`. The artifact remains available on the tool
-message metadata or artifacts for application code, tracing, retrieval UIs, and
-checkpointed state.
-
-### Command
-
-Return `BeamWeaver.Graph.Command` when a tool needs to update state or route the
-graph. Include a matching tool message in the command update when the model
-needs an observation:
-
-```elixir
-alias BeamWeaver.Core.Message
-alias BeamWeaver.Graph.Command
-
-set_user_name =
-  Tool.from_function!(
-    name: "set_user_name",
-    description: "Set the user's name in state.",
-    input_schema: %{
-      "type" => "object",
-      "properties" => %{
-        "new_name" => %{"type" => "string"},
-        "tool_call_id" => %{"type" => "string"}
-      },
-      "required" => ["new_name", "tool_call_id"]
-    },
-    injected: [tool_call_id: :tool_call_id],
-    handler: fn input, _opts ->
-      name = input["new_name"] || input[:new_name]
-      call_id = input[:tool_call_id] || input["tool_call_id"]
-
-      %Command{
-        update: %{
-          user_name: name,
-          messages: [Message.tool("User name set to #{name}.", tool_call_id: call_id)]
-        }
-      }
-    end
-  )
-```
-
-If multiple tools update the same state field in parallel, define graph reducers
-for that field.
-
-### Return Direct
-
-Use `return_direct: true` when a successful tool result should stop the agent
-loop after the tool observation:
-
-```elixir
-Tool.from_function!(
-  name: "finish",
-  description: "Return the final answer.",
-  input_schema: %{
-    "type" => "object",
-    "properties" => %{"answer" => %{"type" => "string"}},
-    "required" => ["answer"]
-  },
-  return_direct: true,
-  handler: fn input, _opts -> input["answer"] || input[:answer] end
-)
-```
-
-## Error Handling
-
-Tools return tagged errors for recoverable failures:
-
-```elixir
-{:error, %BeamWeaver.Core.Error{type: :tool_exception}}
-```
-
-You can let the error bubble, or format it as model-visible content:
-
-```elixir
-Tool.from_function!(
-  name: "fragile_lookup",
-  description: "Lookup that can fail.",
-  input_schema: %{"type" => "object", "required" => []},
-  handle_tool_error: fn error -> "Lookup failed: #{error.message}" end,
-  handle_validation_error: true,
-  handler: fn _input, _opts -> raise "network unavailable" end
-)
-```
-
-When invoked as a tool-call map, handled errors become
-`%BeamWeaver.Core.Message{role: :tool, status: :error}` with the original
-`tool_call_id`.
-
-At the agent boundary, use middleware:
-
-```elixir
-middleware do
-  use BeamWeaver.Agent.Middleware.ToolRetry,
-   max_retries: 2,
-   on_failure: :continue
-end
-```
-
-For custom behavior, implement `wrap_tool_call/2` middleware:
-
-```elixir
-defmodule MyApp.ToolErrors do
-  @behaviour BeamWeaver.Agent.Middleware
-
-  alias BeamWeaver.Agent.ToolCallRequest
-  alias BeamWeaver.Core.Message
-
-  def wrap_tool_call(%ToolCallRequest{} = request, handler) do
-    case handler.(request) do
-      {:error, error} ->
-        call_id = Map.get(request.tool_call, :id) || Map.get(request.tool_call, "id")
-
-        Message.tool("Tool error: #{error.message}",
-          tool_call_id: call_id
-        )
-
-      other ->
-        other
-    end
-  end
-end
-```
-
-{% hint style="info" %}
-**Middleware Instead Of Decorators**
-
-LangChain demonstrates tool error handling with decorator helpers such as
-`@wrap_tool_call`. BeamWeaver uses middleware modules and structs. The hook is
-the same lifecycle point, but the implementation is explicit data in the agent
-spec and composes with OTP supervision, telemetry, retries, and graph commands.
-{% endhint %}
-
-## Dynamic Tools
-
-Agents can filter or add tools at the model-call boundary:
-
-```elixir
-middleware do
-  use BeamWeaver.Agent.Middleware.ToolSelection,
-   allow: ["public_search"],
-   deny: ["delete_data"],
-   tags: [:support],
-   tools: fn request ->
-     runtime = request.runtime || %{}
-     context = Map.get(runtime, :context) || %{}
-     authenticated? = Map.get(context, :authenticated?) || Map.get(context, "authenticated?")
-
-     if authenticated? do
-       [MyApp.Tools.PrivateSearch]
-     else
-       []
-     end
-   end
-end
-```
-
-When tools are added dynamically, pair model-time registration with tool-time
-routing. A `wrap_model_call/2` hook exposes the tool to the model, and
-`wrap_tool_call/2` can provide the concrete tool when execution starts. See
-[Agents](agents.md) for the full runtime-registration example.
-
-## Provider Rendering And Model Binding
-
-Bind tools to a standalone model:
-
-```elixir
-model_with_tools =
-  BeamWeaver.Models.bind_tools(model, [search_database],
-    tool_choice: :auto,
-    parallel_tool_calls: true
-  )
-```
-
-Render provider schemas directly when building provider-specific requests:
-
-```elixir
-{:ok, openai_tool} = BeamWeaver.Tool.Renderer.openai_tool(search_database, strict: true)
-{:ok, anthropic_tool} = BeamWeaver.Tool.Renderer.anthropic_tool(search_database)
-```
-
-Provider renderers strip injected fields from schemas and validate provider-safe
-names. OpenAI strict rendering closes object schemas and makes every declared
-property required; Google rendering sanitizes Gemini function declarations by
-dereferencing local `$ref` values and removing unsupported JSON Schema keywords.
-
-## Prebuilt Tools
-
-BeamWeaver includes a small set of native tools that are useful in agents and
-graphs.
-
-### File Search
-
-Search a retriever or local filesystem roots:
-
-```elixir
-tool =
-  BeamWeaver.Tools.FileSearch.new(
-    roots: ["docs"],
-    include: ["**/*.md"],
-    max_results: 5,
-    query_mode: :literal
-  )
-```
-
-Retrievers can also become tools:
-
-```elixir
-tool =
-  BeamWeaver.Retriever.as_tool(retriever,
-    name: "knowledge_search",
-    response_format: :content_and_artifact
-  )
-```
-
-### Shell
-
-Shell access is policy-governed. The policy allow list is required:
-
-```elixir
-tool =
-  BeamWeaver.Tools.Shell.new(
-    policy: [
-      allow: ["git status", "mix test"],
-      cwd: File.cwd!(),
-      timeout: 10_000,
-      max_output_bytes: 20_000
-    ]
-  )
-```
-
-Use narrow allow rules and prefer deterministic commands. Session-backed shell
-tools can use graph state to keep a supervised shell session.
-String allow rules match a single command prefix, require a command boundary,
-and reject unquoted shell chaining such as `;`, `&&`, pipes, or command
-substitution. Use an anchored regex only when a specific compound command is
-intended.
-
-### Todo
-
-`BeamWeaver.Tools.Todo` updates explicit agent state with graph commands:
-
-```elixir
-tool = BeamWeaver.Tools.Todo.new(state_key: :todos)
-```
-
-It injects state and the tool call ID, updates the TODO list, and returns a tool
-message in the command update.
-
-### Toolkits
-
-Group tools with `BeamWeaver.ToolKit`:
-
-```elixir
-defmodule MyApp.SupportTools do
-  @behaviour BeamWeaver.ToolKit
-
-  def tools(_opts) do
-    [MyApp.Tools.SearchDatabase, BeamWeaver.Tools.Todo.new()]
-  end
-end
-
-{:ok, tools} = BeamWeaver.Tool.Converter.to_tools(MyApp.SupportTools)
-```
-
-Several Deep Agents-style capabilities are also exposed as normal toolkits
-when you want just the tools without the corresponding prompt or state
-middleware:
-
-```elixir
-BeamWeaver.Tools.Todo.tools(name: "write_todos")
-BeamWeaver.Tools.Filesystem.tools(backend: BeamWeaver.Filesystem.State.new())
-BeamWeaver.Tools.Subagents.tools(model: model, subagents: subagent_specs)
-```
-
-For the full behavior, prefer the matching middleware:
-`BeamWeaver.Agent.Middleware.TodoList`,
-`BeamWeaver.Agent.Middleware.Filesystem`, and
-`BeamWeaver.Agent.Middleware.Subagents`.
-
-{% hint style="warning" %}
-**Prebuilt Scope**
-
-LangChain has many Python integration packages for search vendors, databases,
-browsers, code interpreters, and SaaS APIs. BeamWeaver keeps prebuilt tools
-small and native. Product-specific integrations should be ordinary Elixir
-modules that implement `BeamWeaver.Core.Tool`, use supervised clients, and
-expose explicit schemas.
-{% endhint %}
-
-## Server-Side Provider Tools
-
-Some model providers execute tools inside the provider request. Those are
-provider request declarations, not local `BeamWeaver.Core.Tool` implementations.
-
-OpenAI:
-
-```elixir
-tools = [
-  BeamWeaver.OpenAI.ToolCalling.web_search(),
-  BeamWeaver.OpenAI.ToolCalling.code_interpreter(%{"type" => "auto"}),
-  BeamWeaver.OpenAI.ToolCalling.file_search(["vs_123"]),
-  BeamWeaver.OpenAI.ToolCalling.apply_patch()
-]
-
-BeamWeaver.Core.ChatModel.invoke(model, "Find current release notes.", tools: tools)
-```
-
-Anthropic:
-
-```elixir
-tools = [
-  BeamWeaver.Anthropic.Tools.web_search(),
-  BeamWeaver.Anthropic.Tools.code_execution()
-]
-
-BeamWeaver.Core.ChatModel.invoke(model, "Search and summarize.", tools: tools)
-```
-
-Google:
-
-```elixir
-tools = [
-  BeamWeaver.Google.Tools.google_search(),
-  BeamWeaver.Google.Tools.url_context(),
-  BeamWeaver.Google.Tools.code_execution()
-]
-
-BeamWeaver.Core.ChatModel.invoke(model, "Search and summarize.", tools: tools)
-```
-
-xAI:
-
-```elixir
-tools = [
-  BeamWeaver.XAI.Tools.web_search(search_depth: :deep),
-  BeamWeaver.XAI.Tools.x_search(),
-  BeamWeaver.XAI.Tools.code_execution(),
-  BeamWeaver.XAI.Tools.file_search()
-]
-
-BeamWeaver.Core.ChatModel.invoke(model, "Search and summarize.", tools: tools)
-```
-
-For xAI Chat Completions search tools, use `BeamWeaver.XAI.Tools.live_search/1`.
-
-Server-side tool calls and results are represented as message content blocks and
-response metadata. There is no local `ToolNode` execution step for work the
-provider already performed.
+## Built-in tools
+
+Capability declarations add coordinated tools and instructions: filesystem
+operations, task lists, skill discovery and subagent delegation. See
+[Deep Agents](deep_agents.md), [Filesystem](filesystem.md),
+[Retrieval](retrieval.md) and [Sandboxes](sandboxes.md).
+
+## Call a tool directly
+
+`BeamWeaver.Core.Tool.invoke/3` accepts argument maps or a tool-call value.
+With a tool call, it correlates the returned tool message automatically.
+[Messages](messages.md#tool-calls-and-tool-results) shows a manual round trip.
+[Testing](testing.md) covers direct tool tests and scripted agent tests.

@@ -1,6 +1,12 @@
 defmodule BeamWeaver.RetrievalPolicy do
-  @moduledoc """
-  Retrieval policy shared by retrievers, vectorstores, and file-search tools.
+  @moduledoc ~S"""
+  Validated search defaults for retrievers and file-search tools.
+
+  Defaults are k: 4, similarity search, an empty metadata filter, no score
+  threshold and MMR weight 0.5. Search type can be similarity, similarity_score
+  or mmr. k must be positive, filters maps and MMR weight between zero and one.
+  Constructors return tagged results; new! raises on invalid settings.
+  A policy chooses retrieval behavior, not authorization or relevance quality.
   """
 
   alias BeamWeaver.Core.Error
@@ -22,9 +28,7 @@ defmodule BeamWeaver.RetrievalPolicy do
           mmr_lambda: number()
         }
 
-  def new(opts \\ [])
-  def new(%__MODULE__{} = policy), do: validate(policy)
-  def new(opts), do: Policy.build(__MODULE__, opts, @fields, &validate/1)
+  def new(opts \\ []), do: Policy.build(__MODULE__, opts, @fields, &validate/1)
 
   def new!(opts \\ []), do: opts |> new() |> Policy.bang()
 

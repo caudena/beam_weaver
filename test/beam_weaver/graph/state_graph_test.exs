@@ -18,7 +18,7 @@ defmodule BeamWeaver.Graph.StateGraphTest do
     assert {:error,
             %{
               type: :invalid_graph,
-              message: "graph contains invalid node callables",
+              message: "graph contains invalid nodes",
               details: %{invalid: [%{node: "bad", callable: ":not_a_node"}]}
             }} = Graph.compile(graph)
   end
@@ -225,7 +225,6 @@ defmodule BeamWeaver.Graph.StateGraphTest do
   end
 
   test "node defer metadata is inspectable without changing the public scheduler contract" do
-    # Upstream reference:
     graph =
       Graph.new(name: "DeferredMetadataGraph")
       |> Graph.add_node(:start, fn _state -> %{started: true} end)

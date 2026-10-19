@@ -1,10 +1,18 @@
 defmodule BeamWeaver.Agent.CapabilityProfile do
-  @moduledoc "DeepAgents harness behavior profile."
+  @moduledoc """
+  Per-model tuning for a deep agent: system prompt text, hidden tools, tool
+  descriptions, extra middleware and general-purpose subagent settings.
+
+  An agent applies a profile with the `capability_profile` declaration:
+  `capability_profile :auto` uses `for_model/2` for the agent's model, and
+  `capability_profile profile` uses the one you give. See
+  [Capability Profiles](profiles.md).
+  """
 
   alias BeamWeaver.Agent.CapabilityProfileConfig
   alias BeamWeaver.Agent.GeneralPurposeSubagentProfile
-  alias BeamWeaver.Agent.ModelResolver
   alias BeamWeaver.Agent.ProfileRegistry
+  alias BeamWeaver.MapShape
 
   @registry_key {__MODULE__, :registry}
 
@@ -30,14 +38,12 @@ defmodule BeamWeaver.Agent.CapabilityProfile do
     |> then(&struct(__MODULE__, &1))
   end
 
-  def builtin(nil), do: new(name: :default)
-  def builtin(:default), do: new(name: :default)
+  def builtin(name) when name in [nil, :default], do: new(name: :default)
 
   def builtin(:anthropic) do
     new(
       name: :anthropic,
-      prompt_suffix: "Use tools carefully and keep intermediate artifacts in the filesystem.",
-      default_subagent?: true
+      prompt_suffix: "Use tools carefully and keep intermediate artifacts in the filesystem."
     )
   end
 
@@ -66,20 +72,18 @@ defmodule BeamWeaver.Agent.CapabilityProfile do
     get_capability_profile(other) || new(name: other)
   end
 
-  @doc "Returns built-in harness profile keys."
+  @doc "Returns built-in capability profile keys."
   @spec builtin_keys() :: [String.t()]
   def builtin_keys, do: Map.keys(builtin_profiles()) |> Enum.sort()
 
-  @doc "Registers or merges a harness profile under a provider or provider:model key."
+  @doc "Registers or merges a capability profile under a provider or provider:model key."
   @spec register_capability_profile(String.t() | atom(), __MODULE__.t() | term()) :: :ok
   def register_capability_profile(key, profile) do
-    incoming = builtin(profile)
-
-    ProfileRegistry.register(@registry_key, key, incoming, exact_profiles(), &merge/2)
+    ProfileRegistry.register(@registry_key, builtin_profiles(), key, builtin(profile), &merge/2)
   end
 
   @doc """
-  Looks up a harness profile for a provider or provider:model spec.
+  Looks up a capability profile for a provider or provider:model spec.
 
   Exact model profiles are layered on top of provider-level profiles.
   Malformed specs return `nil` instead of falling back to the provider half.
@@ -88,51 +92,25 @@ defmodule BeamWeaver.Agent.CapabilityProfile do
   def get_capability_profile(nil), do: nil
 
   def get_capability_profile(spec) when is_atom(spec) or is_binary(spec) do
-    ProfileRegistry.lookup(spec, exact_profiles(), &merge/2)
+    ProfileRegistry.lookup(@registry_key, builtin_profiles(), spec, &merge/2)
   end
 
-  @doc "Returns the harness profile that best matches a raw or resolved model."
+  @doc "Returns the capability profile that best matches a raw or resolved model."
   @spec for_model(term(), String.t() | nil) :: __MODULE__.t()
-  def for_model(model, spec \\ nil)
-
-  def for_model(_model, spec) when is_binary(spec) do
-    get_capability_profile(spec) || new(name: :default)
-  end
-
-  def for_model(spec, nil) when is_binary(spec),
-    do: get_capability_profile(spec) || new(name: :default)
-
-  def for_model(model, nil) do
-    identifier = ModelResolver.get_model_identifier(model)
-    provider = ModelResolver.get_model_provider(model)
-
-    cond do
-      provider && identifier && not String.contains?(identifier, ":") ->
-        get_capability_profile("#{provider}:#{identifier}") ||
-          get_capability_profile(provider) ||
-          new(name: :default)
-
-      identifier && String.contains?(identifier, ":") ->
-        get_capability_profile(identifier) || new(name: :default)
-
-      provider ->
-        get_capability_profile(provider) || new(name: :default)
-
-      true ->
-        new(name: :default)
-    end
-  end
+  def for_model(model, spec \\ nil),
+    do: ProfileRegistry.for_model(model, spec, &get_capability_profile/1) || new(name: :default)
 
   @doc "Materializes the profile middleware list, invoking a zero-arity factory if present."
   @spec materialize_extra_middleware(__MODULE__.t()) :: [term()]
-  def materialize_extra_middleware(%__MODULE__{middleware: middleware})
-      when is_function(middleware, 0),
-      do: middleware.() |> List.wrap()
+  def materialize_extra_middleware(%__MODULE__{middleware: middleware}), do: resolve_middleware(middleware)
 
-  def materialize_extra_middleware(%__MODULE__{middleware: middleware}),
-    do: List.wrap(middleware)
+  @doc """
+  Merges `override` into `base`.
 
-  @doc "Merges two harness profiles with additive Python DeepAgents semantics."
+  Prompt texts set in `override` win, tool descriptions and middleware merge by
+  tool name and middleware module (`override` wins), and excluded tools and
+  middleware are combined.
+  """
   @spec merge(__MODULE__.t(), __MODULE__.t()) :: __MODULE__.t()
   def merge(%__MODULE__{} = base, %__MODULE__{} = override) do
     gp = merge_general_purpose(base.general_purpose_subagent, override.general_purpose_subagent)
@@ -152,8 +130,8 @@ defmodule BeamWeaver.Agent.CapabilityProfile do
 
   def to_map(%__MODULE__{} = profile) do
     %{}
-    |> ProfileRegistry.maybe_put(:base_system_prompt, profile.base_system_prompt)
-    |> ProfileRegistry.maybe_put(:system_prompt_suffix, profile.prompt_suffix)
+    |> MapShape.put_present(:base_system_prompt, profile.base_system_prompt)
+    |> MapShape.put_present(:system_prompt_suffix, profile.prompt_suffix)
     |> ProfileRegistry.maybe_put_map(:tool_description_overrides, profile.tool_descriptions)
     |> ProfileRegistry.maybe_put_list(:excluded_tools, profile.excluded_tools)
     |> ProfileRegistry.maybe_put_list(:excluded_middleware, profile.excluded_middleware)
@@ -207,33 +185,17 @@ defmodule BeamWeaver.Agent.CapabilityProfile do
           "## Codex-Specific Behavior\n\nAct as an autonomous senior engineer: gather context, implement, verify, and finish the task end-to-end when feasible.\n\n## Parallel Tool Use\n\nBatch independent searches and file reads before acting.\n\n## Plan Hygiene\n\nReconcile any TODO or plan items before finishing."
       )
 
-    %{
-      "anthropic" => anthropic_universal,
-      "anthropic:claude-haiku-4-5" => %{anthropic_universal | name: "anthropic:claude-haiku-4-5"},
-      "anthropic:claude-sonnet-4-6" => %{
-        anthropic_universal
-        | name: "anthropic:claude-sonnet-4-6"
-      },
-      "anthropic:claude-fable-5-1" => %{
-        anthropic_opus
-        | name: "anthropic:claude-fable-5-1"
-      },
-      "anthropic:claude-mythos-5-1" => %{
-        anthropic_opus
-        | name: "anthropic:claude-mythos-5-1"
-      },
-      "anthropic:claude-fable-5" => %{anthropic_opus | name: "anthropic:claude-fable-5"},
-      "anthropic:claude-mythos-5" => %{anthropic_opus | name: "anthropic:claude-mythos-5"},
-      "anthropic:claude-opus-4-8" => %{anthropic_opus | name: "anthropic:claude-opus-4-8"},
-      "anthropic:claude-opus-4-7" => %{anthropic_opus | name: "anthropic:claude-opus-4-7"},
-      "openai:gpt-5.5" => %{codex | name: "openai:gpt-5.5"},
-      "openai:gpt-5.4" => %{codex | name: "openai:gpt-5.4"},
-      "openai:gpt-5.4-mini" => %{codex | name: "openai:gpt-5.4-mini"}
-    }
-  end
+    named = [
+      {anthropic_universal, ~w(anthropic:claude-haiku-4-5 anthropic:claude-sonnet-4-6)},
+      {anthropic_opus, ~w(anthropic:claude-fable-5-1 anthropic:claude-mythos-5-1 anthropic:claude-fable-5)},
+      {anthropic_opus, ~w(anthropic:claude-mythos-5 anthropic:claude-opus-4-8 anthropic:claude-opus-4-7)},
+      {codex, ~w(openai:gpt-5.5 openai:gpt-5.4 openai:gpt-5.4-mini)}
+    ]
 
-  defp exact_profiles do
-    ProfileRegistry.exact_profiles(builtin_profiles(), @registry_key)
+    for {profile, keys} <- named,
+        key <- keys,
+        into: %{"anthropic" => anthropic_universal},
+        do: {key, %{profile | name: key}}
   end
 
   defp normalize_general_purpose(nil), do: %GeneralPurposeSubagentProfile{}
@@ -242,14 +204,10 @@ defmodule BeamWeaver.Agent.CapabilityProfile do
   defp normalize_general_purpose(profile) when is_map(profile) or is_list(profile),
     do: GeneralPurposeSubagentProfile.new(profile)
 
-  defp maybe_put_default_subagent(opts, %GeneralPurposeSubagentProfile{enabled: false}),
-    do: Map.put(opts, :default_subagent?, false)
+  defp maybe_put_default_subagent(opts, %GeneralPurposeSubagentProfile{enabled: enabled}) when is_boolean(enabled),
+    do: Map.put(opts, :default_subagent?, enabled)
 
-  defp maybe_put_default_subagent(opts, %GeneralPurposeSubagentProfile{enabled: true}),
-    do: Map.put(opts, :default_subagent?, true)
-
-  defp maybe_put_default_subagent(opts, _gp),
-    do: Map.put_new(opts, :default_subagent?, Map.get(opts, :default_subagent?, true))
+  defp maybe_put_default_subagent(opts, _gp), do: opts
 
   defp maybe_put_gp(map, %GeneralPurposeSubagentProfile{} = gp) do
     case GeneralPurposeSubagentProfile.to_map(gp) do
@@ -258,19 +216,9 @@ defmodule BeamWeaver.Agent.CapabilityProfile do
     end
   end
 
-  defp merge_general_purpose(
-         %GeneralPurposeSubagentProfile{} = base,
-         %GeneralPurposeSubagentProfile{} = override
-       ) do
-    GeneralPurposeSubagentProfile.new(
-      enabled: if(is_nil(override.enabled), do: base.enabled, else: override.enabled),
-      description: override.description || base.description,
-      system_prompt: override.system_prompt || base.system_prompt
-    )
-  end
-
   defp merge_general_purpose(nil, override), do: override
   defp merge_general_purpose(base, nil), do: base
+  defp merge_general_purpose(base, override), do: GeneralPurposeSubagentProfile.merge(base, override)
 
   defp merged_default_subagent?(_base, _override, %GeneralPurposeSubagentProfile{enabled: false}),
     do: false
@@ -314,7 +262,6 @@ defmodule BeamWeaver.Agent.CapabilityProfile do
   defp resolve_middleware(middleware), do: List.wrap(middleware)
 
   defp middleware_key(%module{}), do: module
-  defp middleware_key(%{__struct__: module}), do: module
   defp middleware_key(other), do: other
 
   defp union_terms(left, right) do

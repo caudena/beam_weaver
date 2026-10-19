@@ -5,66 +5,44 @@ defmodule BeamWeaver.Graph.Execution.ChannelCheckpoint do
   alias BeamWeaver.Graph.Channels.DeltaChannel
   alias BeamWeaver.Graph.Channels.DeltaSnapshot
   alias BeamWeaver.Graph.Execution.ChannelLookup
+  alias BeamWeaver.Graph.Execution.ChannelMerge
   alias BeamWeaver.Graph.StateGraph
 
   @spec checkpoint_channel_values(StateGraph.t(), map()) :: map()
-  def checkpoint_channel_values(%StateGraph{channels: channels} = graph, state) do
-    Enum.reduce(state, %{}, fn {key, value}, values ->
-      cond do
-        ChannelLookup.private_channel?(graph, key) or ChannelLookup.managed_key?(graph, key) ->
-          values
+  def checkpoint_channel_values(%StateGraph{} = graph, state) do
+    for {key, value} <- state, ChannelLookup.checkpointed_channel?(graph, key), reduce: %{} do
+      values ->
+        case ChannelLookup.channel_for(graph, key) do
+          nil ->
+            Map.put(values, key, value)
 
-        node_outputs_key?(key) ->
-          values
-
-        true ->
-          case ChannelLookup.channel_for(%StateGraph{channels: channels}, key) do
-            nil ->
-              Map.put(values, key, value)
-
-            channel ->
-              checkpoint = checkpoint_channel_value(channel, value)
-
-              if checkpoint == Channel.missing(),
-                do: values,
-                else: Map.put(values, key, checkpoint)
-          end
-      end
-    end)
+          channel ->
+            checkpoint = checkpoint_channel_value(channel, value)
+            if checkpoint == Channel.missing(), do: values, else: Map.put(values, key, checkpoint)
+        end
+    end
   end
 
   @spec checkpoint_snapshot_values(StateGraph.t(), map(), [term()]) :: map()
   def checkpoint_snapshot_values(%StateGraph{} = graph, state, channels_to_snapshot) do
     requested = MapSet.new(channels_to_snapshot, &to_string/1)
 
-    Enum.reduce(state, %{}, fn {key, value}, values ->
-      cond do
-        not MapSet.member?(requested, to_string(key)) ->
-          values
-
-        ChannelLookup.private_channel?(graph, key) ->
-          values
-
-        true ->
-          case ChannelLookup.channel_for(graph, key) do
-            %DeltaChannel{} -> Map.put(values, key, %DeltaSnapshot{value: value})
-            _other -> values
-          end
-      end
-    end)
+    for {key, value} <- state,
+        MapSet.member?(requested, to_string(key)),
+        ChannelLookup.checkpointed_channel?(graph, key),
+        match?(%DeltaChannel{}, ChannelLookup.channel_for(graph, key)),
+        into: %{},
+        do: {key, %DeltaSnapshot{value: value}}
   end
 
+  # The writes of the step to each delta channel, one list entry per write.
   @spec checkpoint_channel_deltas(StateGraph.t(), map()) :: map()
   def checkpoint_channel_deltas(%StateGraph{channels: channels} = graph, step_update) do
-    Enum.reduce(channels, %{}, fn {key, channel}, deltas ->
-      case {ChannelLookup.private_channel?(graph, key), channel, state_channel_value(step_update, key)} do
-        {false, %DeltaChannel{}, {:ok, value}} ->
-          Map.put(deltas, to_string(key), List.wrap(value))
-
-        _other ->
-          deltas
-      end
-    end)
+    for {key, %DeltaChannel{}} <- channels,
+        ChannelLookup.checkpointed_channel?(graph, key),
+        {:ok, value} <- [state_channel_value(step_update, key)],
+        into: %{},
+        do: {to_string(key), ChannelMerge.step_writes(value)}
   end
 
   defp checkpoint_channel_value(channel, value) do
@@ -75,18 +53,6 @@ defmodule BeamWeaver.Graph.Execution.ChannelCheckpoint do
   end
 
   defp state_channel_value(state, key) do
-    cond do
-      Map.has_key?(state, key) ->
-        {:ok, Map.fetch!(state, key)}
-
-      Map.has_key?(state, to_string(key)) ->
-        {:ok, Map.fetch!(state, to_string(key))}
-
-      true ->
-        :error
-    end
+    with :error <- Map.fetch(state, key), do: Map.fetch(state, to_string(key))
   end
-
-  defp node_outputs_key?(key) when key in [:__node_outputs__, "__node_outputs__"], do: true
-  defp node_outputs_key?(_key), do: false
 end

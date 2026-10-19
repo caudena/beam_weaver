@@ -3,14 +3,13 @@ defmodule BeamWeaver.Tracing.ContextTest do
 
   alias BeamWeaver.Tracing
   alias BeamWeaver.Tracing.Context
-  alias BeamWeaver.Runnable
 
   setup do
-    Tracing.reset()
+    Tracing.clear()
     Context.clear()
 
     on_exit(fn ->
-      Tracing.reset()
+      Tracing.clear()
       Context.clear()
     end)
 
@@ -28,17 +27,20 @@ defmodule BeamWeaver.Tracing.ContextTest do
       )
 
     task =
-      Tracing.async(supervisor, fn ->
-        {:ok, child} =
-          Tracing.start_run("model call",
-            kind: :model,
-            tags: [:model],
-            metadata: %{shared: "child"}
-          )
+      Tracing.async(
+        fn ->
+          {:ok, child} =
+            Tracing.start_run("model call",
+              kind: :model,
+              tags: [:model],
+              metadata: %{shared: "child"}
+            )
 
-        Tracing.finish_run(child)
-        child.id
-      end)
+          Tracing.finish_run(child)
+          child.id
+        end,
+        supervisor: supervisor
+      )
 
     child_id = Task.await(task)
     Tracing.finish_run(parent)
@@ -121,22 +123,5 @@ defmodule BeamWeaver.Tracing.ContextTest do
     end)
 
     assert Tracing.capture_context().run_id == second.id
-  end
-
-  test "listener wrapped runnables inherit the active trace context" do
-    {:ok, parent} = Tracing.start_run("parent", metadata: %{thread_id: "thread-1"})
-
-    chain =
-      Runnable.lambda(fn input -> {:ok, String.upcase(input)} end, name: :inner)
-      |> Runnable.with_listeners()
-
-    assert {:ok, "BEAM"} = Runnable.invoke(chain, "beam")
-    assert {:ok, %{run: tree_parent, children: [listener_run]}} = Tracing.get_tree(parent.id)
-
-    assert tree_parent.id == parent.id
-    assert listener_run.run.name == "inner"
-    assert listener_run.run.parent_id == parent.id
-    assert listener_run.run.trace_id == parent.trace_id
-    assert listener_run.run.metadata == %{thread_id: "thread-1"}
   end
 end

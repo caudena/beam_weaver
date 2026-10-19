@@ -14,25 +14,37 @@ defmodule BeamWeaver.Models.UsageCost do
   calls without a timestamp use the profile's current canonical rates.
   `long_context_pricing` overrides rates for the entire request when normalized
   total input, including cache reads and writes, exceeds its `threshold_tokens`.
+  The equivalent `higher_context_*` profile fields are also supported, including
+  input/output multipliers. Thresholds are exclusive unless the profile sets
+  `higher_context_threshold_inclusive: true` (xAI).
   """
 
-  alias BeamWeaver.MapAccess
   alias BeamWeaver.Models.Profile
 
   @million 1_000_000
-  @cache_write_dimensions ~w(
-    cache_write_5m_tokens
-    cache_write_1h_tokens
-    cache_write_30m_tokens
-  )
-  @exact_dimensions ~w(input_tokens cached_input_tokens output_tokens) ++
-                      @cache_write_dimensions
+  @cache_write_dimensions [:cache_write_5m_tokens, :cache_write_1h_tokens, :cache_write_30m_tokens]
+  @exact_dimension_keys Map.new(
+                          [:input_tokens, :cached_input_tokens, :output_tokens | @cache_write_dimensions],
+                          &{Atom.to_string(&1), &1}
+                        )
+
+  # Raw provider usage arrives as JSON; known keys are mapped to atoms once.
+  @usage_keys ~w(input_tokens prompt_tokens output_tokens completion_tokens
+                 prompt_cache_hit_tokens cache_hit_tokens cached_tokens
+                 prompt_cache_miss_tokens cache_miss_tokens uncached_input_tokens
+                 cache_write_tokens cache_creation_tokens cache_creation_input_tokens
+                 cache_write_5m_tokens ephemeral_5m_input_tokens cache_write_1h_tokens
+                 ephemeral_1h_input_tokens cache_write_30m_tokens input_token_details
+                 prompt_tokens_details input_tokens_details cache_read cache_miss uncached
+                 cache_write cache_creation cache_write_5m cache_write_1h cache_write_30m)a
+  @usage_key_by_name Map.new(@usage_keys, &{Atom.to_string(&1), &1})
 
   @spec calculate(Profile.t() | map(), map(), keyword()) :: map() | nil
   def calculate(profile, usage, opts \\ [])
 
   def calculate(profile, usage, opts) when is_map(usage) and is_list(opts) do
     at = Keyword.get(opts, :at)
+    usage = atomize_usage(usage)
 
     pricing =
       profile
@@ -87,10 +99,15 @@ defmodule BeamWeaver.Models.UsageCost do
   `unit_price_usd_micros`; the sum is rounded half-up once at the end.
   """
   @spec calculate_usd_micros(map(), map()) :: {:ok, map()} | {:error, atom()}
-  def calculate_usd_micros(pricing, usage) when is_map(pricing) and is_map(usage) do
-    with :ok <- exact_profile(pricing),
-         {:ok, counts} <- exact_usage(usage, pricing),
-         {:ok, dimensions} <- exact_dimensions(pricing, counts) do
+  def calculate_usd_micros(
+        %{schema_version: 1, currency: "USD", rounding: "half_up", dimensions: [_ | _]} = pricing,
+        usage
+      )
+      when is_map(usage) do
+    usage = atomize_usage(usage)
+
+    with {:ok, counts} <- exact_usage(usage, pricing),
+         {:ok, dimensions} <- exact_dimensions(pricing.dimensions, counts) do
       {numerator, denominator} =
         Enum.reduce(dimensions, {0, 1}, fn dimension, total ->
           add_fraction(total, {dimension.numerator, dimension.denominator})
@@ -101,28 +118,12 @@ defmodule BeamWeaver.Models.UsageCost do
          cost_micros: round_half_up(numerator, denominator),
          currency: "USD",
          dimensions: dimensions,
-         rounding: %{
-           rule: "half_up",
-           numerator: numerator,
-           denominator: denominator
-         }
+         rounding: %{rule: "half_up", numerator: numerator, denominator: denominator}
        }}
     end
   end
 
   def calculate_usd_micros(_pricing, _usage), do: {:error, :invalid_pricing_profile}
-
-  defp exact_profile(pricing) do
-    if MapAccess.get(pricing, :schema_version) == 1 and
-         MapAccess.get(pricing, :currency) == "USD" and
-         MapAccess.get(pricing, :rounding) == "half_up" and
-         is_list(MapAccess.get(pricing, :dimensions)) and
-         MapAccess.get(pricing, :dimensions) != [] do
-      :ok
-    else
-      {:error, :invalid_pricing_profile}
-    end
-  end
 
   defp exact_usage(usage, pricing) do
     input = token_count(usage, [:input_tokens, :prompt_tokens])
@@ -134,43 +135,31 @@ defmodule BeamWeaver.Models.UsageCost do
     if is_integer(input) and is_integer(output) and is_integer(cached) and
          Enum.all?(cache_writes, fn {_name, count} -> is_integer(count) end) and
          accounted_input <= input do
-      {:ok,
-       cache_writes
-       |> Map.merge(%{
-         input_tokens: input,
-         cached_input_tokens: cached,
-         output_tokens: output
-       })}
+      {:ok, Map.merge(cache_writes, %{input_tokens: input, cached_input_tokens: cached, output_tokens: output})}
     else
       {:error, :invalid_usage}
     end
   end
 
-  defp exact_dimensions(pricing, counts) do
-    dimensions = MapAccess.get(pricing, :dimensions)
-
-    separated_dimensions =
-      dimensions
-      |> Enum.map(&MapAccess.get(&1, :name))
-      |> MapSet.new()
+  defp exact_dimensions(dimensions, counts) do
+    priced = MapSet.new(dimensions, &dimension_field(&1, :name))
 
     dimensions
     |> Enum.reduce_while({MapSet.new(), []}, fn dimension, {names, result} ->
-      name = MapAccess.get(dimension, :name)
-      unit_size = MapAccess.get(dimension, :unit_size)
-      unit_price = MapAccess.get(dimension, :unit_price_usd_micros)
+      name = dimension_field(dimension, :name)
+      unit_size = dimension_field(dimension, :unit_size)
+      unit_price = dimension_field(dimension, :unit_price_usd_micros)
 
-      if name in @exact_dimensions and not MapSet.member?(names, name) and
+      if Map.has_key?(@exact_dimension_keys, name) and not MapSet.member?(names, name) and
            is_integer(unit_size) and unit_size > 0 and is_integer(unit_price) and unit_price >= 0 do
-        count = dimension_count(name, counts, separated_dimensions)
-        numerator = count * unit_price
+        count = dimension_count(name, counts, priced)
 
         value = %{
           name: name,
           units: count,
           unit_size: unit_size,
           unit_price_usd_micros: unit_price,
-          numerator: numerator,
+          numerator: count * unit_price,
           denominator: unit_size
         }
 
@@ -185,22 +174,22 @@ defmodule BeamWeaver.Models.UsageCost do
     end
   end
 
-  defp dimension_count("input_tokens", counts, separated_dimensions) do
+  defp dimension_field(dimension, key) when is_map(dimension), do: Map.get(dimension, key)
+  defp dimension_field(_dimension, _key), do: nil
+
+  # Input that is priced through its own dimension is not billed again as input.
+  defp dimension_count("input_tokens", counts, priced) do
     separated =
-      ["cached_input_tokens" | @cache_write_dimensions]
-      |> Enum.filter(&MapSet.member?(separated_dimensions, &1))
-      |> Enum.reduce(0, fn name, total -> total + Map.fetch!(counts, String.to_atom(name)) end)
+      @exact_dimension_keys
+      |> Map.drop(["input_tokens", "output_tokens"])
+      |> Enum.filter(fn {name, _key} -> MapSet.member?(priced, name) end)
+      |> Enum.map(fn {_name, key} -> Map.fetch!(counts, key) end)
+      |> Enum.sum()
 
     counts.input_tokens - separated
   end
 
-  defp dimension_count("cached_input_tokens", counts, _dimensions),
-    do: counts.cached_input_tokens
-
-  defp dimension_count("output_tokens", counts, _dimensions), do: counts.output_tokens
-
-  defp dimension_count(name, counts, _dimensions) when name in @cache_write_dimensions,
-    do: Map.fetch!(counts, String.to_atom(name))
+  defp dimension_count(name, counts, _priced), do: Map.fetch!(counts, Map.fetch!(@exact_dimension_keys, name))
 
   defp add_fraction({left_numerator, left_denominator}, {right_numerator, right_denominator}) do
     numerator = left_numerator * right_denominator + right_numerator * left_denominator
@@ -211,10 +200,8 @@ defmodule BeamWeaver.Models.UsageCost do
 
   defp round_half_up(numerator, denominator), do: div(numerator * 2 + denominator, denominator * 2)
 
-  defp pricing(%Profile{extra: extra}) when is_map(extra), do: extra
-
   defp pricing(profile) when is_map(profile) do
-    case MapAccess.get(profile, :extra) do
+    case Map.get(profile, :extra) do
       extra when is_map(extra) -> extra
       _other -> profile
     end
@@ -224,10 +211,10 @@ defmodule BeamWeaver.Models.UsageCost do
 
   defp historical_pricing(pricing, %DateTime{} = at) do
     pricing
-    |> MapAccess.get(:pricing_history)
+    |> Map.get(:pricing_history)
     |> List.wrap()
     |> Enum.reduce(pricing, fn entry, current ->
-      case MapAccess.get(entry, :effective_at) do
+      case Map.get(entry, :effective_at) do
         nil ->
           merge_pricing_version(current, entry)
 
@@ -251,18 +238,18 @@ defmodule BeamWeaver.Models.UsageCost do
   defp merge_pricing_version(pricing, version) do
     pricing = merge_rates(pricing, version)
 
-    case MapAccess.fetch(version, :time_based_pricing) do
+    case Map.fetch(version, :time_based_pricing) do
       {:ok, schedule} -> Map.put(pricing, :time_based_pricing, schedule)
       :error -> pricing
     end
   end
 
   defp scheduled_pricing(pricing, %DateTime{} = at) do
-    case MapAccess.get(pricing, :time_based_pricing) do
+    case Map.get(pricing, :time_based_pricing) do
       schedule when is_map(schedule) ->
-        mode = if peak?(schedule, at), do: :peak, else: MapAccess.get(schedule, :default_mode)
+        mode = if peak?(schedule, at), do: :peak, else: Map.get(schedule, :default_mode)
 
-        case MapAccess.get(schedule, mode) do
+        case Map.get(schedule, mode) do
           rates when is_map(rates) -> merge_rates(pricing, rates)
           _other -> pricing
         end
@@ -275,52 +262,81 @@ defmodule BeamWeaver.Models.UsageCost do
   defp scheduled_pricing(pricing, _at), do: pricing
 
   defp long_context_pricing(pricing, usage) do
-    case MapAccess.get(pricing, :long_context_pricing) do
+    case Map.get(pricing, :long_context_pricing) do
       rates when is_map(rates) ->
-        threshold = MapAccess.get(rates, :threshold_tokens)
+        threshold = Map.get(rates, :threshold_tokens)
 
         if is_number(threshold) and input_tokens(usage) > threshold,
           do: merge_rates(pricing, rates),
           else: pricing
 
       _other ->
-        pricing
+        higher_context_pricing(pricing, input_tokens(usage))
+    end
+  end
+
+  @higher_context_keys [
+    input_price_per_mtok: :higher_context_input_price_per_mtok,
+    cached_input_price_per_mtok: :higher_context_cached_input_price_per_mtok,
+    output_price_per_mtok: :higher_context_output_price_per_mtok,
+    cache_write_5m_price_per_mtok: :higher_context_cache_write_5m_price_per_mtok,
+    cache_write_1h_price_per_mtok: :higher_context_cache_write_1h_price_per_mtok,
+    cache_write_30m_price_per_mtok: :higher_context_cache_write_30m_price_per_mtok
+  ]
+
+  defp higher_context_pricing(pricing, input_tokens) do
+    threshold = Map.get(pricing, :higher_context_pricing_threshold_tokens)
+    inclusive? = Map.get(pricing, :higher_context_threshold_inclusive, false)
+
+    if is_number(threshold) and (input_tokens > threshold or (inclusive? and input_tokens == threshold)) do
+      Enum.reduce(@higher_context_keys, pricing, fn {key, higher_key}, rates ->
+        multiplier_key =
+          if key == :output_price_per_mtok,
+            do: :higher_context_output_multiplier,
+            else: :higher_context_input_multiplier
+
+        price = number(pricing, key)
+        multiplier = number(pricing, multiplier_key)
+        higher_price = number(pricing, higher_key)
+
+        cond do
+          is_number(higher_price) -> Map.put(rates, key, higher_price)
+          is_number(price) and is_number(multiplier) -> Map.put(rates, key, price * multiplier)
+          true -> rates
+        end
+      end)
+    else
+      pricing
     end
   end
 
   defp merge_rates(pricing, rates) do
-    Enum.reduce(
-      [
+    Map.merge(
+      pricing,
+      Map.take(rates, [
         :input_price_per_mtok,
         :cached_input_price_per_mtok,
         :output_price_per_mtok,
         :cache_write_5m_price_per_mtok,
         :cache_write_1h_price_per_mtok,
         :cache_write_30m_price_per_mtok
-      ],
-      pricing,
-      fn key, merged ->
-        case MapAccess.fetch(rates, key) do
-          {:ok, value} -> Map.put(merged, key, value)
-          :error -> merged
-        end
-      end
+      ])
     )
   end
 
   defp peak?(schedule, at) do
     utc = at |> DateTime.to_unix(:second) |> DateTime.from_unix!(:second)
     minute = utc.hour * 60 + utc.minute
-    weekdays = MapAccess.get(schedule, :peak_iso_weekdays)
+    weekdays = Map.get(schedule, :peak_iso_weekdays)
     peak_day? = is_nil(weekdays) or Date.day_of_week(DateTime.to_date(utc)) in weekdays
 
     peak_day? and
       schedule
-      |> MapAccess.get(:peak_windows)
+      |> Map.get(:peak_windows)
       |> List.wrap()
       |> Enum.any?(fn window ->
-        start_minute = MapAccess.get(window, :start_minute)
-        end_minute = MapAccess.get(window, :end_minute)
+        start_minute = Map.get(window, :start_minute)
+        end_minute = Map.get(window, :end_minute)
 
         is_integer(start_minute) and is_integer(end_minute) and
           minute >= start_minute and minute < end_minute
@@ -403,43 +419,14 @@ defmodule BeamWeaver.Models.UsageCost do
     end
   end
 
-  defp default_cache_write_dimension(pricing) do
-    dimensions =
-      case MapAccess.get(pricing, :dimensions) do
-        dimensions when is_list(dimensions) ->
-          dimensions
-          |> Enum.map(&MapAccess.get(&1, :name))
-          |> Enum.filter(&(&1 in @cache_write_dimensions))
-          |> MapSet.new()
+  # The first priced TTL wins, in 5m, 1h, 30m order.
+  defp default_cache_write_dimension(pricing),
+    do: Enum.find(@cache_write_dimensions, &cache_write_priced?(pricing, &1))
 
-        _other ->
-          @cache_write_dimensions
-          |> Enum.filter(fn dimension ->
-            dimension
-            |> String.to_existing_atom()
-            |> cache_write_price_key()
-            |> then(&(not is_nil(number(pricing, &1))))
-          end)
-          |> MapSet.new()
-      end
+  defp cache_write_priced?(%{dimensions: dimensions}, dimension) when is_list(dimensions),
+    do: Enum.any?(dimensions, &(Map.get(&1, :name) == Atom.to_string(dimension)))
 
-    cond do
-      MapSet.member?(dimensions, "cache_write_30m_tokens") and MapSet.size(dimensions) == 1 ->
-        :cache_write_30m_tokens
-
-      MapSet.member?(dimensions, "cache_write_5m_tokens") ->
-        :cache_write_5m_tokens
-
-      MapSet.member?(dimensions, "cache_write_1h_tokens") ->
-        :cache_write_1h_tokens
-
-      MapSet.member?(dimensions, "cache_write_30m_tokens") ->
-        :cache_write_30m_tokens
-
-      true ->
-        nil
-    end
-  end
+  defp cache_write_priced?(pricing, dimension), do: number(pricing, cache_write_price_key(dimension)) != nil
 
   defp cache_write_costs(cache_writes, pricing, input_price) do
     cache_writes
@@ -454,7 +441,7 @@ defmodule BeamWeaver.Models.UsageCost do
   defp cache_write_price_key(:cache_write_30m_tokens), do: :cache_write_30m_price_per_mtok
 
   defp nested_token_count(usage, details_key, keys) do
-    case MapAccess.get(usage, details_key) do
+    case Map.get(usage, details_key) do
       details when is_map(details) -> token_count(details, keys)
       _other -> nil
     end
@@ -462,7 +449,7 @@ defmodule BeamWeaver.Models.UsageCost do
 
   defp token_count(map, keys) do
     Enum.find_value(keys, fn key ->
-      case MapAccess.get(map, key) do
+      case Map.get(map, key) do
         value when is_number(value) -> max(value, 0)
         _other -> nil
       end
@@ -470,11 +457,19 @@ defmodule BeamWeaver.Models.UsageCost do
   end
 
   defp number(map, key) do
-    case MapAccess.get(map, key) do
+    case Map.get(map, key) do
       value when is_number(value) -> value
       _other -> nil
     end
   end
 
   defp mtok_cost(tokens, price_per_mtok), do: tokens * price_per_mtok / @million
+
+  defp atomize_usage(usage) when is_map(usage),
+    do: Map.new(usage, fn {key, value} -> {usage_key(key), atomize_usage(value)} end)
+
+  defp atomize_usage(value), do: value
+
+  defp usage_key(key) when is_binary(key), do: Map.get(@usage_key_by_name, key, key)
+  defp usage_key(key), do: key
 end

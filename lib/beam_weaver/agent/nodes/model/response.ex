@@ -3,6 +3,7 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
 
   alias BeamWeaver.Agent.ExtendedModelResponse
   alias BeamWeaver.Agent.ModelRequest
+  alias BeamWeaver.Agent.ModelResolver
   alias BeamWeaver.Agent.ModelResponse
   alias BeamWeaver.Agent.ToolSet
   alias BeamWeaver.Agent.Usage
@@ -10,6 +11,7 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Graph.Command
+  alias BeamWeaver.Graph.Messages, as: GraphMessages
   alias BeamWeaver.Graph.Overwrite
   alias BeamWeaver.Transport.Redactor
 
@@ -72,13 +74,8 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
   end
 
   defp error_details(error) do
-    details =
-      case Map.get(error, :details) do
-        details when is_map(details) -> details
-        _other -> %{}
-      end
-
-    details
+    error
+    |> Map.get(:details)
     |> safe_details()
     |> Map.put_new(:reason, inspect(error))
   end
@@ -103,27 +100,20 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
     Map.put_new(details, :model_response, redact_and_clip(response))
   end
 
-  defp model_name(%{model: model}) when is_binary(model), do: model
+  # The name of the model a request goes to, as diagnostics and traces show it.
+  def model_name(model) when is_binary(model), do: model
+  def model_name(%{model: model}) when is_binary(model), do: model
 
-  defp model_name(model) do
-    module = if is_map(model), do: Map.get(model, :__struct__), else: nil
-
+  def model_name(%{__struct__: module} = model) do
     cond do
-      is_atom(module) and function_exported?(module, :model_name, 1) ->
-        module.model_name(model)
-
-      is_atom(module) and function_exported?(module, :model_id, 1) ->
-        module.model_id(model)
-
-      is_atom(module) ->
-        inspect(module)
-
-      true ->
-        inspect(model)
+      function_exported?(module, :model_name, 1) -> module.model_name(model)
+      function_exported?(module, :model_id, 1) -> module.model_id(model)
+      true -> inspect(module)
     end
-  rescue
-    _exception -> inspect(model)
   end
+
+  # A value that is no model, such as a map from middleware, can hold an API key.
+  def model_name(model), do: ModelResolver.describe(model)
 
   defp message_details(%Message{} = message) do
     %{
@@ -215,11 +205,7 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
 
   defp safe_detail_value(%Error{} = error), do: sanitize_error(error)
 
-  defp safe_detail_value(%{__struct__: _module} = value) do
-    if serializable?(value), do: value, else: inspect(value)
-  end
-
-  defp safe_detail_value(value) when is_map(value) do
+  defp safe_detail_value(value) when is_map(value) and not is_struct(value) do
     Map.new(value, fn {key, nested} -> {safe_detail_key(key), safe_detail_value(nested)} end)
   end
 
@@ -237,22 +223,30 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
   end
 
   defp serializable?(value) do
-    match?({:ok, _encoded}, BeamWeaver.Serialization.dump_json_value(value))
+    match?({:ok, _encoded}, BeamWeaver.Serialization.dump_value(value))
   end
 
-  def to_update(%ModelResponse{commands: commands} = response) when commands != [] do
-    base_update = base_response_update(response)
-    {pre_response_commands, post_response_commands} = Enum.split_with(commands, &message_overwrite_command?/1)
+  # An overwrite of the messages rebuilds the thread, and the graph drops the
+  # other message writes of its step. So the response's other message writes,
+  # and its reply, go into the rebuilt thread; `:thread` is the thread they
+  # were written against.
+  def to_update(%ModelResponse{commands: commands} = response, opts) when commands != [] do
+    base_update = base_response_update(response, opts)
 
-    {pre_response_commands, base_update} =
-      prepare_message_overwrite_commands(pre_response_commands, base_update, response.messages)
+    case Enum.split_with(commands, &message_overwrite_command?/1) do
+      {[], commands} ->
+        [base_update | commands]
 
-    pre_response_commands ++ [base_update] ++ post_response_commands
+      {overwrites, commands} ->
+        {commands, writes} = Enum.map_reduce(commands, [], &take_message_writes/2)
+        thread = Keyword.get(opts, :thread) || []
+
+        Enum.map(overwrites, &rebuild_thread(&1, writes, thread, response.messages)) ++
+          [Map.delete(base_update, :messages) | commands]
+    end
   end
 
-  def to_update(%ModelResponse{} = response), do: base_response_update(response)
-
-  def to_update({:ok, response}), do: to_update(response)
+  def to_update(%ModelResponse{} = response, opts), do: base_response_update(response, opts)
 
   def attach_runtime_metadata(%ModelResponse{} = response, %ToolSet{} = tool_set) do
     %{response | tool_set: tool_set, usage: Usage.from_messages(response.messages)}
@@ -268,33 +262,50 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
     end
   end
 
+  # Without the steps for its tool calls, a run would stop with a recursion
+  # limit error halfway through a tool round. The model's reply becomes an
+  # answer that says so instead, while the run can still finish.
+  @default_step_costs %{tool_round: 2, return_direct: 1}
+
   def maybe_limit_steps_response(
         %ModelRequest{} = request,
-        %ModelResponse{messages: [%Message{} = message | _rest]} = response
+        %ModelResponse{messages: [%Message{} = message | rest]} = response,
+        step_costs
       ) do
-    if more_steps_needed?(request, message) do
+    if more_steps_needed?(request, message, rest, step_costs || @default_step_costs) do
       %ModelResponse{messages: [step_limit_message(message)]}
     else
       response
     end
   end
 
-  def maybe_limit_steps_response(_request, response), do: response
+  def maybe_limit_steps_response(_request, response, _step_costs), do: response
 
-  defp base_response_update(%ModelResponse{} = response) do
-    %{messages: response.messages}
-    |> maybe_put_structured_response(response.structured_response)
+  # A `:history` the model node repaired replaces the thread's messages, with
+  # the reply after it.
+  defp base_response_update(%ModelResponse{} = response, opts) do
+    messages =
+      case Keyword.get(opts, :history) do
+        nil -> response.messages
+        history -> Overwrite.new(history ++ response.messages)
+      end
+
+    %{messages: messages}
+    |> put_structured_response(response.structured_response, Keyword.get(opts, :structured_output, false))
     |> maybe_put_tool_set(response.tool_set)
     |> maybe_put_usage(response.usage)
   end
 
-  defp maybe_put_structured_response(update, nil), do: update
-
-  defp maybe_put_structured_response(update, value),
-    do: Map.put(update, :structured_response, value)
+  # An agent with a response format clears an earlier turn's answer when this
+  # call made none, so a checkpointed thread can't end on the old one.
+  defp put_structured_response(update, nil, true), do: Map.put(update, :structured_response, nil)
+  defp put_structured_response(update, nil, false), do: update
+  defp put_structured_response(update, value, _structured_output), do: Map.put(update, :structured_response, value)
 
   defp maybe_put_tool_set(update, nil), do: update
-  defp maybe_put_tool_set(update, %ToolSet{} = tool_set), do: Map.put(update, :tool_set, tool_set)
+
+  defp maybe_put_tool_set(update, %ToolSet{} = tool_set),
+    do: Map.merge(update, %{tool_set: tool_set, tool_set_names: ToolSet.names(tool_set)})
 
   defp maybe_put_usage(update, nil), do: update
   defp maybe_put_usage(update, %Usage{} = usage), do: Map.put(update, :usage, usage)
@@ -302,7 +313,7 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
   defp append_response_command(%ModelResponse{} = response, %Command{} = command) do
     %{
       response
-      | commands: response.commands ++ [%{command | update: normalize_command_update(command.update)}]
+      | commands: response.commands ++ [%{command | update: if(is_map(command.update), do: command.update, else: %{})}]
     }
   end
 
@@ -315,45 +326,38 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
 
   defp message_overwrite_command?(_command), do: false
 
-  defp prepare_message_overwrite_commands([], base_update, _messages), do: {[], base_update}
-
-  defp prepare_message_overwrite_commands(commands, base_update, messages) when is_list(messages) do
-    commands = Enum.map(commands, &append_messages_to_overwrite(&1, messages))
-    {commands, Map.delete(base_update, :messages)}
-  end
-
-  defp append_messages_to_overwrite(%Command{update: update} = command, messages)
-       when is_map(update) and messages != [] do
+  defp take_message_writes(%Command{update: update} = command, writes) when is_map(update) do
     case fetch_update_value(update, :messages) do
-      {:ok, key, value} ->
-        case Overwrite.get(value) do
-          {:ok, overwritten} ->
-            %{command | update: Map.put(update, key, Overwrite.new(List.wrap(overwritten) ++ messages))}
-
-          :error ->
-            command
-        end
-
-      :error ->
-        command
+      {:ok, key, messages} -> {%{command | update: Map.delete(update, key)}, writes ++ List.wrap(messages)}
+      :error -> {command, writes}
     end
   end
 
-  defp append_messages_to_overwrite(command, _messages), do: command
+  defp take_message_writes(command, writes), do: {command, writes}
+
+  # A message the overwrite kept takes its edit, a new message is added, and
+  # one the overwrite removed stays removed. The reply goes last.
+  defp rebuild_thread(command, [], _thread, []), do: command
+
+  defp rebuild_thread(%Command{update: update} = command, writes, thread, reply) do
+    {:ok, key, value} = fetch_update_value(update, :messages)
+    {:ok, overwritten} = Overwrite.get(value)
+    removed = MapSet.difference(message_ids(thread), message_ids(List.wrap(overwritten)))
+    writes = Enum.reject(writes, &removed?(&1, removed))
+
+    %{command | update: Map.put(update, key, Overwrite.new(GraphMessages.add_messages(overwritten, writes) ++ reply))}
+  end
+
+  defp removed?(%Message{id: id}, removed), do: MapSet.member?(removed, id)
+  defp removed?(_write, _removed), do: false
+
+  defp message_ids(messages), do: for(%Message{id: id} <- messages, not is_nil(id), into: MapSet.new(), do: id)
 
   defp fetch_update_value(update, key) do
-    case Map.fetch(update, key) do
-      {:ok, value} -> {:ok, key, value}
-      :error -> fetch_string_update_value(update, key)
-    end
-  end
-
-  defp fetch_string_update_value(update, key) do
-    string_key = to_string(key)
-
-    case Map.fetch(update, string_key) do
-      {:ok, value} -> {:ok, string_key, value}
-      :error -> :error
+    cond do
+      Map.has_key?(update, key) -> {:ok, key, Map.fetch!(update, key)}
+      Map.has_key?(update, to_string(key)) -> {:ok, to_string(key), Map.fetch!(update, to_string(key))}
+      true -> :error
     end
   end
 
@@ -362,27 +366,45 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
 
   defp put_assistant_name_to_message(message, _name), do: message
 
+  # `remaining_steps` counts the model's own step. The tool calls that the
+  # response doesn't answer itself (as the structured-output tool strategy
+  # does) need `step_costs.tool_round` more steps, or `step_costs.return_direct`
+  # when every called tool ends the run.
   defp more_steps_needed?(
          %ModelRequest{state: state, runtime: runtime, tools: tools, tool_set: tool_set},
-         %Message{role: :assistant, tool_calls: tool_calls}
+         %Message{role: :assistant, tool_calls: tool_calls},
+         answers,
+         step_costs
        ) do
-    remaining_steps =
-      state_value(state, :remaining_steps) || runtime_value(runtime, :recursion_limit)
+    remaining_steps = Map.get(state, :remaining_steps) || Map.get(runtime || %{}, :recursion_limit)
 
-    if is_integer(remaining_steps) do
-      tool_calls = tool_calls || []
-      has_tool_calls? = tool_calls != []
+    pending_calls = pending_tool_calls(tool_calls || [], answers)
+
+    if is_integer(remaining_steps) and pending_calls != [] do
       tools = if tool_set, do: ToolSet.list(tool_set), else: tools
-      all_return_direct? = Enum.all?(tool_calls, &return_direct_tool?(&1, tools))
 
-      (remaining_steps < 1 and all_return_direct?) or
-        (remaining_steps < 2 and has_tool_calls?)
+      needed =
+        if Enum.all?(pending_calls, &return_direct_tool?(&1, tools)),
+          do: step_costs.return_direct,
+          else: step_costs.tool_round
+
+      remaining_steps <= needed
     else
       false
     end
   end
 
-  defp more_steps_needed?(_request, _message), do: false
+  defp more_steps_needed?(_request, _message, _answers, _step_costs), do: false
+
+  defp pending_tool_calls(tool_calls, answers) do
+    answered =
+      for %Message{role: :tool, tool_call_id: id} <- answers, not is_nil(id), into: MapSet.new(), do: id
+
+    Enum.reject(tool_calls, &MapSet.member?(answered, tool_call_id(&1)))
+  end
+
+  def tool_call_id(call),
+    do: Map.get(call, :call_id) || Map.get(call, :tool_call_id) || Map.get(call, :id) || Map.get(call, :provider_id)
 
   defp step_limit_message(%Message{} = response) do
     Message.assistant("Sorry, need more steps to process this request.", id: response.id)
@@ -395,14 +417,4 @@ defmodule BeamWeaver.Agent.Nodes.Model.Response do
       Tool.name(tool) == name and Tool.return_direct(tool)
     end)
   end
-
-  defp state_value(state, key) when is_map(state) do
-    Map.get(state, key, Map.get(state, to_string(key)))
-  end
-
-  defp runtime_value(runtime, key) when is_map(runtime), do: Map.get(runtime, key)
-  defp runtime_value(_runtime, _key), do: nil
-
-  defp normalize_command_update(update) when is_map(update), do: update
-  defp normalize_command_update(_update), do: %{}
 end

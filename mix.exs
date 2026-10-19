@@ -4,9 +4,9 @@ defmodule BeamWeaver.MixProject do
   def project do
     [
       app: :beam_weaver,
-      version: "0.1.32",
+      version: "1.0.0",
       description:
-        "Elixir-native LangChain, LangGraph, and DeepAgents for traceable LLM apps: OTP workflows, tools, memory, human-in-the-loop, streaming, custom clients/adapters, minimal deps, and WeaveScope tracing.",
+        "Elixir-native LangChain with harness for traceable LLM apps: OTP workflows, tools, memory, human-in-the-loop, streaming, custom clients/adapters, minimal deps, and WeaveScope tracing.",
       source_url: "https://github.com/caudena/beam_weaver",
       homepage_url: "https://github.com/caudena/beam_weaver",
       elixir: "~> 1.19",
@@ -14,14 +14,17 @@ defmodule BeamWeaver.MixProject do
       consolidate_protocols: Mix.env() != :test,
       deps: deps(),
       package: package(),
-      docs: docs()
+      aliases: aliases(),
+      docs: &docs/0
     ]
   end
+
+  def cli, do: [preferred_envs: ["docs.live": :dev, "docs.verify": :dev]]
 
   # Run "mix help compile.app" to learn about applications.
   def application do
     [
-      extra_applications: [:crypto, :inets, :logger, :ssl],
+      extra_applications: [:crypto, :logger, :ssl],
       mod: {BeamWeaver.Application, []}
     ]
   end
@@ -29,6 +32,7 @@ defmodule BeamWeaver.MixProject do
   defp deps do
     [
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
+      {:earmark_parser, "~> 1.4", only: :dev, runtime: false},
       {:ecto_sql, "~> 3.13"},
       {:postgrex, "~> 0.20"},
       {:ecto_sqlite3, "~> 0.25.0", optional: true},
@@ -41,313 +45,106 @@ defmodule BeamWeaver.MixProject do
     ]
   end
 
+  # Old guide names, renamed or merged into other pages.
+  @doc_redirects %{
+    "adapters" => "storage",
+    "agent_harness" => "deep_agents",
+    "async_subagents" => "subagents",
+    "coming_from_langchain" => "quickstart",
+    "compaction" => "compaction_engine",
+    "context_engineering" => "context_management",
+    "core" => "models",
+    "custom_middleware" => "middleware",
+    "customization" => "deep_agents",
+    "deep_agents_quickstart" => "deep_agents",
+    "event_streaming" => "streaming",
+    "fault_tolerance" => "durable_execution",
+    "getting_started" => "quickstart",
+    "graph" => "graphs",
+    "memory" => "long_term_memory",
+    "partners" => "providers",
+    "permissions" => "filesystem",
+    "persistence" => "checkpoints",
+    "prebuilt_middleware" => "builtin_middleware",
+    "prompt_caching" => "caching",
+    "prompts_and_parsers" => "structured_output",
+    "prompts_parsers" => "structured_output",
+    "replay" => "testing",
+    "runtime" => "runtime_context",
+    "semantic_dsl" => "agents",
+    "thinking_in_beamweaver" => "graphs",
+    "time_travel" => "checkpoints",
+    "todos" => "deep_agents",
+    "workflows_and_agents" => "workflow_patterns"
+  }
+
+  # Guides come from docs/SUMMARY.md, the GitBook table of contents, so both
+  # sites share one navigation.
   defp docs do
+    {extras, groups} = summary_extras()
+
     [
       main: "readme",
       source_ref: "master",
       source_url: "https://github.com/caudena/beam_weaver",
-      extras: [
-        "README.md",
-        "CHANGELOG.md",
-        "docs/getting_started.md",
-        "docs/thinking_in_beamweaver.md",
-        "docs/workflows_and_agents.md",
-        "docs/persistence.md",
-        "docs/memory.md",
-        "docs/agent_harness.md",
-        "docs/deep_agents_quickstart.md",
-        "docs/customization.md",
-        "docs/profiles.md",
-        "docs/filesystem.md",
-        "docs/permissions.md",
-        "docs/skills.md",
-        "docs/sandboxes.md",
-        "docs/subagents.md",
-        "docs/todos.md",
-        "docs/async_subagents.md",
-        "docs/subgraphs.md",
-        "docs/time_travel.md",
-        "docs/durable_execution.md",
-        "docs/fault_tolerance.md",
-        "docs/semantic_dsl.md",
-        "docs/agents.md",
-        "docs/context_engineering.md",
-        "docs/compaction.md",
-        "docs/models.md",
-        "docs/prompt_caching.md",
-        "docs/messages.md",
-        "docs/tools.md",
-        "docs/middleware.md",
-        "docs/custom_middleware.md",
-        "docs/prebuilt_middleware.md",
-        "docs/guardrails.md",
-        "docs/human_in_the_loop.md",
-        "docs/runtime.md",
-        "docs/short_term_memory.md",
-        "docs/long_term_memory.md",
-        "docs/event_streaming.md",
-        "docs/structured_output.md",
-        "docs/graph.md",
-        "docs/retrieval.md",
-        "docs/prompts_parsers.md",
-        "docs/adapters.md",
-        "docs/core.md",
-        "docs/partners.md",
-        "docs/partners/openai.md",
-        "docs/partners/anthropic.md",
-        "docs/partners/google.md",
-        "docs/partners/typesafe.md",
-        "docs/partners/deepseek.md",
-        "docs/partners/moonshot.md",
-        "docs/partners/xai.md",
-        "docs/partners/zai.md",
-        "docs/replay.md",
-        "docs/going_to_production.md",
-        "docs/rate_limiting.md",
-        "docs/tracing.md"
-      ],
-      groups_for_extras: [
-        "Start Here": [
-          "README.md",
-          "CHANGELOG.md",
-          "docs/getting_started.md",
-          "docs/thinking_in_beamweaver.md",
-          "docs/workflows_and_agents.md"
-        ],
-        Capabilities: [
-          "docs/persistence.md",
-          "docs/memory.md",
-          "docs/agent_harness.md",
-          "docs/compaction.md",
-          "docs/deep_agents_quickstart.md",
-          "docs/customization.md",
-          "docs/profiles.md",
-          "docs/filesystem.md",
-          "docs/permissions.md",
-          "docs/skills.md",
-          "docs/sandboxes.md",
-          "docs/subagents.md",
-          "docs/todos.md",
-          "docs/async_subagents.md",
-          "docs/subgraphs.md",
-          "docs/time_travel.md",
-          "docs/durable_execution.md",
-          "docs/fault_tolerance.md",
-          "docs/event_streaming.md"
-        ],
-        "Core Components": [
-          "docs/semantic_dsl.md",
-          "docs/agents.md",
-          "docs/context_engineering.md",
-          "docs/models.md",
-          "docs/prompt_caching.md",
-          "docs/messages.md",
-          "docs/tools.md",
-          "docs/middleware.md",
-          "docs/custom_middleware.md",
-          "docs/prebuilt_middleware.md",
-          "docs/guardrails.md",
-          "docs/human_in_the_loop.md",
-          "docs/runtime.md",
-          "docs/short_term_memory.md",
-          "docs/long_term_memory.md",
-          "docs/structured_output.md",
-          "docs/graph.md"
-        ],
-        "Data And Retrieval": [
-          "docs/retrieval.md",
-          "docs/prompts_parsers.md",
-          "docs/adapters.md",
-          "docs/core.md"
-        ],
-        Partners: [
-          "docs/partners.md",
-          "docs/partners/openai.md",
-          "docs/partners/anthropic.md",
-          "docs/partners/google.md",
-          "docs/partners/typesafe.md",
-          "docs/partners/deepseek.md",
-          "docs/partners/moonshot.md",
-          "docs/partners/xai.md",
-          "docs/partners/zai.md"
-        ],
-        Operations: [
-          "docs/going_to_production.md",
-          "docs/rate_limiting.md",
-          "docs/replay.md",
-          "docs/tracing.md"
-        ]
-      ],
-      groups_for_modules: [
-        "Core API": [
-          BeamWeaver,
-          BeamWeaver.Agent,
-          BeamWeaver.Graph,
-          BeamWeaver.Models,
-          BeamWeaver.Core,
-          BeamWeaver.Core.Message,
-          BeamWeaver.Core.Tool,
-          BeamWeaver.Core.ToolResult,
-          BeamWeaver.Core.Error,
-          BeamWeaver.Core.DecisionModel,
-          BeamWeaver.Runnable
-        ],
-        "Agents And Middleware": [
-          BeamWeaver.Agent.Builder,
-          BeamWeaver.Agent.Built,
-          BeamWeaver.Agent.Middleware,
-          BeamWeaver.Agent.Middleware.TodoList,
-          BeamWeaver.Agent.Middleware.Filesystem,
-          BeamWeaver.Agent.Middleware.Skills,
-          BeamWeaver.Skill,
-          BeamWeaver.Agent.Middleware.Memory,
-          BeamWeaver.Agent.Middleware.HumanInTheLoop,
-          BeamWeaver.Agent.Middleware.Summarization,
-          BeamWeaver.Agent.Middleware.TypeSafeModelRouter,
-          BeamWeaver.Agent.Middleware.ModelRetry,
-          BeamWeaver.Agent.Middleware.ModelFallback,
-          BeamWeaver.Agent.Middleware.ToolRetry,
-          BeamWeaver.Agent.Middleware.ToolSelection,
-          BeamWeaver.Agent.StructuredOutput,
-          BeamWeaver.Agent.HITL
-        ],
-        "Graphs And Runtime": [
-          BeamWeaver.Graph.StateGraph,
-          BeamWeaver.Graph.Compiled,
-          BeamWeaver.Graph.Command,
-          BeamWeaver.Graph.Interrupt,
-          BeamWeaver.Graph.Resume,
-          BeamWeaver.Graph.Send,
-          BeamWeaver.Graph.StateSnapshot,
-          BeamWeaver.Graph.Channels.LastValue,
-          BeamWeaver.Graph.Channels.Topic,
-          BeamWeaver.Graph.Channels.BinaryOperatorAggregate,
-          BeamWeaver.Graph.Channels.DeltaChannel,
-          BeamWeaver.Runtime,
-          BeamWeaver.Stream,
-          BeamWeaver.Stream.Envelope,
-          BeamWeaver.Stream.Events,
-          BeamWeaver.Stream.Events.Token,
-          BeamWeaver.Stream.Events.MessageChunk,
-          BeamWeaver.Stream.Events.Message,
-          BeamWeaver.Stream.Events.ToolCallChunk,
-          BeamWeaver.Stream.Events.ToolStart,
-          BeamWeaver.Stream.Events.ToolDelta,
-          BeamWeaver.Stream.Events.ToolFinish,
-          BeamWeaver.Stream.Events.ToolError,
-          BeamWeaver.Stream.Events.GraphUpdate,
-          BeamWeaver.Stream.Events.GraphValue,
-          BeamWeaver.Stream.Events.Checkpoint,
-          BeamWeaver.Stream.Events.Task,
-          BeamWeaver.Stream.Events.Lifecycle,
-          BeamWeaver.Stream.Events.Debug,
-          BeamWeaver.Stream.Events.Custom,
-          BeamWeaver.Stream.Events.Error,
-          BeamWeaver.Stream.Events.Done
-        ],
-        "Memory, Storage, And Retrieval": [
-          BeamWeaver.Checkpoint,
-          BeamWeaver.Checkpoint.ResumeDelivery,
-          BeamWeaver.Checkpoint.ResumeDelivery.StageReceipt,
-          BeamWeaver.Checkpoint.ResumeDelivery.CommitReceipt,
-          BeamWeaver.Checkpoint.ETS,
-          BeamWeaver.Checkpoint.Ecto,
-          BeamWeaver.Compaction.ToolProjection,
-          BeamWeaver.Memory,
-          BeamWeaver.Memory.ETS,
-          BeamWeaver.Memory.Ecto,
-          BeamWeaver.Cache,
-          BeamWeaver.Cache.ETS,
-          BeamWeaver.Cache.Ecto,
-          BeamWeaver.VectorStore,
-          BeamWeaver.VectorStore.ETS,
-          BeamWeaver.VectorStore.EctoPostgres,
-          BeamWeaver.Indexing,
-          BeamWeaver.Retriever,
-          BeamWeaver.DocumentIndex
-        ],
-        "Models And Providers": [
-          BeamWeaver.OpenAI,
-          BeamWeaver.OpenAI.ChatModel,
-          BeamWeaver.OpenAI.ResponsesModel,
-          BeamWeaver.OpenAI.ChatCompletionsModel,
-          BeamWeaver.OpenAI.EmbeddingModel,
-          BeamWeaver.OpenAI.CodexResponses,
-          BeamWeaver.Provider.Outcome,
-          BeamWeaver.Provider.ReasoningControl,
-          BeamWeaver.Provider.Replay,
-          BeamWeaver.Anthropic,
-          BeamWeaver.Anthropic.ChatModel,
-          BeamWeaver.TypeSafe,
-          BeamWeaver.TypeSafe.DecisionModel,
-          BeamWeaver.TypeSafe.Client,
-          BeamWeaver.TypeSafe.Question,
-          BeamWeaver.TypeSafe.Response,
-          BeamWeaver.TypeSafe.ChoiceAnswer,
-          BeamWeaver.TypeSafe.ScoreAnswer,
-          BeamWeaver.TypeSafe.NoulAnswer,
-          BeamWeaver.Google,
-          BeamWeaver.Google.ChatModel,
-          BeamWeaver.Google.Client,
-          BeamWeaver.Google.Tools,
-          BeamWeaver.Google.Error,
-          BeamWeaver.XAI,
-          BeamWeaver.XAI.ChatModel,
-          BeamWeaver.XAI.ChatCompletionsModel,
-          BeamWeaver.XAI.EmbeddingModel,
-          BeamWeaver.ZAI,
-          BeamWeaver.ZAI.ChatModel,
-          BeamWeaver.ZAI.Client,
-          BeamWeaver.ZAI.Tools,
-          BeamWeaver.ZAI.Error,
-          BeamWeaver.Models.FakeChatModel
-        ],
-        "Tools, Filesystems, And Sandboxes": [
-          BeamWeaver.Tool,
-          BeamWeaver.ToolKit,
-          BeamWeaver.Tools.Todo,
-          BeamWeaver.Tools.Filesystem,
-          BeamWeaver.Tools.FileSearch,
-          BeamWeaver.Tools.Shell,
-          BeamWeaver.Filesystem,
-          BeamWeaver.Filesystem.State,
-          BeamWeaver.Filesystem.Local,
-          BeamWeaver.Filesystem.LocalShell,
-          BeamWeaver.Filesystem.Store,
-          BeamWeaver.Filesystem.Composite,
-          BeamWeaver.Filesystem.Sandbox,
-          BeamWeaver.Filesystem.Permission,
-          BeamWeaver.Sandbox,
-          BeamWeaver.Sandbox.Local,
-          BeamWeaver.Sandbox.Docker
-        ],
-        "Prompts, Parsing, And Serialization": [
-          BeamWeaver.Prompt,
-          BeamWeaver.OutputParser,
-          BeamWeaver.OutputParser.JSON,
-          BeamWeaver.OutputParser.XML,
-          BeamWeaver.OutputParser.Schema,
-          BeamWeaver.Tool.Schema,
-          BeamWeaver.Serialization,
-          BeamWeaver.Serialization.Encrypted,
-          BeamWeaver.TextSplitter,
-          BeamWeaver.Tokenizer
-        ],
-        Operations: [
-          BeamWeaver.Tracing,
-          BeamWeaver.Tracing.Exporter,
-          BeamWeaver.Tracing.Exporters.Noop,
-          BeamWeaver.RateLimiter,
-          BeamWeaver.RateLimiter.TokenBucket,
-          BeamWeaver.RetryPolicy,
-          BeamWeaver.TimeoutPolicy,
-          BeamWeaver.Transport,
-          BeamWeaver.Transport.ReqFinch,
-          BeamWeaver.Transport.Replay,
-          BeamWeaver.Transport.Cassette
-        ]
-      ]
+      extras: ["README.md" | extras] ++ ["CHANGELOG.md"],
+      groups_for_extras: [{"Overview", ["README.md"]} | groups] ++ [{"Project", ["CHANGELOG.md"]}],
+      groups_for_modules: eval_docs_file("scripts/docs/module_groups.exs", []),
+      assets: %{"docs/assets" => "assets"},
+      redirects: @doc_redirects
     ]
+  end
+
+  # `{extras, groups_for_extras}` in SUMMARY.md order, one group per section.
+  defp summary_extras do
+    path = Path.join(__DIR__, "docs/SUMMARY.md")
+    lines = if File.exists?(path), do: path |> File.read!() |> String.split("\n"), else: []
+
+    {sections, _current} =
+      Enum.reduce(lines, {[], "Guides"}, fn line, {sections, current} ->
+        cond do
+          match = Regex.run(~r/^##\s+(.+?)\s*$/, line) ->
+            {sections, Enum.at(match, 1)}
+
+          match = Regex.run(~r/^\s*[*-]\s+\[[^\]]*\]\(([^)#\s]+\.md)\)/, line) ->
+            page = Path.join("docs", Enum.at(match, 1))
+            if page == "docs/README.md", do: {sections, current}, else: {[{current, page} | sections], current}
+
+          true ->
+            {sections, current}
+        end
+      end)
+
+    sections = Enum.reverse(sections)
+
+    groups =
+      sections
+      |> Enum.chunk_by(&elem(&1, 0))
+      |> Enum.map(&{elem(hd(&1), 0), Enum.map(&1, fn {_section, page} -> page end)})
+
+    {Enum.map(sections, &elem(&1, 1)), groups}
+  end
+
+  defp eval_docs_file(file, default) do
+    path = Path.join(__DIR__, file)
+    if File.exists?(path), do: path |> Code.eval_file() |> elem(0), else: default
+  end
+
+  defp aliases do
+    [
+      "docs.providers": ["run --no-start scripts/docs/provider_tables.exs --write"],
+      "docs.verify": ["run scripts/docs/run_verify.exs"],
+      "examples.live": ["run --no-start scripts/examples/run.exs"],
+      "docs.live": &docs_live/1
+    ]
+  end
+
+  # Runs the documentation examples that call real providers, with the API
+  # keys from the environment or .env: `mix docs.live`, or one page with
+  # `mix docs.live --only docs_live:<slug>`.
+  defp docs_live(args) do
+    args = Enum.map(args, &String.replace_prefix(&1, "docs_live:", ""))
+    Mix.Task.run("docs.verify", ["--service", "live" | args])
   end
 
   defp package do

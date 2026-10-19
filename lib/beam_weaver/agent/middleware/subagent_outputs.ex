@@ -7,7 +7,7 @@ defmodule BeamWeaver.Agent.Middleware.SubagentOutputs do
   supervising model transcript.
   """
 
-  @behaviour BeamWeaver.Agent.Middleware
+  use BeamWeaver.Agent.Middleware
 
   alias BeamWeaver.Graph
   alias BeamWeaver.Graph.Channels.BinaryOperatorAggregate
@@ -26,10 +26,6 @@ defmodule BeamWeaver.Agent.Middleware.SubagentOutputs do
   def name(_middleware), do: :subagent_outputs
 
   @impl true
-  def can_jump_to(_middleware, :before_model), do: [:end]
-  def can_jump_to(_middleware, _hook), do: []
-
-  @impl true
   def state_schema(_middleware) do
     %{
       subagent_outputs: Graph.channel({BinaryOperatorAggregate, &merge_maps/2}, initial: %{}),
@@ -37,6 +33,7 @@ defmodule BeamWeaver.Agent.Middleware.SubagentOutputs do
     }
   end
 
+  @impl true
   def before_model(%__MODULE__{required: []}, _state, _runtime), do: %{}
 
   def before_model(%__MODULE__{} = middleware, state, _runtime) do
@@ -61,23 +58,16 @@ defmodule BeamWeaver.Agent.Middleware.SubagentOutputs do
   defp response(%__MODULE__{response: response}, outputs) when is_function(response, 1),
     do: response.(outputs)
 
-  defp response(%__MODULE__{response: response}, _outputs) when is_map(response),
-    do: response
-
   defp response(%__MODULE__{response: response}, _outputs) when not is_nil(response),
     do: response
 
   defp response(_middleware, outputs),
     do: %{"status" => "completed", "captured_outputs" => Map.keys(outputs)}
 
-  defp state_map(state, key) when is_map(state) do
-    value = Map.get(state, key) || Map.get(state, to_string(key))
-    if is_map(value), do: stringify_keys(value), else: %{}
-  end
-
-  defp state_map(_state, _key), do: %{}
-
-  defp stringify_keys(map) when is_map(map) do
-    Map.new(map, fn {key, value} -> {to_string(key), value} end)
+  defp state_map(state, key) do
+    case Map.get(state, key) do
+      %{} = value -> Map.new(value, fn {key, value} -> {to_string(key), value} end)
+      _other -> %{}
+    end
   end
 end

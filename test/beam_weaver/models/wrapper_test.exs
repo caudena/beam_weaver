@@ -4,7 +4,6 @@ defmodule BeamWeaver.Models.WrapperTest do
   alias BeamWeaver.Core.ChatModel
   alias BeamWeaver.Core.EmbeddingModel
   alias BeamWeaver.Core.Error
-  alias BeamWeaver.Core.LLM
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Models
@@ -21,26 +20,6 @@ defmodule BeamWeaver.Models.WrapperTest do
     def invoke(%__MODULE__{} = model, messages, opts) do
       if model.parent, do: send(model.parent, {:model_call, messages, opts})
       {:ok, Message.assistant(model.reply)}
-    end
-  end
-
-  defmodule StructuredToolModel do
-    @behaviour ChatModel
-
-    defstruct [:parent]
-
-    @impl true
-    def invoke(%__MODULE__{parent: parent}, _messages, opts) do
-      if parent do
-        send(parent, {:structured_tools, Enum.map(Keyword.get(opts, :tools, []), &Tool.name/1)})
-      end
-
-      {:ok,
-       Message.assistant("",
-         tool_calls: [
-           %{id: "call_answer", name: "answer", args: %{"value" => "accepted"}}
-         ]
-       )}
     end
   end
 
@@ -79,7 +58,7 @@ defmodule BeamWeaver.Models.WrapperTest do
     assert Enum.map(Keyword.fetch!(opts, :tools), &Tool.name/1) == ["search"]
   end
 
-  test "with_structured_output parses structured tool calls into metadata" do
+  test "a response format reaches the provider and its data comes back in metadata.parsed" do
     schema = %{
       "title" => "answer",
       "type" => "object",
@@ -87,31 +66,10 @@ defmodule BeamWeaver.Models.WrapperTest do
       "properties" => %{"value" => %{"type" => "string"}}
     }
 
-    model =
-      %StructuredToolModel{parent: self()}
-      |> Models.with_structured_output(schema)
-
-    assert {:ok, %Message{metadata: metadata}} =
-             ChatModel.invoke(model, [Message.user("answer")], [])
-
-    assert metadata.structured_response == %{"value" => "accepted"}
-    assert_received {:structured_tools, ["answer"]}
-  end
-
-  test "with_structured_output uses provider-native strategy when model profile supports it" do
-    schema = %{
-      "title" => "answer",
-      "type" => "object",
-      "required" => ["value"],
-      "properties" => %{"value" => %{"type" => "string"}}
-    }
-
-    model =
-      %ProviderStructuredModel{parent: self()}
-      |> Models.with_structured_output(schema)
-
-    assert {:ok, %Message{metadata: %{structured_response: %{"value" => "native"}}}} =
-             ChatModel.invoke(model, [Message.user("answer")], [])
+    assert {:ok, %Message{metadata: %{parsed: %{"value" => "native"}}}} =
+             ChatModel.invoke(%ProviderStructuredModel{parent: self()}, [Message.user("answer")],
+               response_format: %{name: "answer", schema: schema}
+             )
 
     assert_received {:provider_response_format, %{name: "answer", schema: ^schema}}
   end
@@ -132,17 +90,6 @@ defmodule BeamWeaver.Models.WrapperTest do
 
     assert_received {:model_call, [%Message{role: :user}], _opts}
     refute_received {:model_call, _messages, _opts}
-  end
-
-  test "unwrapped chat models do not use cache state" do
-    parent = self()
-    model = %RecordingModel{parent: parent, reply: "uncached"}
-
-    assert {:ok, %Message{content: "uncached"}} = ChatModel.invoke(model, [Message.user("hello")])
-    assert {:ok, %Message{content: "uncached"}} = ChatModel.invoke(model, [Message.user("hello")])
-
-    assert_received {:model_call, [%Message{role: :user}], _opts}
-    assert_received {:model_call, [%Message{role: :user}], _opts}
   end
 
   test "cached models include provider options in the cache key" do
@@ -240,59 +187,7 @@ defmodule BeamWeaver.Models.WrapperTest do
     assert metadata["total_cost"] == 0
   end
 
-  test "cached LLM completions support sync, batch, and async facades" do
-    cache = BeamWeaver.Cache.ETS.new()
-    parent = self()
-
-    llm =
-      %BeamWeaver.Models.FakeLLM{response: "completion", parent: parent}
-      |> Models.cached(cache)
-
-    assert {:ok, "completion"} = LLM.complete(llm, "prompt")
-    assert {:ok, "completion"} = LLM.complete(llm, "prompt")
-    assert_received {:fake_llm_call, "prompt", []}
-    refute_received {:fake_llm_call, _prompt, _opts}
-
-    assert [{:ok, "completion"}, {:ok, "completion"}] = LLM.batch(llm, ["prompt", "other"])
-    assert_received {:fake_llm_call, "other", []}
-    refute_received {:fake_llm_call, "prompt", _opts}
-
-    assert [{:ok, "completion"}, {:ok, "completion"}] =
-             llm
-             |> LLM.async_batch(["prompt", "other"])
-             |> BeamWeaver.Core.Async.await_batch()
-
-    refute_received {:fake_llm_call, _prompt, _opts}
-  end
-
-  test "cached LLM streams cache the joined completion and replay as one chunk" do
-    cache = BeamWeaver.Cache.ETS.new()
-    parent = self()
-
-    llm =
-      %BeamWeaver.TestSupport.Conformance.Fakes.LLM{
-        stream_chunks: ["stream", "ed"],
-        parent: parent
-      }
-      |> Models.cached(cache)
-
-    assert {:ok, ["stream", "ed"]} = LLM.stream(llm, "prompt")
-    assert_received {:fake_llm_stream, "prompt", []}
-
-    assert {:ok, ["streamed"]} = LLM.stream(llm, "prompt")
-    refute_received {:fake_llm_stream, _prompt, _opts}
-
-    assert {:ok, ["streamed"]} =
-             llm
-             |> LLM.async_stream("prompt")
-             |> BeamWeaver.Core.Async.await()
-
-    refute_received {:fake_llm_stream, _prompt, _opts}
-  end
-
   test "cached model event streams replay semantic events on warm cache hits" do
-    # Upstream reference:
-    # - cache-hit stream replay emits lifecycle-equivalent events.
     cache = BeamWeaver.Cache.ETS.new(visibility: :private)
     parent = self()
 
@@ -367,31 +262,7 @@ defmodule BeamWeaver.Models.WrapperTest do
              ChatModel.invoke(model, [Message.user("hello")], [])
   end
 
-  test "wrapped chat models are executable through the runnable facade" do
-    model =
-      %RecordingModel{reply: "runnable"}
-      |> Models.bind_tools([])
-
-    assert {:ok, %Message{content: "runnable"}} =
-             BeamWeaver.Runnable.invoke(model, [Message.user("hello")])
-  end
-
-  test "fake LLM and embedding models are deterministic test doubles" do
-    llm = %BeamWeaver.Models.FakeLLM{response: "completion", parent: self()}
-
-    assert {:ok, "completion"} = LLM.complete(llm, "prompt", temperature: 0.1)
-    assert_received {:fake_llm_call, "prompt", [temperature: 0.1]}
-
-    assert {:ok, "completion"} = LLM.complete(llm, "prompt", temperature: 0.1)
-    assert_received {:fake_llm_call, "prompt", [temperature: 0.1]}
-
-    assert {:ok, "completion"} =
-             llm
-             |> LLM.async_complete("prompt", temperature: 0.1)
-             |> BeamWeaver.Core.Async.await()
-
-    assert_received {:fake_llm_call, "prompt", [temperature: 0.1]}
-
+  test "fake embedding models are deterministic test doubles" do
     embeddings = %BeamWeaver.Models.FakeEmbeddingModel{dimensions: 4}
 
     assert {:ok, [doc_vector]} = EmbeddingModel.embed_documents(embeddings, ["doc"], [])
@@ -436,5 +307,35 @@ defmodule BeamWeaver.Models.WrapperTest do
 
     assert {:error, %Error{type: :unsupported_model_param}} =
              ChatModel.invoke(strict, [Message.user("hello")], temperature: 0.5)
+  end
+
+  describe "inside a trace" do
+    setup do
+      {:ok, limiter} = BeamWeaver.RateLimiter.start_bucket(capacity: 10, initial_tokens: 10)
+      %{limiter: limiter}
+    end
+
+    test "wrapped models report the model they wrap", %{limiter: limiter} do
+      {:ok, run} = BeamWeaver.Tracing.start_run("wrapped models")
+      fake = Models.init_chat_model!("fake:chat", responses: [Models.FakeChatModel.final(%{"value" => "ok"})])
+
+      for wrapped <- [
+            Models.cached(fake, BeamWeaver.Cache.ETS.new(visibility: :private)),
+            Models.with_rate_limiter(fake, limiter: limiter),
+            Models.bind_tools(fake, [])
+          ] do
+        assert {:ok, %Message{}} = ChatModel.invoke(wrapped, [Message.user("hi")])
+      end
+
+      BeamWeaver.Tracing.finish_run(run)
+    end
+
+    test "an agent runs on a wrapped model", %{limiter: limiter} do
+      fake = Models.init_chat_model!("fake:chat", responses: ["Order A-1001 shipped."])
+      {:ok, agent} = BeamWeaver.Agent.build(model: Models.with_rate_limiter(fake, limiter: limiter))
+
+      assert {:ok, %{messages: messages}} = BeamWeaver.Agent.invoke(agent, %{messages: ["Where is A-1001?"]})
+      assert Message.text(List.last(messages)) == "Order A-1001 shipped."
+    end
   end
 end

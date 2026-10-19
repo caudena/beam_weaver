@@ -16,11 +16,11 @@ defmodule BeamWeaver.Tracing.LifecycleTest do
   @uuidv7_regex ~r/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
   setup do
-    Tracing.reset()
+    Tracing.clear()
     Context.clear()
 
     on_exit(fn ->
-      Tracing.reset()
+      Tracing.clear()
       Context.clear()
     end)
 
@@ -70,6 +70,24 @@ defmodule BeamWeaver.Tracing.LifecycleTest do
     assert stored =~ "hello"
     assert stored =~ "ok"
     assert stored =~ BeamWeaver.Transport.Redactor.redacted()
+  end
+
+  test "redacts context metadata, whether it is given or is the run's metadata" do
+    {:ok, run} = Tracing.start_run("parent", metadata: %{"api_key" => "metadata-secret", "tenant" => "alpha"})
+
+    assert run.metadata == %{"api_key" => BeamWeaver.Transport.Redactor.redacted(), "tenant" => "alpha"}
+    assert run.context_metadata == run.metadata
+
+    {:ok, child} =
+      Tracing.start_run("child",
+        metadata: %{"step" => 1},
+        context_metadata: %{"token" => "context-secret", "tenant" => "beta"}
+      )
+
+    assert child.context_metadata["token"] == BeamWeaver.Transport.Redactor.redacted()
+    assert child.context_metadata["tenant"] == "beta"
+    refute inspect(child) =~ "context-secret"
+    refute inspect(child) =~ "metadata-secret"
   end
 
   test "records failed runs without leaking exception secrets" do
@@ -151,6 +169,42 @@ defmodule BeamWeaver.Tracing.LifecycleTest do
 
     assert_receive {:trace_export, :started, %Run{name: "runner catch"}}
     assert_receive {:trace_export, :error, %Run{name: "runner catch", status: :error}}
+  end
+
+  test "an exporter whose module isn't loaded yet gets the events" do
+    module = BeamWeaver.Tracing.LifecycleTest.LazyExporter
+    dir = Path.join(System.tmp_dir!(), "beam_weaver_lazy_exporter_#{System.unique_integer([:positive])}")
+
+    [{^module, binary}] =
+      Code.compile_string("""
+      defmodule #{inspect(module)} do
+        def export(event, run, opts), do: send(Keyword.fetch!(opts, :test_pid), {:lazy_export, event, run.id})
+      end
+      """)
+
+    # Only the code path holds the module now, as for an exporter named in
+    # config that nothing has called yet.
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, "#{module}.beam"), binary)
+    :code.delete(module)
+    :code.purge(module)
+    Code.prepend_path(dir)
+
+    on_exit(fn ->
+      Code.delete_path(dir)
+      :code.delete(module)
+      :code.purge(module)
+      File.rm_rf!(dir)
+    end)
+
+    refute :code.is_loaded(module)
+
+    {:ok, run} = Tracing.start_run("lazy", exporter: module, exporter_opts: [test_pid: self()])
+    {:ok, _run} = Tracing.finish_run(run, exporter: module, exporter_opts: [test_pid: self()])
+
+    run_id = run.id
+    assert_receive {:lazy_export, :started, ^run_id}
+    assert_receive {:lazy_export, :ok, ^run_id}
   end
 
   test "with_chain_group records a chain-kind grouped run" do
@@ -281,15 +335,13 @@ defmodule BeamWeaver.Tracing.LifecycleTest do
           api_key: "xai-nope",
           x_grok_conv_id: "xai-conv",
           prompt_cache_key: "xai-cache",
-          reasoning_effort: :low,
-          search_parameters: %{mode: "auto"}
+          reasoning_effort: :low
         ),
         [],
         %{
           x_grok_conv_id: "xai-conv",
           prompt_cache_key: "xai-cache",
-          reasoning_effort: :low,
-          search_parameters: %{mode: "auto"}
+          reasoning_effort: :low
         }
       },
       {
@@ -316,7 +368,7 @@ defmodule BeamWeaver.Tracing.LifecycleTest do
     ]
 
     for {model, opts, expected_params} <- cases do
-      Tracing.reset()
+      Tracing.clear()
       Context.clear()
 
       assert {:ok, %Message{content: "ok"}} =
@@ -343,7 +395,7 @@ defmodule BeamWeaver.Tracing.LifecycleTest do
       refute Map.has_key?(run.metadata.invocation_params, :instructions)
     end
 
-    Tracing.reset()
+    Tracing.clear()
     Context.clear()
   end
 

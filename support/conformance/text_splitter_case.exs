@@ -8,12 +8,13 @@ defmodule BeamWeaver.TestSupport.Conformance.TextSplitterCase do
       use ExUnit.Case, async: true
 
       alias BeamWeaver.Core.Document
+      alias BeamWeaver.TestSupport.Conformance.Subject
       alias BeamWeaver.TextSplitter
 
       @beamweaver_splitter Keyword.fetch!(opts, :splitter)
 
       test "splitter returns document chunks with metadata" do
-        splitter = beamweaver_standard_value(@beamweaver_splitter)
+        splitter = Subject.standard_value(@beamweaver_splitter)
         document = Document.new!("one two three four five", metadata: %{source: "case"})
 
         assert {:ok, stream} = TextSplitter.split_documents(splitter, [document])
@@ -21,9 +22,6 @@ defmodule BeamWeaver.TestSupport.Conformance.TextSplitterCase do
         assert chunks != []
         assert Enum.all?(chunks, &(&1.metadata.source == "case"))
       end
-
-      defp beamweaver_standard_value(value),
-        do: BeamWeaver.TestSupport.Conformance.Subject.standard_value(value)
     end
   end
 end

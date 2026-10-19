@@ -1,60 +1,67 @@
+# Human in the loop: the agent pauses before issue_refund runs, a reviewer
+# approves the call, and the agent resumes from the checkpoint.
+#
+#   mix run examples/hitl_agent.exs
+
 Code.require_file("support.exs", __DIR__)
 
 alias BeamWeaver.Agent.HITL
 alias BeamWeaver.Checkpoint.ETS, as: CheckpointETS
 alias BeamWeaver.Core.Message
-alias BeamWeaver.Core.Tool
 alias BeamWeaver.Examples.Support
+
+defmodule BeamWeaver.Examples.HITLAgent.IssueRefund do
+  use BeamWeaver.Tool
+
+  name "issue_refund"
+  description "Refund an order in full."
+
+  schema do
+    field :order_id, :string, description: "The order id, like A-1001"
+    field :reason, :string, description: "Why the customer gets a refund"
+  end
+
+  @impl true
+  def invoke(_tool, %{"order_id" => order_id}, _opts), do: {:ok, "Refunded order #{order_id}: 49.90 EUR."}
+end
 
 defmodule BeamWeaver.Examples.HITLAgent do
   use BeamWeaver.Agent
 
-  name("hitl_agent")
-  model(Support.model())
-  system_prompt("Look up documentation with the lookup tool before answering.")
-
-  tools do
-    tool(
-      Tool.from_function!(
-        name: "lookup",
-        description: "Look up documentation for a query.",
-        input_schema: %{
-          "type" => "object",
-          "properties" => %{"query" => %{"type" => "string"}},
-          "required" => ["query"]
-        },
-        handler: fn %{"query" => query}, _opts -> "Docs for #{query}: authentication uses bearer API keys." end
-      )
-    )
-  end
-
-  interrupt_on(%{"lookup" => true})
+  model Support.model()
+  system_prompt "You are a support agent. Refund damaged orders with issue_refund; a person reviews each refund."
+  tools [BeamWeaver.Examples.HITLAgent.IssueRefund]
+  interrupt_on %{"issue_refund" => true}
 end
 
-defmodule BeamWeaver.Examples.HITLAgent.Review do
-  # Approve each paused tool call until the agent finishes.
+defmodule BeamWeaver.Examples.HITLAgent.Reviewer do
+  # Approves every paused call until the agent finishes.
   def run({:ok, state}, _opts), do: state
-
-  def run({:error, error}, _opts), do: raise(ArgumentError, "agent error: #{inspect(error)}")
+  def run({:error, error}, _opts), do: raise("the agent failed: #{error.message}")
 
   def run({:interrupted, interrupt}, opts) do
     {:ok, review} = HITL.from_interrupt(interrupt)
-    IO.puts("review requested: #{hd(review.action_requests).name}")
 
-    decisions = Enum.map(review.action_requests, fn _request -> %{type: :approve} end)
+    for request <- review.action_requests,
+        do: IO.puts("Review: #{request.name} #{inspect(request.args)} -> approve")
 
-    BeamWeaver.Examples.HITLAgent.resume(%{decisions: decisions}, opts)
+    decisions = Enum.map(review.action_requests, fn _request -> HITL.decision(:approve) end)
+
+    decisions
+    |> BeamWeaver.Examples.HITLAgent.resume_review(opts)
     |> run(opts)
   end
 end
 
-opts = [checkpointer: CheckpointETS.new(), config: %{"configurable" => %{"thread_id" => "example-hitl"}}]
+saver = CheckpointETS.new()
+opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "ticket-42"}}]
 
-%{messages: messages} =
-  BeamWeaver.Examples.HITLAgent.invoke(
-    %{messages: [Message.user("Look up the authentication docs and summarize them.")]},
-    opts
-  )
-  |> BeamWeaver.Examples.HITLAgent.Review.run(opts)
+{:interrupted, _} =
+  paused =
+  %{messages: ["Order A-1001 arrived broken. Please refund it."]}
+  |> BeamWeaver.Examples.HITLAgent.invoke(opts)
 
-IO.puts(Message.text(List.last(messages)))
+%{messages: messages} = BeamWeaver.Examples.HITLAgent.Reviewer.run(paused, opts)
+
+messages |> List.last() |> Support.assert_text!() |> IO.puts()
+Support.assert_tools_called!(messages, [{"issue_refund", %{"order_id" => "A-1001"}}])

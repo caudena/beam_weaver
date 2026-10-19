@@ -1,16 +1,28 @@
 defmodule BeamWeaver.Memory do
-  @moduledoc """
-  Long-term memory store helpers.
+  @moduledoc ~S"""
+  Namespaced records shared across conversations through explicit store adapters.
 
-  Memory stores are independent from graph checkpoints. Checkpoints persist a
-  thread's execution state; memory stores persist namespaced application data
-  across threads and runs.
+  A record is addressed by namespace parts and key. Construct namespaces from
+  trusted application identity: prefix search includes descendant namespaces,
+  so a broad prefix can cross collection boundaries. Checkpoints and memory are
+  separate; storing a record does not automatically insert it in a model prompt.
+
+  Values should be JSON-friendly for consistent persistent storage. TTL options
+  use minutes, while cache TTLs use milliseconds. ETS records live with their
+  owner; Ecto records live in the configured PostgreSQL repository.
+  See [Long-Term Memory](long_term_memory.md) for real save/recall and semantic
+  search examples, and [Storage](storage.md) for migrations and retention.
   """
 
   alias BeamWeaver.Adapter.Dispatch
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Memory.GetOp
+  alias BeamWeaver.Memory.ListNamespacesOp
+  alias BeamWeaver.Memory.MatchCondition
+  alias BeamWeaver.Memory.PutOp
   alias BeamWeaver.Memory.Query
+  alias BeamWeaver.Memory.SearchOp
+  alias BeamWeaver.Result
   alias BeamWeaver.Telemetry.AdapterEvent
   alias BeamWeaver.Telemetry.AdapterHelpers
 
@@ -18,64 +30,47 @@ defmodule BeamWeaver.Memory do
   @type namespace :: [String.t() | atom()] | String.t() | atom()
   @type key :: String.t() | atom()
 
+  @doc """
+  Writes/replaces one value and metadata; returns {:ok, Memory.Item} or an error. ttl is minutes.
+  """
   @spec put(store(), namespace(), key(), term(), keyword()) :: {:ok, map()} | {:error, term()}
-  def put(store, namespace, key, value, opts \\ []) do
-    namespace = normalize_namespace(namespace)
-
-    result =
-      with :ok <- Query.validate_namespace(namespace) do
-        store_call(store, :put, [namespace, to_string(key), value, opts])
-      end
-
-    emit(store, :put, %{count: 1}, namespace: namespace, key: key, result: result)
-    result
-  end
-
-  @spec get(store(), namespace(), key()) :: {:ok, map()} | :error | {:error, term()}
-  def get(store, namespace, key) do
-    namespace = normalize_namespace(namespace)
-
-    result =
-      with :ok <- Query.validate_namespace(namespace) do
-        store_call(store, :get, [namespace, to_string(key)])
-      end
-
-    emit(store, :get, %{count: 1}, namespace: namespace, key: key, result: result)
-    result
-  end
-
-  @spec delete(store(), namespace(), key()) :: :ok | {:error, term()}
-  def delete(store, namespace, key) do
-    namespace = normalize_namespace(namespace)
-
-    result =
-      with :ok <- Query.validate_namespace(namespace) do
-        store_call(store, :delete, [namespace, to_string(key)])
-      end
-
-    emit(store, :delete, %{count: 1}, namespace: namespace, key: key, result: result)
-    result
-  end
+  def put(store, namespace, key, value, opts \\ []), do: item_call(store, :put, namespace, key, [value, opts])
 
   @doc """
-  Retrieves multiple keys from one namespace in the input order.
+  Returns {:ok, item}, :error for absence/expiry, or a storage error.
+  """
+  @spec get(store(), namespace(), key()) :: {:ok, map()} | :error | {:error, term()}
+  def get(store, namespace, key), do: item_call(store, :get, namespace, key, [])
 
-  Missing keys are returned as `nil`, matching the observable LangChain
-  `BaseStore.mget` contract while keeping BeamWeaver's namespaced memory model.
+  @doc """
+  Deletes one key; missing keys are ignored by the built-in adapters.
+  """
+  @spec delete(store(), namespace(), key()) :: :ok | {:error, term()}
+  def delete(store, namespace, key), do: item_call(store, :delete, namespace, key, [])
+
+  @doc """
+  Retrieves the values of multiple keys from one namespace in the input order.
+
+  Missing keys are returned as `nil`. If any read fails, the first error is
+  returned as `{:error, error}`.
   """
   @spec get_many(store(), namespace(), [key()]) :: [term()] | {:error, term()}
   def get_many(store, namespace, keys) when is_list(keys) do
     namespace = normalize_namespace(namespace)
 
     with :ok <- Query.validate_namespace(namespace) do
-      Enum.map(keys, fn key ->
-        case store_call(store, :get, [namespace, to_string(key)]) do
-          {:ok, item} -> item.value
-          :error -> nil
-          {:error, error} -> {:error, error}
-        end
-      end)
-      |> unwrap_many()
+      results = Enum.map(keys, &store_call(store, :get, [namespace, to_string(&1)]))
+
+      case Enum.find(results, &match?({:error, _error}, &1)) do
+        nil ->
+          Enum.map(results, fn
+            {:ok, item} -> item.value
+            :error -> nil
+          end)
+
+        error ->
+          error
+      end
     end
   end
 
@@ -141,10 +136,13 @@ defmodule BeamWeaver.Memory do
     end
   end
 
+  @doc """
+  Searches a namespace prefix, including descendants. Returns items or an error; default page size is 10.
+  """
   @spec search(store(), namespace(), keyword()) :: [map()] | {:error, term()}
   def search(store, namespace, opts \\ []) do
     namespace = normalize_namespace(namespace)
-    result = store_call(store, :search, [namespace, opts])
+    result = with :ok <- Query.validate_prefix(namespace), do: store_call(store, :search, [namespace, opts])
 
     emit(store, :search, %{count: AdapterHelpers.result_count(result)}, %{
       namespace: namespace,
@@ -156,6 +154,9 @@ defmodule BeamWeaver.Memory do
     result
   end
 
+  @doc """
+  Lists namespaces with optional prefix, suffix, depth and pagination filters.
+  """
   @spec list_namespaces(store(), keyword()) :: [[String.t()]] | {:error, term()}
   def list_namespaces(store, opts \\ []) do
     opts =
@@ -163,7 +164,10 @@ defmodule BeamWeaver.Memory do
       |> Keyword.update(:prefix, [], &normalize_namespace/1)
       |> Keyword.update(:suffix, [], &normalize_namespace/1)
 
-    result = store_call(store, :list_namespaces, [opts])
+    result =
+      with :ok <- Query.validate_prefix(opts[:prefix]),
+           :ok <- Query.validate_prefix(opts[:suffix]),
+           do: store_call(store, :list_namespaces, [opts])
 
     emit(store, :list_namespaces, %{count: AdapterHelpers.result_count(result)}, %{result: result})
 
@@ -185,13 +189,27 @@ defmodule BeamWeaver.Memory do
   @spec tokenize_path(String.t() | list()) :: {:ok, list()} | :error
   def tokenize_path(path), do: Query.tokenize_path(path)
 
+  @doc """
+  Runs `BeamWeaver.Memory.GetOp`, `BeamWeaver.Memory.PutOp`,
+  `BeamWeaver.Memory.SearchOp` and `BeamWeaver.Memory.ListNamespacesOp`
+  operations in order and returns one result for each: an item or `nil` for
+  a get, `nil` for a put, a list for a search or a listing, and
+  `{:error, error}` for an operation that failed.
+
+  Namespaces and keys are normalized as in `put/5`. If any operation has an
+  invalid namespace, none runs and the batch returns
+  `{:error, {:invalid_namespace, message}}`.
+  """
   @spec batch(store(), [struct()]) :: [term()] | {:error, term()}
   def batch(store, ops) when is_list(ops) do
-    result = store_call(store, :batch, [ops])
+    result = with {:ok, ops} <- Result.traverse(ops, &normalize_op/1), do: store_call(store, :batch, [ops])
     emit(store, :batch, %{count: length(ops)}, %{result: result})
     result
   end
 
+  @doc """
+  Removes expired records through the adapter's optional sweep capability.
+  """
   @spec sweep_expired(store(), keyword()) ::
           {:ok, non_neg_integer()} | :ok | {:error, Error.t()}
   def sweep_expired(store, opts \\ []) do
@@ -200,6 +218,9 @@ defmodule BeamWeaver.Memory do
     result
   end
 
+  @doc """
+  Deletes entries according to adapter retention options; unsupported retention returns an error.
+  """
   @spec prune(store(), keyword()) :: {:ok, non_neg_integer()} | {:error, Error.t()}
   def prune(store, opts \\ []) do
     opts =
@@ -218,63 +239,48 @@ defmodule BeamWeaver.Memory do
     result
   end
 
-  @spec async_batch(store(), [struct()], keyword()) :: Async.handle()
-  def async_batch(store, ops, opts \\ []) do
-    Async.run(fn -> batch(store, ops) end, opts)
-  end
-
-  @spec async_put(store(), namespace(), key(), term(), keyword()) :: Async.handle()
-  def async_put(store, namespace, key, value, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> put(store, namespace, key, value, call_opts) end, async_opts)
-  end
-
-  @spec async_get(store(), namespace(), key(), keyword()) :: Async.handle()
-  def async_get(store, namespace, key, opts \\ []) do
-    Async.run(fn -> get(store, namespace, key) end, opts)
-  end
-
-  @spec async_delete(store(), namespace(), key(), keyword()) :: Async.handle()
-  def async_delete(store, namespace, key, opts \\ []) do
-    Async.run(fn -> delete(store, namespace, key) end, opts)
-  end
-
-  @spec async_get_many(store(), namespace(), [key()], keyword()) :: Async.handle()
-  def async_get_many(store, namespace, keys, opts \\ []) do
-    Async.run(fn -> get_many(store, namespace, keys) end, opts)
-  end
-
-  @spec async_put_many(store(), namespace(), [{key(), term()}], keyword()) :: Async.handle()
-  def async_put_many(store, namespace, key_value_pairs, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> put_many(store, namespace, key_value_pairs, call_opts) end, async_opts)
-  end
-
-  @spec async_delete_many(store(), namespace(), [key()], keyword()) :: Async.handle()
-  def async_delete_many(store, namespace, keys, opts \\ []) do
-    Async.run(fn -> delete_many(store, namespace, keys) end, opts)
-  end
-
-  @spec async_yield_keys(store(), namespace(), keyword()) :: Async.handle()
-  def async_yield_keys(store, namespace, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> yield_keys(store, namespace, call_opts) end, async_opts)
-  end
-
-  @spec async_search(store(), namespace(), keyword()) :: Async.handle()
-  def async_search(store, namespace, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> search(store, namespace, call_opts) end, async_opts)
-  end
-
-  @spec async_list_namespaces(store(), keyword()) :: Async.handle()
-  def async_list_namespaces(store, opts \\ []) do
-    {async_opts, call_opts} = Async.split_opts(opts)
-    Async.run(fn -> list_namespaces(store, call_opts) end, async_opts)
-  end
-
+  @doc """
+  Validates and normalizes namespace parts; empty parts and dots are rejected.
+  """
   @spec normalize_namespace(namespace()) :: [String.t()]
   def normalize_namespace(namespace), do: Query.normalize_namespace(namespace)
+
+  defp item_call(store, operation, namespace, key, args) do
+    namespace = normalize_namespace(namespace)
+
+    result =
+      with :ok <- Query.validate_namespace(namespace),
+           do: store_call(store, operation, [namespace, to_string(key) | args])
+
+    emit(store, operation, %{count: 1}, namespace: namespace, key: key, result: result)
+    result
+  end
+
+  defp normalize_op(%op{namespace: namespace, key: key} = struct) when op in [GetOp, PutOp] do
+    namespace = normalize_namespace(namespace)
+
+    with :ok <- Query.validate_batch_namespace(namespace),
+         do: {:ok, %{struct | namespace: namespace, key: to_string(key)}}
+  end
+
+  defp normalize_op(%SearchOp{namespace: prefix} = op) do
+    prefix = normalize_namespace(prefix)
+    with :ok <- Query.validate_prefix(prefix), do: {:ok, %{op | namespace: prefix}}
+  end
+
+  defp normalize_op(%ListNamespacesOp{match_conditions: conditions} = op) do
+    with {:ok, conditions} <- Result.traverse(conditions || [], &normalize_condition/1),
+         do: {:ok, %{op | match_conditions: conditions}}
+  end
+
+  defp normalize_op(op), do: {:ok, op}
+
+  defp normalize_condition(%MatchCondition{path: path} = condition) do
+    path = normalize_namespace(path)
+    with :ok <- Query.validate_prefix(path), do: {:ok, %{condition | path: path}}
+  end
+
+  defp normalize_condition(condition), do: {:ok, condition}
 
   defp store_call(store, callback, args) do
     Dispatch.call(store, callback, args,
@@ -282,13 +288,6 @@ defmodule BeamWeaver.Memory do
       missing_message: "memory store does not implement BeamWeaver.Memory.Store",
       invalid_message: "memory store must be an explicit BeamWeaver.Memory.Store adapter"
     )
-  end
-
-  defp unwrap_many(values) do
-    case Enum.find(values, &match?({:error, _error}, &1)) do
-      nil -> values
-      {:error, error} -> {:error, error}
-    end
   end
 
   defp emit(store, operation, measurements, metadata) do

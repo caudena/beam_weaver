@@ -1,22 +1,3 @@
-defprotocol BeamWeaver.Sandbox.Backend do
-  @moduledoc """
-  Protocol dispatch for sandbox backends.
-
-  Custom sandboxes must implement this protocol, usually by using
-  `BeamWeaver.Sandbox`.
-  """
-
-  def write(sandbox, path, content, opts)
-  def read(sandbox, path, opts)
-  def execute(sandbox, command, opts)
-  def edit(sandbox, path, old, new, opts)
-  def ls(sandbox, path, opts)
-  def glob(sandbox, pattern, opts)
-  def grep(sandbox, pattern, opts)
-  def upload_files(sandbox, files, opts)
-  def download_files(sandbox, paths, opts)
-end
-
 defmodule BeamWeaver.Sandbox do
   @moduledoc """
   Sandbox backend behaviour and facade.
@@ -26,10 +7,12 @@ defmodule BeamWeaver.Sandbox do
   claiming to be a hardened remote sandbox.
   """
 
-  alias BeamWeaver.Core.Async
+  import BeamWeaver.MapShape, only: [compact: 2, put_present: 3]
+
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.ID
-  alias BeamWeaver.Sandbox.Backend, as: SandboxBackend
+  alias BeamWeaver.Filesystem.Edit
+  alias BeamWeaver.Filesystem.FileDataUtils
   alias BeamWeaver.Telemetry
   alias BeamWeaver.Tracing.Redactor
 
@@ -122,33 +105,23 @@ defmodule BeamWeaver.Sandbox do
   @callback grep(term(), String.t(), keyword()) :: GrepResult.t()
   @callback upload_files(term(), [{String.t(), iodata()}], keyword()) :: [UploadResult.t()]
   @callback download_files(term(), [String.t()], keyword()) :: [DownloadResult.t()]
+  @callback canonical_paths(term(), [String.t()], keyword()) :: [{:ok, String.t()} | {:error, String.t()}]
+
+  @optional_callbacks canonical_paths: 3
 
   defmacro __using__(_opts) do
     quote do
       @behaviour BeamWeaver.Sandbox
-
-      defimpl BeamWeaver.Sandbox.Backend, for: __MODULE__ do
-        def write(sandbox, path, content, opts), do: @for.write(sandbox, path, content, opts)
-        def read(sandbox, path, opts), do: @for.read(sandbox, path, opts)
-        def execute(sandbox, command, opts), do: @for.execute(sandbox, command, opts)
-        def edit(sandbox, path, old, new, opts), do: @for.edit(sandbox, path, old, new, opts)
-        def ls(sandbox, path, opts), do: @for.ls(sandbox, path, opts)
-        def glob(sandbox, pattern, opts), do: @for.glob(sandbox, pattern, opts)
-        def grep(sandbox, pattern, opts), do: @for.grep(sandbox, pattern, opts)
-        def upload_files(sandbox, files, opts), do: @for.upload_files(sandbox, files, opts)
-        def download_files(sandbox, paths, opts), do: @for.download_files(sandbox, paths, opts)
-      end
     end
   end
 
   def local(opts \\ []), do: BeamWeaver.Sandbox.Local.new(opts)
 
-  def write(sandbox, path, content, opts \\ []),
-    do: SandboxBackend.write(sandbox, path, content, opts)
+  # Each function calls the sandbox struct's module.
+  def write(%module{} = sandbox, path, content, opts \\ []), do: module.write(sandbox, path, content, opts)
+  def read(%module{} = sandbox, path, opts \\ []), do: module.read(sandbox, path, opts)
 
-  def read(sandbox, path, opts \\ []), do: SandboxBackend.read(sandbox, path, opts)
-
-  def execute(sandbox, command, opts \\ []) do
+  def execute(%module{} = sandbox, command, opts \\ []) do
     start = System.monotonic_time()
     metadata = execute_metadata(sandbox, command, opts)
 
@@ -161,8 +134,8 @@ defmodule BeamWeaver.Sandbox do
     try do
       result =
         sandbox
-        |> SandboxBackend.execute(command, opts)
-        |> put_execute_metadata(metadata, opts)
+        |> module.execute(command, opts)
+        |> put_execute_metadata(metadata)
 
       event = if timeout_result?(result), do: :timeout, else: :stop
 
@@ -194,64 +167,84 @@ defmodule BeamWeaver.Sandbox do
     end
   end
 
-  def edit(sandbox, path, old, new, opts \\ []),
-    do: SandboxBackend.edit(sandbox, path, old, new, opts)
+  def edit(%module{} = sandbox, path, old, new, opts \\ []), do: module.edit(sandbox, path, old, new, opts)
+  def ls(%module{} = sandbox, path, opts \\ []), do: module.ls(sandbox, path, opts)
+  def glob(%module{} = sandbox, pattern, opts \\ []), do: module.glob(sandbox, pattern, opts)
+  def grep(%module{} = sandbox, pattern, opts \\ []), do: module.grep(sandbox, pattern, opts)
+  def upload_files(%module{} = sandbox, files, opts \\ []), do: module.upload_files(sandbox, files, opts)
+  def download_files(%module{} = sandbox, paths, opts \\ []), do: module.download_files(sandbox, paths, opts)
 
-  def ls(sandbox, path, opts \\ []), do: SandboxBackend.ls(sandbox, path, opts)
-  def glob(sandbox, pattern, opts \\ []), do: SandboxBackend.glob(sandbox, pattern, opts)
-  def grep(sandbox, pattern, opts \\ []), do: SandboxBackend.grep(sandbox, pattern, opts)
+  @doc """
+  The path of the file `sandbox` reaches for each of `paths`, in order, with
+  every symlink on the way followed; see `BeamWeaver.Filesystem.canonical_paths/3`,
+  which calls this for a `BeamWeaver.Filesystem.Sandbox`.
 
-  def upload_files(sandbox, files, opts \\ []),
-    do: SandboxBackend.upload_files(sandbox, files, opts)
+  The callback is optional: a sandbox without it is treated as having no
+  links, and its paths come back cleaned. An adapter that wraps another
+  sandbox should pass the call to it.
+  """
+  @spec canonical_paths(term(), [String.t()], keyword()) :: [{:ok, String.t()} | {:error, String.t()}]
+  def canonical_paths(%module{} = sandbox, paths, opts \\ []) when is_list(paths) do
+    if BeamWeaver.Behaviour.exported?(module, :canonical_paths, 3),
+      do: module.canonical_paths(sandbox, paths, opts),
+      else: Enum.map(paths, &BeamWeaver.Filesystem.Path.clean_path/1)
+  end
 
-  def download_files(sandbox, paths, opts \\ []),
-    do: SandboxBackend.download_files(sandbox, paths, opts)
-
-  def async_read(sandbox, path, opts \\ []), do: Async.run_call(opts, &read(sandbox, path, &1))
-
-  def async_write(sandbox, path, content, opts \\ []),
-    do: Async.run_call(opts, &write(sandbox, path, content, &1))
-
-  def async_execute(sandbox, command, opts \\ []),
-    do: Async.run_call(opts, &execute(sandbox, command, &1))
-
-  def async_upload_files(sandbox, files, opts \\ []),
-    do: Async.run_call(opts, &upload_files(sandbox, files, &1))
-
-  def async_download_files(sandbox, paths, opts \\ []),
-    do: Async.run_call(opts, &download_files(sandbox, paths, &1))
+  @doc "Whether `sandbox` is a struct whose module implements this behaviour."
+  @spec sandbox?(term()) :: boolean()
+  def sandbox?(%module{}), do: BeamWeaver.Behaviour.implemented_by?(module, __MODULE__)
+  def sandbox?(_other), do: false
 
   def error(type, message, details \\ %{}), do: Error.new(type, message, details)
 
-  defp execute_metadata(sandbox, command, opts) do
-    base =
-      %{
-        sandbox: sandbox_module(sandbox),
-        command: command,
-        command_id: Keyword.get_lazy(opts, :command_id, fn -> ID.uuidv7() end),
-        timeout_ms: timeout_option_ms(Keyword.get(opts, :timeout))
-      }
-      |> clean_metadata()
+  @doc false
+  # The result of an edit of `content`, the text of the file at `path`;
+  # `write` saves the edited text and returns `:ok` or `{:error, error}`.
+  def edit_result(path, content, old, new, opts, write) do
+    case Edit.replacement(content, old, new, Keyword.get(opts, :replace_all, false)) do
+      {:ok, occurrences, updated} ->
+        case write.(updated) do
+          :ok -> %EditResult{path: path, occurrences: occurrences}
+          {:error, error} -> %EditResult{path: path, error: error}
+        end
 
-    base
+      {:error, :not_found} ->
+        %EditResult{path: path, error: "string not found"}
+
+      {:error, "multiple occurrences" = error} ->
+        %EditResult{path: path, occurrences: length(:binary.matches(content, old)), error: error}
+
+      {:error, error} ->
+        %EditResult{path: path, error: FileDataUtils.error_string(error)}
+    end
+  end
+
+  defp execute_metadata(sandbox, command, opts) do
+    %{
+      sandbox: BeamWeaver.Telemetry.AdapterHelpers.adapter_name(sandbox),
+      command: command,
+      command_id: Keyword.get_lazy(opts, :command_id, fn -> ID.uuidv7() end),
+      timeout_ms: timeout_option_ms(Keyword.get(opts, :timeout))
+    }
+    |> clean_metadata()
     |> Map.merge(Keyword.get(opts, :metadata, %{}) || %{})
     |> Redactor.redact()
   end
 
-  defp put_execute_metadata(%ExecuteResult{} = result, metadata, _opts) do
+  defp put_execute_metadata(%ExecuteResult{} = result, metadata) do
     result_metadata =
       metadata
       |> Map.merge(result.metadata || %{})
-      |> maybe_put(:exit_code, result.exit_code)
-      |> maybe_put(:truncated, result.truncated)
-      |> maybe_put(:error, result.error)
+      |> put_present(:exit_code, result.exit_code)
+      |> put_present(:truncated, result.truncated)
+      |> put_present(:error, result.error)
       |> clean_metadata()
       |> Redactor.redact()
 
     %{result | metadata: result_metadata}
   end
 
-  defp put_execute_metadata(other, _metadata, _opts), do: other
+  defp put_execute_metadata(other, _metadata), do: other
 
   defp result_metadata(%ExecuteResult{} = result) do
     %{
@@ -265,74 +258,114 @@ defmodule BeamWeaver.Sandbox do
     |> Redactor.redact()
   end
 
-  defp result_metadata(result) do
-    %{result: :invalid, value: inspect(result)}
-    |> clean_metadata()
-    |> Redactor.redact()
-  end
+  defp result_metadata(result), do: Redactor.redact(%{result: :invalid, value: inspect(result)})
 
   defp timeout_result?(%ExecuteResult{error: "timeout"}), do: true
   defp timeout_result?(%ExecuteResult{exit_code: 124, error: error}), do: error in ["timeout", :timeout]
   defp timeout_result?(_result), do: false
 
-  defp sandbox_module(%{__struct__: module}), do: module
-  defp sandbox_module(other), do: inspect(other)
-
-  defp timeout_option_ms(nil), do: nil
-  defp timeout_option_ms(:infinity), do: :infinity
   defp timeout_option_ms(timeout) when is_integer(timeout) and timeout > 3_600, do: timeout
   defp timeout_option_ms(timeout) when is_integer(timeout), do: timeout * 1_000
   defp timeout_option_ms(timeout), do: timeout
 
-  defp clean_metadata(map) do
-    map
-    |> Enum.reject(fn
-      {_key, nil} -> true
-      {_key, ""} -> true
-      {_key, value} when is_map(value) and map_size(value) == 0 -> true
-      _entry -> false
-    end)
-    |> Map.new()
-  end
-
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+  defp clean_metadata(map), do: compact(map, [nil, :empty_string, :empty_map])
 end
 
 defmodule BeamWeaver.Sandbox.OutputBuffer do
   @moduledoc false
 
-  defstruct chunks: [], bytes: 0, max_bytes: 0, truncated?: false
-
-  def collect(%__MODULE__{max_bytes: max_bytes} = buffer, chunk) when max_bytes <= 0 do
-    %{buffer | truncated?: buffer.truncated? or byte_size(IO.iodata_to_binary(chunk)) > 0}
-  end
+  # Collects a command's output, up to `max_bytes` (or `:unlimited`). Longer
+  # output keeps its first and its last half, with a line between them that
+  # says how many bytes were cut, so the end of a build or test log survives
+  # too. Neither half ends in part of a UTF-8 character. The tail is a list of
+  # chunks, newest first, cut back to the last half only once it holds twice
+  # as much, so output that arrives in many small chunks isn't copied over
+  # and over.
+  defstruct head: [], head_bytes: 0, tail: [], tail_bytes: 0, bytes: 0, max_bytes: :unlimited
 
   def collect(%__MODULE__{} = buffer, chunk) do
     chunk = IO.iodata_to_binary(chunk)
-    chunk_size = byte_size(chunk)
+    buffer = %{buffer | bytes: buffer.bytes + byte_size(chunk)}
 
-    cond do
-      chunk_size == 0 ->
+    case buffer.max_bytes do
+      :unlimited ->
+        %{buffer | head: [chunk | buffer.head]}
+
+      max_bytes ->
+        {head, tail} = split(chunk, div(max_bytes, 2) - buffer.head_bytes)
+
         buffer
-
-      buffer.bytes >= buffer.max_bytes ->
-        %{buffer | truncated?: true}
-
-      buffer.bytes + chunk_size <= buffer.max_bytes ->
-        %{buffer | chunks: [chunk | buffer.chunks], bytes: buffer.bytes + chunk_size}
-
-      true ->
-        remaining = buffer.max_bytes - buffer.bytes
-        prefix = binary_part(chunk, 0, remaining)
-
-        %{buffer | chunks: [prefix | buffer.chunks], bytes: buffer.max_bytes, truncated?: true}
+        |> add_head(head)
+        |> add_tail(tail, max_bytes - div(max_bytes, 2))
     end
   end
 
   def finish(%__MODULE__{} = buffer) do
-    {buffer.chunks |> Enum.reverse() |> IO.iodata_to_binary(), buffer.truncated?}
+    head = buffer.head |> Enum.reverse() |> IO.iodata_to_binary()
+    tail = buffer.tail |> Enum.reverse() |> IO.iodata_to_binary()
+
+    if buffer.max_bytes == :unlimited or buffer.bytes <= buffer.max_bytes do
+      {head <> tail, false}
+    else
+      head = drop_partial_end(head)
+      tail = tail |> last_bytes(buffer.max_bytes - div(buffer.max_bytes, 2)) |> drop_partial_start(0)
+      cut = buffer.bytes - byte_size(head) - byte_size(tail)
+      {head <> "\n... [#{cut} bytes cut] ...\n" <> tail, true}
+    end
   end
+
+  defp split(chunk, room) when byte_size(chunk) <= room, do: {chunk, ""}
+  defp split(chunk, room) when room <= 0, do: {"", chunk}
+  defp split(chunk, room), do: {binary_part(chunk, 0, room), binary_part(chunk, room, byte_size(chunk) - room)}
+
+  defp add_head(buffer, ""), do: buffer
+
+  defp add_head(buffer, chunk),
+    do: %{buffer | head: [chunk | buffer.head], head_bytes: buffer.head_bytes + byte_size(chunk)}
+
+  defp add_tail(buffer, "", _tail_max), do: buffer
+
+  defp add_tail(buffer, chunk, tail_max) do
+    tail = [chunk | buffer.tail]
+    tail_bytes = buffer.tail_bytes + byte_size(chunk)
+
+    if tail_bytes > 2 * tail_max do
+      kept = tail |> Enum.reverse() |> IO.iodata_to_binary() |> last_bytes(tail_max)
+      %{buffer | tail: [kept], tail_bytes: byte_size(kept)}
+    else
+      %{buffer | tail: tail, tail_bytes: tail_bytes}
+    end
+  end
+
+  defp last_bytes(bytes, count) when byte_size(bytes) <= count, do: bytes
+  defp last_bytes(bytes, count), do: binary_part(bytes, byte_size(bytes) - count, count)
+
+  # Drops a character that the cut left unfinished at the end: the last lead
+  # byte within the last four bytes says how long its character is.
+  defp drop_partial_end(bytes) do
+    size = byte_size(bytes)
+
+    Enum.find_value(1..min(size, 4)//1, bytes, fn back ->
+      <<byte>> = binary_part(bytes, size - back, 1)
+
+      cond do
+        byte in 0x80..0xBF -> nil
+        back < utf8_length(byte) -> binary_part(bytes, 0, size - back)
+        true -> bytes
+      end
+    end)
+  end
+
+  # Drops the rest of a character the cut began in the middle of.
+  defp drop_partial_start(<<byte, rest::binary>>, dropped) when byte in 0x80..0xBF and dropped < 3,
+    do: drop_partial_start(rest, dropped + 1)
+
+  defp drop_partial_start(bytes, _dropped), do: bytes
+
+  defp utf8_length(byte) when byte in 0xC0..0xDF, do: 2
+  defp utf8_length(byte) when byte in 0xE0..0xEF, do: 3
+  defp utf8_length(byte) when byte in 0xF0..0xF7, do: 4
+  defp utf8_length(_byte), do: 1
 end
 
 defimpl Collectable, for: BeamWeaver.Sandbox.OutputBuffer do
@@ -350,16 +383,30 @@ end
 defmodule BeamWeaver.Sandbox.Local do
   @moduledoc """
   Local filesystem sandbox adapter.
+
+  Files live in the `:root` directory and commands run there with `sh`, on the
+  host, as the user that runs your application. Commands start from a minimal
+  environment: `PATH`, `HOME`, `LANG`, the `LC_*` variables, `TMPDIR`, `USER`
+  and `SHELL`, plus the variables in `:env`. Pass `inherit_env: true` to give
+  them your application's whole environment instead.
   """
 
   use BeamWeaver.Sandbox
 
+  alias BeamWeaver.Filesystem.FileDataUtils
   alias BeamWeaver.Filesystem.Path, as: FilesystemPath
   alias BeamWeaver.Sandbox
+  alias BeamWeaver.Sandbox.CommandRunner
 
   @default_max_output_bytes 512_000
 
-  defstruct root: nil, max_binary_preview: 512_000, max_output_bytes: @default_max_output_bytes
+  # `env` can carry credentials meant only for the commands.
+  @derive {Inspect, except: [:env]}
+  defstruct root: nil,
+            env: %{},
+            inherit_env: false,
+            max_binary_preview: 512_000,
+            max_output_bytes: @default_max_output_bytes
 
   def new(opts \\ []) do
     root =
@@ -371,6 +418,8 @@ defmodule BeamWeaver.Sandbox.Local do
 
     %__MODULE__{
       root: root,
+      env: opts |> Keyword.get(:env, %{}) |> Map.new(fn {key, value} -> {to_string(key), value} end),
+      inherit_env: Keyword.get(opts, :inherit_env, false),
       max_binary_preview: Keyword.get(opts, :max_binary_preview, 512_000),
       max_output_bytes: Keyword.get(opts, :max_output_bytes, @default_max_output_bytes)
     }
@@ -379,90 +428,63 @@ defmodule BeamWeaver.Sandbox.Local do
   @impl true
   def write(%__MODULE__{} = sandbox, path, content, _opts) do
     with {:ok, resolved} <- resolve(sandbox, path),
-         {:exists, false} <- {:exists, File.exists?(resolved)},
          :ok <- File.mkdir_p(Path.dirname(resolved)),
          :ok <- File.write(resolved, IO.iodata_to_binary(content)) do
       %Sandbox.WriteResult{path: path, error: nil}
     else
-      {:exists, true} -> %Sandbox.WriteResult{path: path, error: "file already exists"}
-      {:error, reason} -> %Sandbox.WriteResult{path: path, error: error_string(reason)}
+      {:error, reason} -> %Sandbox.WriteResult{path: path, error: FileDataUtils.error_string(reason)}
     end
   end
 
   @impl true
   def read(%__MODULE__{} = sandbox, path, opts) do
     with {:ok, resolved} <- resolve(sandbox, path),
-         {:ok, bytes} <- File.read(resolved) do
-      read_bytes(path, bytes, sandbox, opts)
+         {:ok, data} <-
+           FileDataUtils.encode_disk_file(
+             resolved,
+             path,
+             Keyword.put(opts, :max_binary_preview, sandbox.max_binary_preview)
+           ) do
+      %Sandbox.ReadResult{file_data: %{"content" => data.content, "encoding" => data.encoding}}
     else
-      {:error, reason} -> %Sandbox.ReadResult{error: error_string(reason)}
+      {:error, reason} -> %Sandbox.ReadResult{error: FileDataUtils.error_string(reason)}
     end
   end
 
   @impl true
   def execute(%__MODULE__{} = sandbox, command, opts) do
-    case opts |> Keyword.get(:timeout, 120) |> timeout_ms() do
-      {:ok, timeout} ->
-        task =
-          Task.async(fn ->
-            {{output, truncated?}, exit_code} =
-              System.cmd("sh", ["-c", command],
-                cd: sandbox.root,
-                stderr_to_stdout: true,
-                into: %BeamWeaver.Sandbox.OutputBuffer{max_bytes: sandbox.max_output_bytes}
-              )
+    with {:ok, timeout} <- opts |> Keyword.get(:timeout, 120) |> CommandRunner.timeout_ms() do
+      case CommandRunner.run(command,
+             shell: CommandRunner.shell(),
+             cd: sandbox.root,
+             env: sandbox.env,
+             inherit_env: sandbox.inherit_env,
+             timeout: timeout,
+             into: %BeamWeaver.Sandbox.OutputBuffer{max_bytes: sandbox.max_output_bytes}
+           ) do
+        {:ok, {output, truncated?}, exit_code} ->
+          %Sandbox.ExecuteResult{exit_code: exit_code, output: output, truncated: truncated?}
 
-            {output, exit_code, truncated?}
-          end)
+        {:timeout, _kill_attempted?} ->
+          %Sandbox.ExecuteResult{exit_code: 124, output: "", error: "timeout", truncated: false}
 
-        case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
-          {:ok, {output, exit_code, truncated?}} ->
-            %Sandbox.ExecuteResult{exit_code: exit_code, output: output, truncated: truncated?}
-
-          nil ->
-            %Sandbox.ExecuteResult{exit_code: 124, output: "", error: "timeout", truncated: false}
-        end
-
+        {:error, reason} ->
+          %Sandbox.ExecuteResult{exit_code: 1, output: "", error: CommandRunner.error_message(reason)}
+      end
+    else
       {:error, error} ->
         %Sandbox.ExecuteResult{exit_code: nil, output: "", error: error, truncated: false}
     end
-  rescue
-    exception ->
-      %Sandbox.ExecuteResult{exit_code: 1, output: "", error: Exception.message(exception)}
   end
 
   @impl true
   def edit(%__MODULE__{} = sandbox, path, old, new, opts) do
-    replace_all? = Keyword.get(opts, :replace_all, false)
-
     with {:ok, resolved} <- resolve(sandbox, path),
          {:ok, content} <- File.read(resolved) do
-      occurrences = count_occurrences(content, old)
-
-      cond do
-        occurrences == 0 ->
-          %Sandbox.EditResult{path: path, occurrences: 0, error: "string not found"}
-
-        occurrences > 1 and not replace_all? ->
-          %Sandbox.EditResult{path: path, occurrences: occurrences, error: "multiple occurrences"}
-
-        true ->
-          updated =
-            if replace_all?,
-              do: String.replace(content, old, new),
-              else: String.replace(content, old, new, global: false)
-
-          :ok = File.write!(resolved, updated)
-
-          %Sandbox.EditResult{
-            path: path,
-            occurrences: if(replace_all?, do: occurrences, else: 1),
-            error: nil
-          }
-      end
+      Sandbox.edit_result(path, content, old, new, opts, &File.write!(resolved, &1))
     else
       {:error, reason} ->
-        %Sandbox.EditResult{path: path, occurrences: 0, error: error_string(reason)}
+        %Sandbox.EditResult{path: path, occurrences: 0, error: FileDataUtils.error_string(reason)}
     end
   end
 
@@ -470,28 +492,21 @@ defmodule BeamWeaver.Sandbox.Local do
   def ls(%__MODULE__{} = sandbox, path, _opts) do
     with {:ok, resolved} <- resolve(sandbox, path),
          {:ok, names} <- File.ls(resolved) do
-      entries =
-        names
-        |> Enum.sort()
-        |> Enum.map(fn name -> {name, Path.join(resolved, name)} end)
-        |> Enum.filter(fn {_name, full} -> safe_resolved_path?(sandbox, full) end)
-        |> Enum.map(fn {name, full} ->
-          entry_path =
-            if host_path?(sandbox, path),
-              do: Path.join(path, name),
-              else: join_virtual(path, name)
+      host_path? = host_path?(sandbox, path)
 
+      entries =
+        for name <- Enum.sort(names), full = Path.join(resolved, name), safe_resolved_path?(sandbox, full) do
           %{
-            "path" => entry_path,
+            "path" => if(host_path?, do: Path.join(path, name), else: FilesystemPath.join_virtual(path, name)),
             "is_dir" => File.dir?(full),
             "type" => if(File.dir?(full), do: "directory", else: "file"),
             "size" => if(File.regular?(full), do: File.stat!(full).size)
           }
-        end)
+        end
 
       %Sandbox.ListResult{entries: entries}
     else
-      {:error, reason} -> %Sandbox.ListResult{error: error_string(reason)}
+      {:error, reason} -> %Sandbox.ListResult{error: FileDataUtils.error_string(reason)}
     end
   end
 
@@ -499,23 +514,30 @@ defmodule BeamWeaver.Sandbox.Local do
   def glob(%__MODULE__{} = sandbox, pattern, opts) do
     base = Keyword.get(opts, :path, "/")
 
-    case resolve(sandbox, base) do
-      {:ok, resolved} ->
-        matches =
-          resolved
-          |> Path.join(pattern)
-          |> Path.wildcard(match_dot: true)
-          |> Enum.filter(&safe_resolved_path?(sandbox, &1))
-          |> Enum.sort()
-          |> Enum.map(fn path ->
-            %{"path" => glob_path(sandbox, base, path, resolved), "is_dir" => File.dir?(path)}
-            |> maybe_put_size(sandbox, base, path)
-          end)
+    with {:ok, resolved} <- resolve(sandbox, base),
+         :ok <- exists(resolved),
+         {:ok, paths} <- search(resolved, FilesystemPath.search_pattern(pattern)) do
+      host_path? = host_path?(sandbox, base)
 
-        %Sandbox.GlobResult{matches: matches}
+      matches =
+        paths
+        |> Enum.filter(&safe_resolved_path?(sandbox, &1))
+        |> Enum.sort()
+        |> Enum.map(fn path ->
+          relative = Path.relative_to(path, resolved)
 
-      {:error, reason} ->
-        %Sandbox.GlobResult{error: error_string(reason)}
+          if host_path?,
+            do: %{"path" => relative, "is_dir" => File.dir?(path)},
+            else: %{
+              "path" => FilesystemPath.join_virtual(base, relative),
+              "is_dir" => File.dir?(path),
+              "size" => if(File.regular?(path), do: File.stat!(path).size)
+            }
+        end)
+
+      %Sandbox.GlobResult{matches: matches}
+    else
+      {:error, reason} -> %Sandbox.GlobResult{error: FileDataUtils.error_string(reason)}
     end
   end
 
@@ -523,36 +545,55 @@ defmodule BeamWeaver.Sandbox.Local do
   def grep(%__MODULE__{} = sandbox, pattern, opts) do
     base = Keyword.get(opts, :path, "/")
 
-    include =
-      opts |> Keyword.get(:glob, Keyword.get(opts, :include, "**/*")) |> normalize_grep_glob()
+    include = FilesystemPath.grep_pattern(Keyword.get(opts, :glob, Keyword.get(opts, :include))) || "**/*"
 
-    case resolve(sandbox, base) do
-      {:ok, resolved} ->
-        matches =
-          resolved
-          |> Path.join(include)
-          |> Path.wildcard(match_dot: true)
-          |> Enum.filter(&safe_resolved_path?(sandbox, &1))
-          |> Enum.reject(&File.dir?/1)
-          |> Enum.flat_map(&grep_file(&1, pattern, resolved, base, host_path?(sandbox, base)))
-
-        %Sandbox.GrepResult{matches: matches}
-
-      {:error, reason} ->
-        %Sandbox.GrepResult{error: error_string(reason)}
+    with {:ok, resolved} <- resolve(sandbox, base),
+         :ok <- exists(resolved),
+         {:ok, matches} <- grep_files(sandbox, resolved, base, include, pattern) do
+      %Sandbox.GrepResult{matches: matches}
+    else
+      {:error, reason} -> %Sandbox.GrepResult{error: FileDataUtils.error_string(reason)}
     end
   end
 
-  @impl true
-  def upload_files(%__MODULE__{} = sandbox, files, _opts) do
-    Enum.map(files, fn {path, content} ->
-      with {:ok, resolved} <- resolve(sandbox, path),
-           :ok <- File.mkdir_p(Path.dirname(resolved)),
-           :ok <- File.write(resolved, IO.iodata_to_binary(content)) do
-        %Sandbox.UploadResult{path: path, error: nil}
-      else
-        {:error, reason} -> %Sandbox.UploadResult{path: path, error: error_string(reason)}
+  defp exists(resolved), do: if(File.exists?(resolved), do: :ok, else: {:error, :enoent})
+
+  # Grep searches the file `base` names, or the files below the folder that
+  # `include` picks.
+  defp grep_files(sandbox, resolved, base, include, pattern) do
+    if File.regular?(resolved) do
+      {:ok, grep_file(resolved, pattern, Path.dirname(resolved), Path.dirname(base), host_path?(sandbox, base))}
+    else
+      with {:ok, paths} <- search(resolved, include) do
+        {:ok,
+         paths
+         |> Enum.filter(&safe_resolved_path?(sandbox, &1))
+         |> Enum.reject(&(File.dir?(&1) or git_path?(&1, resolved)))
+         |> Enum.flat_map(&grep_file(&1, pattern, resolved, base, host_path?(sandbox, base)))}
       end
+    end
+  end
+
+  # The paths under `resolved` that `pattern` matches: the walk finds every
+  # path the pattern can match, and the glob rule keeps the ones it does.
+  defp search(resolved, pattern) do
+    with {:ok, match?} <- FilesystemPath.glob_matcher(pattern),
+         {:ok, paths} <- safe_wildcard(resolved, FilesystemPath.walk_pattern(pattern)),
+         do: {:ok, Enum.filter(paths, &match?.(Path.relative_to(&1, resolved)))}
+  end
+
+  # `Path.wildcard/2` raises on a malformed pattern; return an error result
+  # instead of crashing the tool call.
+  defp safe_wildcard(resolved, pattern) do
+    {:ok, resolved |> Path.join(pattern) |> Path.wildcard(match_dot: true)}
+  rescue
+    _exception -> {:error, "invalid_pattern"}
+  end
+
+  @impl true
+  def upload_files(%__MODULE__{} = sandbox, files, opts) do
+    Enum.map(files, fn {path, content} ->
+      %Sandbox.UploadResult{path: path, error: write(sandbox, path, content, opts).error}
     end)
   end
 
@@ -568,22 +609,43 @@ defmodule BeamWeaver.Sandbox.Local do
           %Sandbox.DownloadResult{path: path, content: nil, error: "is_directory"}
 
         {:error, reason} ->
-          %Sandbox.DownloadResult{path: path, content: nil, error: error_string(reason)}
+          %Sandbox.DownloadResult{path: path, content: nil, error: FileDataUtils.error_string(reason)}
       end
     end)
   end
 
+  # The file a path reaches is the real path `resolve/2` checks it against,
+  # relative to the root.
+  @impl true
+  def canonical_paths(%__MODULE__{root: root}, paths, _opts) do
+    real_root = FilesystemPath.real_root(root)
+    Enum.map(paths, &FilesystemPath.canonical_path(real_root, &1))
+  end
+
+  # A path is always a sandbox path: an absolute path rooted at `root`, so
+  # `/secrets/key.txt` is `root`'s `secrets/key.txt`. A host path that happens
+  # to point inside `root` (`<root>/secrets/key.txt`) is taken literally as the
+  # sandbox path `/<root>/secrets/...`, which resolves under `root` and does
+  # not exist, rather than being reinterpreted as `/secrets/...`. That keeps
+  # the path the sandbox reads identical to the one a `Filesystem.Permission`
+  # rule checks, so a host path can't slip past a deny rule.
+  #
+  # `virtual_to_real/2` validates containment and refuses a symlink that
+  # escapes the root; the returned candidate is the plain `root`-relative join
+  # (not the realpath), so it stays comparable to `root` for the containment
+  # filter the listing calls apply.
   defp resolve(%__MODULE__{root: root}, path) when is_binary(path) do
-    with {:ok, virtual_path, candidate} <- sandbox_path(root, path),
+    with {:ok, virtual_path} <- FilesystemPath.clean_path(path),
          {:ok, _resolved, _virtual} <- FilesystemPath.virtual_to_real(root, virtual_path) do
-      {:ok, candidate}
+      relative = String.trim_leading(virtual_path, "/")
+      {:ok, Path.expand(Path.join(root, relative))}
     end
   end
 
   defp resolve(_sandbox, _path), do: {:error, "invalid_path"}
 
   defp safe_resolved_path?(%__MODULE__{root: root}, path) do
-    with {:ok, virtual_path, _candidate} <- sandbox_path(root, path),
+    with {:ok, virtual_path} <- sandbox_path(root, path),
          {:ok, _resolved, _virtual} <- FilesystemPath.virtual_to_real(root, virtual_path) do
       true
     else
@@ -598,155 +660,33 @@ defmodule BeamWeaver.Sandbox.Local do
 
       if expanded == root or String.starts_with?(expanded, root <> "/") do
         relative = Path.relative_to(expanded, root)
-
-        {:ok, if(relative == ".", do: "/", else: "/" <> relative), expanded}
+        {:ok, if(relative == ".", do: "/", else: "/" <> relative)}
       else
-        relative = String.trim_leading(clean_path, "/")
-        {:ok, clean_path, Path.expand(Path.join(root, relative))}
+        {:ok, clean_path}
       end
     end
   end
 
-  defp read_bytes(path, bytes, sandbox, opts) do
-    cond do
-      bytes == "" ->
-        %Sandbox.ReadResult{
-          file_data: %{
-            "content" => "System reminder: File exists but has empty contents",
-            "encoding" => "utf-8"
-          }
-        }
-
-      binary_content?(bytes) and byte_size(bytes) > sandbox.max_binary_preview ->
-        %Sandbox.ReadResult{
-          error: "File '#{path}': Binary file exceeds maximum preview size of #{sandbox.max_binary_preview} bytes"
-        }
-
-      binary_content?(bytes) ->
-        offset = Keyword.get(opts, :offset, 0)
-        limit = Keyword.get(opts, :limit)
-        bytes = slice_bytes(bytes, offset, limit)
-
-        %Sandbox.ReadResult{
-          file_data: %{"content" => Base.encode64(bytes), "encoding" => "base64"}
-        }
-
-      true ->
-        %Sandbox.ReadResult{
-          file_data: %{"content" => slice_lines(bytes, opts), "encoding" => "utf-8"}
-        }
-    end
-  end
-
-  defp slice_bytes(bytes, offset, nil),
-    do: binary_part(bytes, min(offset, byte_size(bytes)), max(byte_size(bytes) - offset, 0))
-
-  defp slice_bytes(bytes, offset, limit),
-    do:
-      binary_part(
-        bytes,
-        min(offset, byte_size(bytes)),
-        min(limit, max(byte_size(bytes) - offset, 0))
-      )
-
-  defp slice_lines(bytes, opts) do
-    offset = Keyword.get(opts, :offset, 0)
-    limit = Keyword.get(opts, :limit)
-
-    bytes
-    |> String.split("\n")
-    |> Enum.drop(offset)
-    |> maybe_take(limit)
-    |> Enum.join("\n")
-  end
-
-  defp maybe_take(lines, nil), do: lines
-  defp maybe_take(lines, limit), do: Enum.take(lines, limit)
-
-  defp binary_content?(bytes),
-    do: not String.valid?(bytes) or :binary.match(bytes, <<0>>) != :nomatch
+  # Grep searches text: version control internals and binary files are left
+  # out, as text search tools leave them out.
+  defp git_path?(path, resolved_base), do: ".git" in Path.split(Path.relative_to(path, resolved_base))
 
   defp grep_file(path, pattern, resolved_base, requested_base, host_path?) do
-    case File.read(path) do
-      {:ok, content} ->
-        content
-        |> String.split("\n")
-        |> Enum.with_index(1)
-        |> Enum.flat_map(fn {line, line_number} ->
-          if String.contains?(line, pattern),
-            do: [
-              %{
-                "path" => grep_path(path, requested_base, resolved_base, host_path?),
-                "relative_path" => Path.relative_to(path, resolved_base),
-                "line" => line_number,
-                "text" => line
-              }
-            ],
-            else: []
-        end)
+    with {:ok, content} <- File.read(path),
+         false <- FileDataUtils.binary_content?(content) do
+      relative = Path.relative_to(path, resolved_base)
+      match_path = if host_path?, do: path, else: FilesystemPath.join_virtual(requested_base, relative)
 
-      _error ->
-        []
+      for {line, line_number} <- content |> String.split("\n") |> Enum.with_index(1),
+          String.contains?(line, pattern),
+          do: %{"path" => match_path, "relative_path" => relative, "line" => line_number, "text" => line}
+    else
+      _binary_or_error -> []
     end
   end
-
-  defp normalize_grep_glob(pattern) do
-    cond do
-      pattern in [nil, ""] -> "**/*"
-      String.starts_with?(pattern, "**/") -> pattern
-      String.contains?(pattern, "/") -> pattern
-      true -> Path.join("**", pattern)
-    end
-  end
-
-  defp count_occurrences(content, ""), do: if(content == "", do: 1, else: 0)
-
-  defp count_occurrences(content, needle) do
-    content
-    |> :binary.matches(needle)
-    |> length()
-  end
-
-  defp error_string(:enoent), do: "file_not_found"
-  defp error_string(:eacces), do: "permission_denied"
-  defp error_string(reason) when is_binary(reason), do: reason
-  defp error_string(reason), do: inspect(reason)
-
-  defp timeout_ms(timeout) when is_integer(timeout) and timeout in 1..3600,
-    do: {:ok, timeout * 1_000}
-
-  defp timeout_ms(_timeout),
-    do: {:error, "timeout must be an integer between 1 and 3600 seconds"}
 
   defp host_path?(%__MODULE__{root: root}, path) when is_binary(path) do
     expanded = Path.expand(path)
     expanded == root or String.starts_with?(expanded, root <> "/")
-  end
-
-  defp glob_path(sandbox, base, path, resolved_base) do
-    if host_path?(sandbox, base),
-      do: Path.relative_to(path, resolved_base),
-      else: join_virtual(base, Path.relative_to(path, resolved_base))
-  end
-
-  defp grep_path(path, _requested_base, _resolved_base, true), do: path
-
-  defp grep_path(path, requested_base, resolved_base, false),
-    do: join_virtual(requested_base, Path.relative_to(path, resolved_base))
-
-  defp maybe_put_size(entry, sandbox, base, path) do
-    if host_path?(sandbox, base) do
-      entry
-    else
-      Map.put(entry, "size", if(File.regular?(path), do: File.stat!(path).size))
-    end
-  end
-
-  defp join_virtual("/", ""), do: "/"
-  defp join_virtual("/", relative), do: "/" <> String.trim_leading(relative, "/")
-  defp join_virtual(base, ""), do: base
-
-  defp join_virtual(base, relative) do
-    String.trim_trailing(base, "/") <> "/" <> String.trim_leading(relative, "/")
   end
 end

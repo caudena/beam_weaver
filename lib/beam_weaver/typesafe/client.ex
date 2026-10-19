@@ -1,5 +1,16 @@
 defmodule BeamWeaver.TypeSafe.Client do
-  @moduledoc "TypeSafe System One HTTP client using BeamWeaver's shared transport."
+  @moduledoc ~S"""
+  HTTP connection and account model discovery for TypeSafe Jev decisions.
+
+  Use BeamWeaver.TypeSafe.DecisionModel for typed evaluation and decoding.
+  list_models/2 queries account availability without changing local profiles.
+  Configure credentials for the intended base URL and keep raw headers out of
+  logs. A model-list response is not evidence of successful decision inference.
+  See [TypeSafe](providers/typesafe.md).
+  """
+
+  use BeamWeaver.Provider.RedactedInspect
+
   alias BeamWeaver.Config
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Provider.{HTTPClient, ResponseDecoder}
@@ -9,6 +20,9 @@ defmodule BeamWeaver.TypeSafe.Client do
   defstruct [:http, base_url: "https://api.typesafe.ai"]
   @type t :: %__MODULE__{}
 
+  @doc """
+  Builds client connection settings from explicit options and provider application configuration; makes no request.
+  """
   def new(opts \\ []) do
     opts = if is_map(opts), do: Map.to_list(opts), else: opts
     base_url = Config.option(opts, :base_url, [:typesafe, :base_url], "https://api.typesafe.ai")
@@ -30,8 +44,7 @@ defmodule BeamWeaver.TypeSafe.Client do
 
   @doc false
   def evaluate(%__MODULE__{} = client, body, opts) do
-    with :ok <- credentials(client),
-         {:ok, raw, request_id} <- decode(HTTPClient.post_json(client.http, body, opts)) do
+    with {:ok, raw, request_id} <- decode(HTTPClient.post_json(client.http, body, opts)) do
       Decoder.decode(raw, body["questions"], body["model"], request_id, opts)
     end
   end
@@ -40,8 +53,7 @@ defmodule BeamWeaver.TypeSafe.Client do
   def list_models(%__MODULE__{} = client, opts \\ []) do
     endpoint = String.trim_trailing(client.base_url, "/") <> "/v1/models"
 
-    with :ok <- credentials(client),
-         {:ok, %{"models" => models}, request_id} <-
+    with {:ok, %{"models" => models}, request_id} <-
            decode(HTTPClient.get(client.http, Keyword.put(opts, :endpoint, endpoint))),
          true <- is_list(models) and Enum.all?(models, &valid_model?/1) do
       {:ok, %{models: models, request_id: request_id}}
@@ -56,23 +68,10 @@ defmodule BeamWeaver.TypeSafe.Client do
 
   defp valid_model?(_), do: false
 
-  defp credentials(%{http: %{api_key: key}}) when key in [nil, ""],
-    do: {:error, Error.new(:model_authentication, "configure TYPESAFE_API_KEY or TYPESAFE_API", %{retryable: false})}
-
-  defp credentials(_), do: :ok
-
   defp decode(result) do
-    case ResponseDecoder.json(result, provider: :typesafe, request_id_header: "x-typesafe-request-id") do
-      {:ok, body} ->
-        {:ok, %Response{headers: headers}} = result
-        {:ok, body, Map.new(headers)["x-typesafe-request-id"]}
-
-      {:error, error} ->
-        {:error, error}
+    with {:ok, body} <- ResponseDecoder.json(result, provider: :typesafe, request_id_header: "x-typesafe-request-id") do
+      {:ok, %Response{headers: headers}} = result
+      {:ok, body, Map.new(headers)["x-typesafe-request-id"]}
     end
   end
-end
-
-defimpl Inspect, for: BeamWeaver.TypeSafe.Client do
-  def inspect(value, opts), do: BeamWeaver.Provider.RedactedInspect.redacted_struct(value, opts)
 end

@@ -1,26 +1,32 @@
 defmodule BeamWeaver.Memory.GetOp do
   @moduledoc """
   Batch operation for retrieving one memory item.
+
+  `refresh_ttl: true` starts the item's lifetime again and `false` leaves it;
+  `nil` (the default) follows the store's `:refresh_ttl` option.
   """
 
   @enforce_keys [:namespace, :key]
-  defstruct [:namespace, :key, refresh_ttl: true]
+  defstruct [:namespace, :key, refresh_ttl: nil]
 end
 
 defmodule BeamWeaver.Memory.SearchOp do
   @moduledoc """
   Batch operation for searching memory items by namespace prefix.
+
+  `refresh_ttl: true` starts the lifetime of the items found again and `false`
+  leaves it; `nil` (the default) follows the store's `:refresh_ttl` option.
   """
 
   @enforce_keys [:namespace]
-  defstruct [:namespace, filter: %{}, limit: 10, offset: 0, query: nil, refresh_ttl: true]
+  defstruct [:namespace, filter: %{}, limit: 10, offset: 0, query: nil, refresh_ttl: nil]
 end
 
 defmodule BeamWeaver.Memory.PutOp do
   @moduledoc """
   Batch operation for storing or deleting a memory item.
 
-  A `nil` value deletes the item, matching LangGraph's `PutOp` behavior.
+  A `nil` value deletes the item.
   """
 
   @enforce_keys [:namespace, :key]

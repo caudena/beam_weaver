@@ -44,13 +44,13 @@ defmodule BeamWeaver.Checkpoint.Ecto.Query do
   def checkpoints(saver), do: {saver.checkpoints_table, CheckpointRow}
   def writes(saver), do: {saver.writes_table, WriteRow}
 
-  def all(saver, query), do: run(saver, &saver.repo.all(query, &1), [])
-  def one(saver, query), do: run(saver, &saver.repo.one(query, &1), [])
-  def delete_all(saver, query), do: run(saver, &saver.repo.delete_all(query, &1), [])
+  def all(saver, query), do: run(saver, &saver.repo.all(query, &1))
+  def one(saver, query), do: run(saver, &saver.repo.one(query, &1))
+  def delete_all(saver, query), do: run(saver, &saver.repo.delete_all(query, &1))
+  def update_all(saver, query, updates), do: run(saver, &saver.repo.update_all(query, updates, &1))
 
-  def insert_all(saver, source, rows, opts \\ []) do
-    run(saver, &saver.repo.insert_all(source, rows, Keyword.merge(opts, &1)), [])
-  end
+  def insert_all(saver, source, rows, opts),
+    do: run(saver, &saver.repo.insert_all(source, rows, Keyword.merge(opts, &1)))
 
   def transaction(saver, fun) when is_function(fun, 0) do
     opts = if sqlite?(saver), do: [mode: :immediate], else: []
@@ -65,7 +65,6 @@ defmodule BeamWeaver.Checkpoint.Ecto.Query do
            opts
          ) do
       {:ok, {:beam_weaver_transaction, result}} -> result
-      {:error, %Error{} = error} -> {:error, error}
       {:error, reason} -> {:error, normalize(reason)}
     end
   rescue
@@ -75,12 +74,11 @@ defmodule BeamWeaver.Checkpoint.Ecto.Query do
   def lock_owner(saver, thread_id, checkpoint_ns) when is_binary(thread_id) do
     cond do
       postgres?(saver) ->
-        raw(
-          saver,
-          "SELECT pg_advisory_xact_lock(hashtextextended($1, hashtext($2)::bigint))",
-          [thread_id, checkpoint_ns]
-        )
-        |> ok_result()
+        sql = "SELECT pg_advisory_xact_lock(hashtextextended($1, hashtext($2)::bigint))"
+
+        with {:ok, _result} <-
+               AdapterError.query(saver, sql, [thread_id, checkpoint_ns], :checkpoint_error, "checkpoint adapter error"),
+             do: :ok
 
       sqlite?(saver) ->
         :ok
@@ -98,26 +96,16 @@ defmodule BeamWeaver.Checkpoint.Ecto.Query do
   def lock_owner(_saver, _thread_id, _checkpoint_ns),
     do: {:error, Error.new(:invalid_checkpoint, "checkpoint config requires thread_id")}
 
-  def postgres?(saver), do: adapter(saver) == Ecto.Adapters.Postgres
-  def sqlite?(saver), do: adapter(saver) == @sqlite_adapter
+  defp postgres?(saver), do: adapter(saver) == Ecto.Adapters.Postgres
+  defp sqlite?(saver), do: adapter(saver) == @sqlite_adapter
 
   defp adapter(saver), do: saver.repo.__adapter__()
 
-  defp raw(saver, sql, params) do
-    AdapterError.query(saver, sql, params,
-      type: :checkpoint_error,
-      message: "checkpoint adapter error"
-    )
-  end
-
-  defp ok_result({:ok, _result}), do: :ok
-  defp ok_result({:error, _reason} = error), do: error
-
-  defp run(_saver, fun, opts) do
-    case fun.(opts) do
-      {:error, %Error{} = error} -> {:error, error}
-      result -> {:ok, result}
-    end
+  # The saver's `prefix` applies to every table of a query, subqueries included.
+  # Like the migration, `nil`, `false` and `""` name no schema.
+  defp run(saver, fun) do
+    opts = if saver.prefix in [nil, false, ""], do: [], else: [prefix: saver.prefix]
+    {:ok, fun.(opts)}
   rescue
     exception -> {:error, normalize(exception)}
   end

@@ -1,5 +1,7 @@
 defmodule BeamWeaver.TextSplitter.HTMLSemantic do
   @moduledoc false
+
+  import BeamWeaver.MapShape, only: [put_present: 3]
   alias BeamWeaver.Core.Document
   alias BeamWeaver.TextSplitter.RecursiveCharacter
 
@@ -26,14 +28,7 @@ defmodule BeamWeaver.TextSplitter.HTMLSemantic do
             add_start_index: false,
             length_function: nil
 
-  def new(opts \\ []) do
-    opts =
-      opts
-      |> normalize_alias(:headers_to_split_on, :headers)
-      |> normalize_alias(:max_chunk_size, :chunk_size)
-
-    struct(__MODULE__, opts)
-  end
+  def new(opts), do: struct(__MODULE__, opts)
 
   def split_text(%__MODULE__{} = splitter, text) when is_binary(text) do
     splitter
@@ -47,21 +42,17 @@ defmodule BeamWeaver.TextSplitter.HTMLSemantic do
         do: document.metadata,
         else: %{}
 
-    splitter
-    |> split_html(document.content, parent_metadata)
-    |> Enum.map(&%{&1 | id: document.id})
+    split_html(splitter, document.content, parent_metadata)
   end
 
   defp split_html(%__MODULE__{} = splitter, html, parent_metadata) do
-    html =
-      html
-      |> strip_unsafe()
-      |> replace_custom_handlers(splitter)
-      |> replace_media(splitter)
-      |> replace_links(splitter)
-      |> filter_tags(splitter)
-
     html
+    |> strip_unsafe()
+    |> replace_custom_handlers(splitter)
+    |> replace_media(splitter)
+    |> replace_links(splitter)
+    |> filter_allowlist(splitter)
+    |> filter_denylist(splitter)
     |> sections(splitter)
     |> Enum.flat_map(fn {metadata, content} ->
       content = html_text(content, splitter)
@@ -73,7 +64,7 @@ defmodule BeamWeaver.TextSplitter.HTMLSemantic do
   defp sections(html, %{headers: []}), do: [{%{}, html}]
 
   defp sections(html, splitter) do
-    header_tags = splitter.headers |> Enum.map(&elem(&1, 0)) |> Enum.map(&String.downcase/1)
+    header_tags = Enum.map(splitter.headers, &String.downcase(elem(&1, 0)))
     header_names = Map.new(splitter.headers, fn {tag, name} -> {String.downcase(tag), name} end)
     regex = Regex.compile!("<(#{Enum.join(header_tags, "|")})(?:\\s[^>]*)?>(.*?)</\\1>", "is")
     matches = Regex.scan(regex, html, return: :index)
@@ -94,7 +85,7 @@ defmodule BeamWeaver.TextSplitter.HTMLSemantic do
           |> binary_part(inner_start, inner_length)
           |> html_text(%{splitter | normalize_text: false})
 
-        headers = resolve_html_headers(headers, tag, title, header_names)
+        headers = resolve_html_headers(headers, tag, title)
         {start + length, headers, docs}
       end)
 
@@ -105,10 +96,6 @@ defmodule BeamWeaver.TextSplitter.HTMLSemantic do
     |> Enum.reverse()
   end
 
-  defp maybe_add_section(docs, _headers, content, _header_names)
-       when content == "" or is_nil(content),
-       do: docs
-
   defp maybe_add_section(docs, headers, content, header_names) do
     if String.trim(html_text(content, %__MODULE__{})) == "" do
       docs
@@ -117,13 +104,12 @@ defmodule BeamWeaver.TextSplitter.HTMLSemantic do
     end
   end
 
-  defp resolve_html_headers(headers, tag, title, header_names) do
+  defp resolve_html_headers(headers, tag, title) do
     level = html_level(tag)
 
     headers
     |> Enum.reject(fn {existing_tag, _title} -> html_level(existing_tag) >= level end)
     |> Kernel.++([{tag, title}])
-    |> Enum.filter(fn {header_tag, _title} -> Map.has_key?(header_names, header_tag) end)
   end
 
   defp html_header_metadata(headers, header_names) do
@@ -144,9 +130,6 @@ defmodule BeamWeaver.TextSplitter.HTMLSemantic do
     |> String.replace(~r/<!--.*?-->/su, " ")
     |> String.replace(~r/<(script|style)[^>]*>.*?<\/\1>/isu, " ")
   end
-
-  defp replace_custom_handlers(html, %{custom_handlers: handlers}) when map_size(handlers) == 0,
-    do: html
 
   defp replace_custom_handlers(html, %{custom_handlers: handlers}) do
     Enum.reduce(handlers, html, fn {tag, handler}, acc ->
@@ -196,12 +179,6 @@ defmodule BeamWeaver.TextSplitter.HTMLSemantic do
       text = html_text(inner, %__MODULE__{})
       "[#{text}](#{attrs["href"] || ""})"
     end)
-  end
-
-  defp filter_tags(html, splitter) do
-    html
-    |> filter_allowlist(splitter)
-    |> filter_denylist(splitter)
   end
 
   defp filter_allowlist(html, %{allowlist_tags: nil}), do: html
@@ -255,7 +232,7 @@ defmodule BeamWeaver.TextSplitter.HTMLSemantic do
           chunk_overlap: splitter.chunk_overlap,
           keep_separator: splitter.keep_separator
         ]
-        |> maybe_put(:separators, splitter.separators)
+        |> put_present(:separators, splitter.separators)
 
       opts
       |> RecursiveCharacter.new()
@@ -332,14 +309,4 @@ defmodule BeamWeaver.TextSplitter.HTMLSemantic do
     |> String.replace("&quot;", "\"")
     |> String.replace("&#39;", "'")
   end
-
-  defp normalize_alias(opts, from, to) do
-    case Keyword.fetch(opts, from) do
-      {:ok, value} -> opts |> Keyword.delete(from) |> Keyword.put(to, value)
-      :error -> opts
-    end
-  end
-
-  defp maybe_put(opts, _key, nil), do: opts
-  defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
 end

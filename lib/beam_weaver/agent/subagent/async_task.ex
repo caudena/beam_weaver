@@ -21,33 +21,10 @@ defmodule BeamWeaver.Agent.Subagent.AsyncTask do
     :result
   ]
 
-  defstruct id: nil,
-            task_id: nil,
-            subagent_name: nil,
-            graph_id: nil,
-            url: nil,
-            thread_id: nil,
-            run_id: nil,
-            status: nil,
-            created_at: nil,
-            last_checked_at: nil,
-            last_updated_at: nil,
-            description: nil,
-            remote: %{},
-            updates: [],
-            result: nil
+  defstruct (@fields -- [:remote, :updates]) ++ [remote: %{}, updates: []]
 
   @type t :: %__MODULE__{}
 
   def new(%__MODULE__{} = task), do: task
-  def new(opts) when is_list(opts), do: opts |> Map.new() |> new()
-
-  def new(attrs) when is_map(attrs) do
-    attrs
-    |> MapAccess.normalize_keys(@fields)
-    |> then(&struct(__MODULE__, &1))
-  end
-
-  def to_map(%__MODULE__{} = task), do: Map.from_struct(task)
-  def to_map(task) when is_map(task), do: task
+  def new(attrs) when is_map(attrs), do: struct(__MODULE__, MapAccess.normalize_keys(attrs, @fields))
 end

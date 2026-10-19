@@ -7,7 +7,7 @@ defmodule BeamWeaver.Agent.Middleware.ToolChoice do
   next model turn to use a specific tool or any tool.
   """
 
-  @behaviour BeamWeaver.Agent.Middleware
+  use BeamWeaver.Agent.Middleware
 
   alias BeamWeaver.Agent.ModelRequest
   alias BeamWeaver.Core.Tool
@@ -28,6 +28,7 @@ defmodule BeamWeaver.Agent.Middleware.ToolChoice do
   @impl true
   def name(_middleware), do: :tool_choice
 
+  @impl true
   def wrap_model_call(%__MODULE__{} = middleware, %ModelRequest{} = request, handler) do
     if apply_choice?(middleware, request) do
       request

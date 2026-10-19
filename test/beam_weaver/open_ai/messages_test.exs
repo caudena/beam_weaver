@@ -3,7 +3,6 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
 
   alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Message
-  alias BeamWeaver.Core.MessageLike
   alias BeamWeaver.Core.Messages.InvalidToolCall
   alias BeamWeaver.Core.Messages.ToolCall
   alias BeamWeaver.Core.Tool
@@ -139,8 +138,6 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
   end
 
   test "converts Responses API image, audio, and file data blocks" do
-    # Upstream reference:
-    # - test_convert_to_openai_data_block
     assert {:ok, input} =
              Messages.to_responses_input([
                Message.user([
@@ -915,8 +912,6 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
   end
 
   test "preserves Responses reasoning summaries and text annotations" do
-    # Upstream reference:
-    # - test_convert_to_v1_from_responses
     response = %{
       "id" => "resp_annotations",
       "output" => [
@@ -970,8 +965,6 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
   end
 
   test "preserves mixed Responses output items and unknown provider blocks" do
-    # Upstream reference:
-    # - test_convert_to_v1_from_responses, adjusted for BeamWeaver's raw provider block retention.
     response = %{
       "id" => "resp_mixed",
       "model" => "gpt-5.4",
@@ -1118,8 +1111,6 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
   end
 
   test "Chat Completions translator handles OpenAI input data blocks" do
-    # Upstream reference:
-    # - test_convert_to_v1_from_openai_input and test_convert_to_openai_data_block.
     alias BeamWeaver.OpenAI.ChatCompletions.Messages, as: ChatMessages
 
     assert {:ok, [openai_message]} =
@@ -1214,24 +1205,14 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
       "type" => "function"
     }
 
-    assert {:ok, function_message} =
-             MessageLike.to_message(%{
-               "role" => "function",
-               "name" => "test_function",
-               "content" => ~s({"result":"Example #1"})
-             })
-
-    assert function_message.role == :assistant
-    assert function_message.metadata == %{}
-
     assert {:ok, developer_message} =
-             MessageLike.to_message(%{"role" => "developer", "content" => "dev"})
+             Message.from(%{"role" => "developer", "content" => "dev"})
 
     assert developer_message.role == :system
     assert developer_message.metadata.openai_role == :developer
 
     assert {:ok, assistant_tool_call} =
-             MessageLike.to_message(%{
+             Message.from(%{
                "role" => "assistant",
                "content" => nil,
                "tool_calls" => [raw_invalid_tool_call, raw_tool_call]
@@ -1253,22 +1234,15 @@ defmodule BeamWeaver.OpenAI.MessagesTest do
 
     assert {:ok, openai_messages} =
              ChatMessages.to_openai_messages([
-               MessageLike.to_message(%{"role" => "user", "content" => "foo", "name" => "test"})
+               Message.from(%{"role" => "user", "content" => "foo", "name" => "test"})
                |> elem(1),
                developer_message,
-               function_message,
                Message.tool("foo", tool_call_id: "bar"),
                assistant_tool_call
              ])
 
     assert %{"role" => "user", "content" => "foo", "name" => "test"} in openai_messages
     assert %{"role" => "developer", "content" => "dev"} in openai_messages
-
-    assert %{
-             "role" => "assistant",
-             "content" => ~s({"result":"Example #1"}),
-             "name" => "test_function"
-           } in openai_messages
 
     assert %{"role" => "tool", "content" => "foo", "tool_call_id" => "bar"} in openai_messages
 

@@ -5,23 +5,23 @@ defmodule BeamWeaver.Migrations.SQLite do
 
   @current_version 2
 
-  def current_version(opts \\ []) do
+  def current_version(opts) do
     checkpoint_spec!(opts)
     @current_version
   end
 
-  def migrated_version(opts \\ []) do
+  def migrated_version(opts) do
     table = checkpoint_spec!(opts).checkpoints_table
 
-    case table_columns(repo_for(opts), table) do
+    case table_columns(Keyword.get_lazy(opts, :repo, &repo/0), table) do
       [] -> 0
       columns -> if "commit_order" in columns, do: 2, else: 1
     end
   end
 
-  def up(opts \\ []) do
+  def up(opts) do
     spec = checkpoint_spec!(opts)
-    current = migrated_version(Keyword.put(opts, :adapter, :checkpoint))
+    current = migrated_version(opts)
     target = Keyword.get(opts, :version, @current_version)
 
     if current == 0 and target >= 1, do: create_initial(spec)
@@ -29,9 +29,9 @@ defmodule BeamWeaver.Migrations.SQLite do
     :ok
   end
 
-  def down(opts \\ []) do
+  def down(opts) do
     spec = checkpoint_spec!(opts)
-    current = migrated_version(Keyword.put(opts, :adapter, :checkpoint))
+    current = migrated_version(opts)
     target = Keyword.get(opts, :version, 1)
 
     if current >= 2 and target <= 2, do: remove_ordering(spec)
@@ -39,7 +39,7 @@ defmodule BeamWeaver.Migrations.SQLite do
     :ok
   end
 
-  def verify_migrated!(opts \\ []) do
+  def verify_migrated!(opts) do
     case migrated_version(opts) do
       @current_version ->
         :ok
@@ -181,19 +181,11 @@ defmodule BeamWeaver.Migrations.SQLite do
 
     case normalize_selector(selector) do
       [{:checkpoint, adapter_opts}] ->
+        table = &Keyword.get(adapter_opts, &1, Keyword.get(opts, &1, &2))
+
         %{
-          checkpoints_table:
-            Keyword.get(
-              adapter_opts,
-              :checkpoints_table,
-              Keyword.get(opts, :checkpoints_table, "beam_weaver_checkpoints")
-            ),
-          writes_table:
-            Keyword.get(
-              adapter_opts,
-              :writes_table,
-              Keyword.get(opts, :writes_table, "beam_weaver_checkpoint_writes")
-            )
+          checkpoints_table: table.(:checkpoints_table, "beam_weaver_checkpoints"),
+          writes_table: table.(:writes_table, "beam_weaver_checkpoint_writes")
         }
 
       _other ->
@@ -203,8 +195,6 @@ defmodule BeamWeaver.Migrations.SQLite do
 
   defp normalize_selector(:checkpoint), do: [{:checkpoint, []}]
   defp normalize_selector([:checkpoint]), do: [{:checkpoint, []}]
-  defp normalize_selector({:checkpoint, opts}), do: [{:checkpoint, opts}]
-  defp normalize_selector([{:checkpoint, opts}]), do: [{:checkpoint, opts}]
   defp normalize_selector(other), do: List.wrap(other)
 
   defp reject_prefix!(opts) do
@@ -219,8 +209,6 @@ defmodule BeamWeaver.Migrations.SQLite do
       _other -> []
     end
   end
-
-  defp repo_for(opts), do: Keyword.get_lazy(opts, :repo, &repo/0)
 
   defp index_name(table, suffix), do: quote_name("#{table}_#{suffix}")
 

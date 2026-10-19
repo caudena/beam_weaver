@@ -6,17 +6,51 @@ defmodule BeamWeaver.Tool.Schema do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Tool.Schema.Fields
   alias BeamWeaver.Tool.Schema.Refs
-  alias BeamWeaver.Tool.SchemaLike
 
   @doc """
   Converts a schema-like value into a JSON-schema-like map.
 
-  This is the protocol-backed entry point used for broad, explicit schema
-  conversion. It accepts already-shaped JSON schema maps, BeamWeaver field
-  declarations, NimbleOptions-style specs, and Ecto-style schema modules.
+  Accepts JSON schema maps, BeamWeaver field declarations
+  (`{name, type}` or `{name, type, opts}`), NimbleOptions-style specs, modules
+  defining `__beam_weaver_schema__/0`, Ecto-style schema modules, and structs
+  of those modules.
   """
   @spec from(term()) :: {:ok, map()} | {:error, Error.t()}
-  def from(schema_like), do: SchemaLike.to_schema(schema_like)
+  def from(%module{}), do: from(module)
+  def from(map) when is_map(map), do: {:ok, BeamWeaver.MapShape.stringify_keys(map)}
+  def from([]), do: {:ok, Fields.from_fields([])}
+
+  def from(list) when is_list(list) do
+    cond do
+      Enum.all?(list, &nimble_option?/1) ->
+        Fields.from_nimble_options(list)
+
+      Enum.all?(list, &field_decl?/1) ->
+        {:ok, Fields.from_fields(list)}
+
+      true ->
+        {:error, Error.new(:invalid_tool_schema, "list schema must be field declarations or NimbleOptions specs")}
+    end
+  end
+
+  def from(module) when is_atom(module) do
+    if BeamWeaver.Behaviour.exported?(module, :__beam_weaver_schema__, 0),
+      do: from(module.__beam_weaver_schema__()),
+      else: Fields.from_ecto_schema(module)
+  end
+
+  def from(value),
+    do:
+      {:error, Error.new(:invalid_tool_schema, "value cannot be converted to a tool schema", %{value: inspect(value)})}
+
+  defp field_decl?({name, _type}) when is_atom(name) or is_binary(name), do: true
+  defp field_decl?({name, _type, opts}) when (is_atom(name) or is_binary(name)) and is_list(opts), do: true
+  defp field_decl?(_entry), do: false
+
+  defp nimble_option?({name, opts}) when (is_atom(name) or is_binary(name)) and is_list(opts),
+    do: Keyword.keyword?(opts) and Keyword.has_key?(opts, :type)
+
+  defp nimble_option?(_entry), do: false
 
   @doc """
   Builds a JSON-schema object from field declarations.
@@ -45,19 +79,4 @@ defmodule BeamWeaver.Tool.Schema do
   """
   @spec remove_titles(term()) :: term()
   defdelegate remove_titles(schema), to: Refs
-
-  @doc false
-  defdelegate normalize_key(key), to: Fields
-
-  @doc false
-  defdelegate string_property_names(schema), to: Fields
-
-  @doc false
-  defdelegate stringify_schema(map), to: Fields
-
-  @doc false
-  defdelegate from_nimble_options(opts), to: Fields
-
-  @doc false
-  defdelegate from_ecto_schema(module), to: Fields
 end

@@ -3,12 +3,19 @@ defmodule BeamWeaver.Tool.Renderer do
   Provider-facing rendering helpers for BeamWeaver tools.
   """
 
+  import BeamWeaver.MapShape, only: [put_present: 3]
+
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Tool.Schema
 
+  @schema_child_keys ["properties", "items", "anyOf", "oneOf", "allOf", "$defs", "definitions"]
   @provider_name ~r/^[A-Za-z0-9_-]{1,64}$/
   @deepseek_name ~r/^[A-Za-z0-9_-]{1,128}$/
+  @strict_unsupported_keywords ~w(default allOf not if then else dependentRequired dependentSchemas format minimum
+                                  maximum exclusiveMinimum exclusiveMaximum multipleOf minLength maxLength pattern
+                                  minItems maxItems uniqueItems minProperties maxProperties patternProperties
+                                  propertyNames unevaluatedProperties)
 
   @doc """
   Renders a readable tool description.
@@ -37,33 +44,25 @@ defmodule BeamWeaver.Tool.Renderer do
     end)
   end
 
+  @doc false
+  # What a tool adds to a request, for counting its tokens: a map as given,
+  # and a tool module or `%Tool{}` struct, which has no JSON form of its own,
+  # as its name, description and parameters.
+  @spec declaration(term()) :: term()
+  def declaration(%{} = tool) when not is_struct(tool), do: tool
+
+  def declaration(tool) do
+    %{"name" => Tool.name(tool), "description" => Tool.description(tool), "parameters" => Tool.input_schema(tool)}
+  rescue
+    _exception -> tool
+  end
+
   @doc """
   Renders an OpenAI function declaration.
   """
   @spec openai_function(term(), keyword()) :: {:ok, map()} | {:error, Error.t()}
-  def openai_function(tool, opts \\ []) do
-    with :ok <- validate_provider_name(Tool.name(tool), Keyword.get(opts, :provider, :openai)) do
-      with {:ok, parameters} <-
-             tool
-             |> Tool.input_schema()
-             |> BeamWeaver.MapShape.stringify_keys()
-             |> Schema.dereference_refs() do
-        function = %{
-          "name" => Tool.name(tool),
-          "description" => Tool.description(tool),
-          "parameters" => maybe_strict_schema(parameters, Keyword.get(opts, :strict))
-        }
-
-        function =
-          case Keyword.get(opts, :strict) do
-            nil -> function
-            strict -> Map.put(function, "strict", strict)
-          end
-
-        {:ok, function}
-      end
-    end
-  end
+  def openai_function(tool, opts \\ []),
+    do: function_declaration(tool, Keyword.get(opts, :provider, :openai), "parameters", Keyword.get(opts, :strict))
 
   @doc """
   Renders an OpenAI Responses tool declaration.
@@ -79,35 +78,20 @@ defmodule BeamWeaver.Tool.Renderer do
   Raises on invalid OpenAI tool rendering.
   """
   @spec openai_tool!(term(), keyword()) :: map()
-  def openai_tool!(tool, opts \\ []) do
-    case openai_tool(tool, opts) do
-      {:ok, rendered} -> rendered
-      {:error, error} -> raise ArgumentError, error.message
-    end
-  end
+  def openai_tool!(tool, opts \\ []), do: tool |> openai_tool(opts) |> BeamWeaver.Policy.bang()
 
   @doc """
   Renders an Anthropic custom tool declaration.
   """
   @spec anthropic_tool(term(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def anthropic_tool(tool, opts \\ []) do
-    with :ok <- validate_provider_name(Tool.name(tool), :anthropic),
-         {:ok, input_schema} <-
-           tool
-           |> Tool.input_schema()
-           |> BeamWeaver.MapShape.stringify_keys()
-           |> Schema.dereference_refs() do
+    with {:ok, tool} <- function_declaration(tool, :anthropic, "input_schema", Keyword.get(opts, :strict)) do
       tool =
-        %{
-          "name" => Tool.name(tool),
-          "description" => Tool.description(tool),
-          "input_schema" => maybe_strict_schema(input_schema, Keyword.get(opts, :strict))
-        }
-        |> maybe_put_render_opt("strict", opts, :strict)
-        |> maybe_put_render_opt("cache_control", opts, :cache_control)
-        |> maybe_put_render_opt("defer_loading", opts, :defer_loading)
-        |> maybe_put_render_opt("input_examples", opts, :input_examples)
-        |> maybe_put_render_opt("allowed_callers", opts, :allowed_callers)
+        tool
+        |> put_present("cache_control", Keyword.get(opts, :cache_control))
+        |> put_present("defer_loading", Keyword.get(opts, :defer_loading))
+        |> put_present("input_examples", Keyword.get(opts, :input_examples))
+        |> put_present("allowed_callers", Keyword.get(opts, :allowed_callers))
 
       {:ok, tool}
     end
@@ -117,12 +101,7 @@ defmodule BeamWeaver.Tool.Renderer do
   Raises on invalid Anthropic tool rendering.
   """
   @spec anthropic_tool!(term(), keyword()) :: map()
-  def anthropic_tool!(tool, opts \\ []) do
-    case anthropic_tool(tool, opts) do
-      {:ok, rendered} -> rendered
-      {:error, error} -> raise ArgumentError, error.message
-    end
-  end
+  def anthropic_tool!(tool, opts \\ []), do: tool |> anthropic_tool(opts) |> BeamWeaver.Policy.bang()
 
   @doc """
   Validates that a tool name can be sent to a provider.
@@ -150,8 +129,17 @@ defmodule BeamWeaver.Tool.Renderer do
      })}
   end
 
-  defp maybe_strict_schema(schema, true), do: strict_schema(schema)
-  defp maybe_strict_schema(schema, _strict), do: schema
+  # The name, description and schema (under `schema_key`) of a provider's
+  # function declaration.
+  defp function_declaration(tool, provider, schema_key, strict) do
+    with :ok <- validate_provider_name(Tool.name(tool), provider),
+         {:ok, schema} <-
+           tool |> Tool.input_schema() |> BeamWeaver.MapShape.stringify_keys() |> Schema.dereference_refs() do
+      schema = if strict == true, do: strict_schema(schema, :required), else: schema
+      function = %{"name" => Tool.name(tool), "description" => Tool.description(tool), schema_key => schema}
+      {:ok, put_present(function, "strict", strict)}
+    end
+  end
 
   @doc false
   @spec strict_json_schema(term(), keyword()) :: term()
@@ -167,18 +155,9 @@ defmodule BeamWeaver.Tool.Renderer do
 
   def strict_json_schema(value, _opts), do: value
 
-  defp maybe_put_render_opt(map, provider_key, opts, opt_key) do
-    case Keyword.get(opts, opt_key) do
-      nil -> map
-      value -> Map.put(map, provider_key, value)
-    end
-  end
-
-  defp strict_schema(schema), do: strict_schema(schema, :required)
-
   defp strict_schema(schema, optional) when is_map(schema) do
     schema
-    |> strip_strict_unsupported_keywords()
+    |> Map.drop(@strict_unsupported_keywords)
     |> strict_schema_children(optional)
     |> close_object_schema(optional)
   end
@@ -186,41 +165,21 @@ defmodule BeamWeaver.Tool.Renderer do
   defp strict_schema(value, _optional), do: value
 
   defp strict_schema_children(schema, optional) do
-    Enum.reduce(
-      ["properties", "items", "anyOf", "oneOf", "allOf", "$defs", "definitions"],
-      schema,
-      fn
-        key, acc when key in ["properties", "$defs", "definitions"] ->
-          Map.update(acc, key, nil, fn
-            nil ->
-              nil
+    for {key, value} <- schema, not (is_nil(value) and key in @schema_child_keys), into: %{} do
+      cond do
+        key in ["properties", "$defs", "definitions"] and is_map(value) ->
+          {key, Map.new(value, fn {name, child} -> {name, strict_schema(child, optional)} end)}
 
-            children when is_map(children) ->
-              Map.new(children, fn {name, child} -> {name, strict_schema(child, optional)} end)
+        key in ["anyOf", "oneOf", "allOf", "items"] and is_list(value) ->
+          {key, Enum.map(value, &strict_schema(&1, optional))}
 
-            children ->
-              children
-          end)
+        key == "items" ->
+          {key, strict_schema(value, optional)}
 
-        key, acc when key in ["anyOf", "oneOf", "allOf"] ->
-          Map.update(acc, key, nil, fn
-            nil -> nil
-            children when is_list(children) -> Enum.map(children, &strict_schema(&1, optional))
-            children -> children
-          end)
-
-        "items", acc ->
-          Map.update(acc, "items", nil, fn
-            nil -> nil
-            children when is_list(children) -> Enum.map(children, &strict_schema(&1, optional))
-            child -> strict_schema(child, optional)
-          end)
+        true ->
+          {key, value}
       end
-    )
-    |> Enum.reject(fn {key, value} ->
-      is_nil(value) and key in ["properties", "items", "anyOf", "oneOf", "allOf", "$defs", "definitions"]
-    end)
-    |> Map.new()
+    end
   end
 
   defp close_object_schema(%{"properties" => properties} = schema, optional) when is_map(properties) do
@@ -232,15 +191,8 @@ defmodule BeamWeaver.Tool.Renderer do
     |> put_strict_required(properties)
   end
 
-  defp close_object_schema(%{"type" => type} = schema, _optional) when type in ["object", :object] do
-    schema
-    |> Map.put_new("properties", %{})
-    |> Map.put_new("required", [])
-    |> Map.put("additionalProperties", false)
-  end
-
-  defp close_object_schema(%{"type" => types} = schema, _optional) when is_list(types) do
-    if Enum.any?(types, &(&1 in ["object", :object])) do
+  defp close_object_schema(%{"type" => type} = schema, _optional) do
+    if Enum.any?(List.wrap(type), &(&1 in ["object", :object])) do
       schema
       |> Map.put_new("properties", %{})
       |> Map.put_new("required", [])
@@ -326,36 +278,6 @@ defmodule BeamWeaver.Tool.Renderer do
   end
 
   defp maybe_add_null_enum(schema), do: schema
-
-  defp strip_strict_unsupported_keywords(schema) when is_map(schema) do
-    Map.drop(schema, [
-      "default",
-      "allOf",
-      "not",
-      "if",
-      "then",
-      "else",
-      "dependentRequired",
-      "dependentSchemas",
-      "format",
-      "minimum",
-      "maximum",
-      "exclusiveMinimum",
-      "exclusiveMaximum",
-      "multipleOf",
-      "minLength",
-      "maxLength",
-      "pattern",
-      "minItems",
-      "maxItems",
-      "uniqueItems",
-      "minProperties",
-      "maxProperties",
-      "patternProperties",
-      "propertyNames",
-      "unevaluatedProperties"
-    ])
-  end
 
   defp put_strict_required(schema, properties) when map_size(properties) == 0, do: schema
 

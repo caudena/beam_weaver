@@ -4,6 +4,7 @@ defmodule BeamWeaver.Anthropic.StreamingTest do
   alias BeamWeaver.Anthropic.Messages
   alias BeamWeaver.Anthropic.Streaming
   alias BeamWeaver.Core.Messages.MessageChunk
+  alias BeamWeaver.Provider.SSE
   alias BeamWeaver.Stream.Envelope
   alias BeamWeaver.Stream.Events
 
@@ -25,7 +26,7 @@ defmodule BeamWeaver.Anthropic.StreamingTest do
     data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}
     """
 
-    assert Streaming.text_deltas(body) == ["hel", "lo"]
+    assert body |> SSE.events() |> Streaming.text_deltas() == ["hel", "lo"]
 
     assert Streaming.response(body) == %{
              "id" => "msg_1",
@@ -92,7 +93,7 @@ defmodule BeamWeaver.Anthropic.StreamingTest do
     data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\\"beam\\"}"}}
     """
 
-    events = Streaming.typed_events(body)
+    {events, _state} = body |> SSE.events() |> Streaming.typed_events(nil)
 
     assert Enum.any?(
              events,
@@ -130,17 +131,131 @@ defmodule BeamWeaver.Anthropic.StreamingTest do
     {start_events, state} = Streaming.typed_events([start], nil)
     {delta_events, _state} = Streaming.typed_events([delta], state)
 
-    message =
-      (start_events ++ delta_events)
-      |> Enum.flat_map(fn
-        %Envelope{event: %Events.MessageChunk{chunk: chunk}} -> [chunk]
-        _event -> []
-      end)
-      |> MessageChunk.merge_many()
-      |> MessageChunk.to_message()
+    message = merged_message(start_events ++ delta_events)
 
     assert [%{id: "toolu_1", name: "lookup", args: %{"q" => "beam"}}] = message.tool_calls
     refute Enum.any?(message.content, &match?(%{type: :server_tool_call_chunk}, &1))
+  end
+
+  test "a streamed tool call replays as a tool_use block, without its input deltas" do
+    batches = [
+      %{
+        "data" => %{"type" => "content_block_start", "index" => 0, "content_block" => %{"type" => "text", "text" => ""}}
+      },
+      %{
+        "data" => %{
+          "type" => "content_block_delta",
+          "index" => 0,
+          "delta" => %{"type" => "text_delta", "text" => "Checking."}
+        }
+      },
+      %{
+        "data" => %{
+          "type" => "content_block_start",
+          "index" => 1,
+          "content_block" => %{"type" => "tool_use", "id" => "toolu_1", "name" => "lookup", "input" => %{}}
+        }
+      },
+      %{
+        "data" => %{
+          "type" => "content_block_delta",
+          "index" => 1,
+          "delta" => %{"type" => "input_json_delta", "partial_json" => ~s({"q":)}
+        }
+      },
+      %{
+        "data" => %{
+          "type" => "content_block_delta",
+          "index" => 1,
+          "delta" => %{"type" => "input_json_delta", "partial_json" => ~s("beam"})}
+        }
+      }
+    ]
+
+    {events, _state} = Streaming.typed_events(batches, nil)
+
+    streamed = merged_message(events)
+
+    assert {:ok, {_system, [_user, %{"role" => "assistant", "content" => content}, _tool]}} =
+             BeamWeaver.Anthropic.Messages.format_messages([
+               BeamWeaver.Core.Message.user("lookup beam"),
+               streamed,
+               BeamWeaver.Core.Message.tool("Beam is an Elixir VM", tool_call_id: "toolu_1")
+             ])
+
+    refute Enum.any?(content, &(&1["type"] == "input_json_delta"))
+    assert %{"type" => "tool_use", "id" => "toolu_1", "input" => %{"q" => "beam"}} = List.last(content)
+  end
+
+  test "a streamed server tool call replays as the blocks Anthropic sent" do
+    search_use = %{"type" => "server_tool_use", "id" => "srvtoolu_1", "name" => "web_search", "input" => %{}}
+
+    search_result = %{
+      "type" => "web_search_tool_result",
+      "tool_use_id" => "srvtoolu_1",
+      "content" => [
+        %{"type" => "web_search_result", "url" => "https://x.test", "title" => "X", "encrypted_content" => "abc"}
+      ]
+    }
+
+    events =
+      [
+        %{"type" => "content_block_start", "index" => 0, "content_block" => search_use},
+        %{
+          "type" => "content_block_delta",
+          "index" => 0,
+          "delta" => %{"type" => "input_json_delta", "partial_json" => ~s({"query":)}
+        },
+        %{
+          "type" => "content_block_delta",
+          "index" => 0,
+          "delta" => %{"type" => "input_json_delta", "partial_json" => ~s("beam"})}
+        },
+        %{"type" => "content_block_stop", "index" => 0},
+        %{"type" => "content_block_start", "index" => 1, "content_block" => search_result},
+        %{"type" => "content_block_stop", "index" => 1},
+        %{"type" => "content_block_start", "index" => 2, "content_block" => %{"type" => "text", "text" => ""}},
+        %{
+          "type" => "content_block_delta",
+          "index" => 2,
+          "delta" => %{"type" => "text_delta", "text" => "BEAM is a VM."}
+        },
+        %{"type" => "content_block_stop", "index" => 2}
+      ]
+      |> Enum.map(&%{"data" => &1})
+
+    expected = [
+      %{search_use | "input" => %{"query" => "beam"}},
+      search_result,
+      %{"type" => "text", "text" => "BEAM is a VM."}
+    ]
+
+    replayed = fn reply ->
+      assert {:ok, {nil, [_user, %{"role" => "assistant", "content" => content}, _next]}} =
+               Messages.format_messages([
+                 BeamWeaver.Core.Message.user("What is BEAM?"),
+                 reply,
+                 BeamWeaver.Core.Message.user("Thanks")
+               ])
+
+      content
+    end
+
+    # Typed events, merged as an agent with `stream: true` does, and the
+    # same reply after it is saved and loaded.
+    {typed, _state} = Streaming.typed_events(events, nil)
+
+    merged = merged_message(typed)
+
+    assert replayed.(merged) == expected
+    assert {:ok, saved} = BeamWeaver.Serialization.dump(merged)
+    assert {:ok, loaded} = BeamWeaver.Serialization.load(saved)
+    assert replayed.(loaded) == expected
+
+    # The collected response.
+    assert {:ok, collected} = events |> Streaming.response() |> Messages.response_to_message()
+    assert [%{type: :server_tool_call, args: %{"query" => "beam"}} | _rest] = collected.content
+    assert replayed.(collected) == expected
   end
 
   test "typed thinking events reconstruct one signed block for replay" do
@@ -176,15 +291,9 @@ defmodule BeamWeaver.Anthropic.StreamingTest do
       %{"data" => %{"type" => "content_block_stop", "index" => 0}}
     ]
 
-    message =
-      transport_batches
-      |> Enum.flat_map(&Streaming.typed_events([&1]))
-      |> Enum.flat_map(fn
-        %Envelope{event: %Events.MessageChunk{chunk: chunk}} -> [chunk]
-        _event -> []
-      end)
-      |> MessageChunk.merge_many()
-      |> MessageChunk.to_message()
+    {events, _state} = Streaming.typed_events(transport_batches, nil)
+
+    message = merged_message(events)
 
     assert {:ok, {nil, [%{"role" => "assistant", "content" => content}]}} =
              Messages.format_messages([message])
@@ -210,15 +319,9 @@ defmodule BeamWeaver.Anthropic.StreamingTest do
       %{"data" => %{"type" => "content_block_stop", "index" => 0}}
     ]
 
-    message =
-      transport_batches
-      |> Enum.flat_map(&Streaming.typed_events([&1]))
-      |> Enum.flat_map(fn
-        %Envelope{event: %Events.MessageChunk{chunk: chunk}} -> [chunk]
-        _event -> []
-      end)
-      |> MessageChunk.merge_many()
-      |> MessageChunk.to_message()
+    {events, _state} = Streaming.typed_events(transport_batches, nil)
+
+    message = merged_message(events)
 
     assert {:ok, {nil, [%{"role" => "assistant", "content" => content}]}} =
              Messages.format_messages([message])
@@ -232,9 +335,10 @@ defmodule BeamWeaver.Anthropic.StreamingTest do
     data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":5,"output_tokens":2}}
     """
 
+    {events, _state} = body |> SSE.events() |> Streaming.typed_events(nil)
+
     chunk =
-      Streaming.typed_events(body)
-      |> Enum.find_value(fn
+      Enum.find_value(events, fn
         %BeamWeaver.Stream.Envelope{event: %Events.MessageChunk{chunk: chunk}} -> chunk
         _other -> nil
       end)
@@ -302,10 +406,10 @@ defmodule BeamWeaver.Anthropic.StreamingTest do
 
     assert response["stop_details"]["fallback_credit_token"] == "credit-token"
 
+    {typed, _state} = Streaming.typed_events(events, nil)
+
     chunks =
-      events
-      |> Streaming.typed_events()
-      |> Enum.flat_map(fn
+      Enum.flat_map(typed, fn
         %Envelope{event: %Events.MessageChunk{chunk: chunk}} -> [chunk]
         _event -> []
       end)
@@ -325,5 +429,15 @@ defmodule BeamWeaver.Anthropic.StreamingTest do
              message.metadata.input_transformations
 
     assert message.metadata.stop_details["fallback_credit_token"] == "credit-token"
+  end
+
+  defp merged_message(events) do
+    events
+    |> Enum.flat_map(fn
+      %Envelope{event: %Events.MessageChunk{chunk: chunk}} -> [chunk]
+      _event -> []
+    end)
+    |> MessageChunk.merge_many()
+    |> MessageChunk.to_message()
   end
 end

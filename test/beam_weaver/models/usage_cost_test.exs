@@ -49,9 +49,9 @@ defmodule BeamWeaver.Models.UsageCostTest do
 
   test "uses the normal input rate when a profile has no cached-input rate" do
     profile = %{
-      "extra" => %{
-        "input_price_per_mtok" => 1.0,
-        "output_price_per_mtok" => 3.0
+      extra: %{
+        input_price_per_mtok: 1.0,
+        output_price_per_mtok: 3.0
       }
     }
 
@@ -138,13 +138,80 @@ defmodule BeamWeaver.Models.UsageCostTest do
     assert UsageCost.calculate(nil, %{input_tokens: 10}) == nil
   end
 
-  test "dated string-keyed rates override atom-keyed profile defaults" do
+  test "input-only models price input without requiring output usage" do
+    profile =
+      Profile.new(provider: :fake, id: "input-only", extra: %{input_price_per_mtok: 3.0, output_price_per_mtok: 0.0})
+
+    assert_in_delta UsageCost.calculate(profile, %{input_tokens: 20}).total_cost, 0.00006, 1.0e-12
+  end
+
+  test "higher-context rates honor inclusive and exclusive prompt thresholds" do
+    profile =
+      Map.merge(@profile.extra, %{
+        higher_context_pricing_threshold_tokens: 10,
+        higher_context_input_price_per_mtok: 6.0,
+        higher_context_cached_input_price_per_mtok: 1.5,
+        higher_context_output_price_per_mtok: 12.0
+      })
+
+    usage = %{input_tokens: 10, cached_tokens: 3, output_tokens: 2}
+    assert_in_delta UsageCost.calculate(profile, usage).total_cost, 0.0000235, 1.0e-12
+    assert_in_delta UsageCost.calculate(profile, %{usage | input_tokens: 11}).total_cost, 0.0000765, 1.0e-12
+    inclusive = Map.put(profile, :higher_context_threshold_inclusive, true)
+    assert_in_delta UsageCost.calculate(inclusive, %{usage | input_tokens: 9}).total_cost, 0.0000215, 1.0e-12
+    assert_in_delta UsageCost.calculate(inclusive, usage).total_cost, 0.0000705, 1.0e-12
+  end
+
+  test "higher-context multipliers cover cached input and cache writes as well as output" do
+    profile =
+      Map.merge(@profile.extra, %{
+        cache_write_30m_price_per_mtok: 3.0,
+        higher_context_pricing_threshold_tokens: 10,
+        higher_context_input_multiplier: 2.0,
+        higher_context_output_multiplier: 1.5
+      })
+
+    usage = %{input_tokens: 10, cached_tokens: 3, cache_write_30m_tokens: 2, output_tokens: 2}
+    assert_in_delta UsageCost.calculate(profile, usage).total_cost, 0.0000255, 1.0e-12
+    assert_in_delta UsageCost.calculate(profile, %{usage | input_tokens: 11}).total_cost, 0.000051, 1.0e-12
+  end
+
+  test "normalized cache reads and writes count toward the prompt tier, output does not" do
+    profile =
+      Map.merge(@profile.extra, %{
+        cache_write_5m_price_per_mtok: 2.5,
+        cache_write_1h_price_per_mtok: 4.0,
+        long_context_pricing: %{
+          threshold_tokens: 100,
+          input_price_per_mtok: 6.0,
+          cached_input_price_per_mtok: 1.5,
+          cache_write_5m_price_per_mtok: 7.5,
+          cache_write_1h_price_per_mtok: 12.0,
+          output_price_per_mtok: 12.0
+        }
+      })
+
+    usage =
+      BeamWeaver.Anthropic.Messages.usage_metadata(%{
+        "input_tokens" => 1,
+        "cache_read_input_tokens" => 90,
+        "cache_creation_input_tokens" => 10,
+        "cache_creation" => %{"ephemeral_5m_input_tokens" => 6, "ephemeral_1h_input_tokens" => 4},
+        "output_tokens" => 2
+      })
+
+    assert_in_delta UsageCost.calculate(profile, usage).total_cost, 0.000258, 1.0e-12
+    assert_in_delta UsageCost.calculate(profile, %{usage | input_tokens: 100}).total_cost, 0.000084, 1.0e-12
+    assert UsageCost.calculate(profile, %{input_tokens: 1, output_tokens: 1_000_000}).output_cost == 4.0
+  end
+
+  test "dated pricing history overrides profile defaults" do
     profile = %{
       input_price_per_mtok: 1.0,
       output_price_per_mtok: 2.0,
       pricing_history: [
-        %{"effective_at" => nil, "input_price_per_mtok" => 3.0, "output_price_per_mtok" => 4.0},
-        %{"effective_at" => "2026-09-10T04:00:00Z", "input_price_per_mtok" => 1.0, "output_price_per_mtok" => 2.0}
+        %{effective_at: nil, input_price_per_mtok: 3.0, output_price_per_mtok: 4.0},
+        %{effective_at: "2026-09-10T04:00:00Z", input_price_per_mtok: 1.0, output_price_per_mtok: 2.0}
       ]
     }
 
@@ -156,24 +223,25 @@ defmodule BeamWeaver.Models.UsageCostTest do
 
   test "selects UTC peak rates with inclusive starts and exclusive ends" do
     profile = %{
-      "input_price_per_mtok" => 1.0,
-      "cached_input_price_per_mtok" => 0.25,
-      "output_price_per_mtok" => 2.0,
-      "time_based_pricing" => %{
-        "default_mode" => "off_peak",
-        "peak_windows" => [
-          %{"start_minute" => 60, "end_minute" => 240},
-          %{"start_minute" => 360, "end_minute" => 600}
+      input_price_per_mtok: 1.0,
+      cached_input_price_per_mtok: 0.25,
+      output_price_per_mtok: 2.0,
+      time_based_pricing: %{
+        default_mode: :off_peak,
+        peak_iso_weekdays: [1, 2, 3, 4, 5],
+        peak_windows: [
+          %{start_minute: 60, end_minute: 240},
+          %{start_minute: 360, end_minute: 600}
         ],
-        "off_peak" => %{
-          "input_price_per_mtok" => 1.0,
-          "cached_input_price_per_mtok" => 0.25,
-          "output_price_per_mtok" => 2.0
+        off_peak: %{
+          input_price_per_mtok: 1.0,
+          cached_input_price_per_mtok: 0.25,
+          output_price_per_mtok: 2.0
         },
-        "peak" => %{
-          "input_price_per_mtok" => 2.0,
-          "cached_input_price_per_mtok" => 0.5,
-          "output_price_per_mtok" => 4.0
+        peak: %{
+          input_price_per_mtok: 2.0,
+          cached_input_price_per_mtok: 0.5,
+          output_price_per_mtok: 4.0
         }
       }
     }
@@ -194,7 +262,8 @@ defmodule BeamWeaver.Models.UsageCostTest do
           ~U[2026-08-13 00:59:59Z],
           ~U[2026-08-13 04:00:00Z],
           ~U[2026-08-13 05:59:59Z],
-          ~U[2026-08-13 10:00:00Z]
+          ~U[2026-08-13 10:00:00Z],
+          ~U[2026-08-15 02:00:00Z]
         ] do
       costs = UsageCost.calculate(profile, usage, at: at)
       assert_in_delta costs.total_cost, 0.000017, 1.0e-12
@@ -218,24 +287,24 @@ defmodule BeamWeaver.Models.UsageCostTest do
 
   test "calculates exact USD micros with one final rounding step" do
     pricing = %{
-      "schema_version" => 1,
-      "currency" => "USD",
-      "rounding" => "half_up",
-      "dimensions" => [
+      schema_version: 1,
+      currency: "USD",
+      rounding: "half_up",
+      dimensions: [
         %{
-          "name" => "input_tokens",
-          "unit_size" => 1_000_000,
-          "unit_price_usd_micros" => 2_000_000
+          name: "input_tokens",
+          unit_size: 1_000_000,
+          unit_price_usd_micros: 2_000_000
         },
         %{
-          "name" => "cached_input_tokens",
-          "unit_size" => 1_000_000,
-          "unit_price_usd_micros" => 500_000
+          name: "cached_input_tokens",
+          unit_size: 1_000_000,
+          unit_price_usd_micros: 500_000
         },
         %{
-          "name" => "output_tokens",
-          "unit_size" => 1_000_000,
-          "unit_price_usd_micros" => 4_000_000
+          name: "output_tokens",
+          unit_size: 1_000_000,
+          unit_price_usd_micros: 4_000_000
         }
       ]
     }

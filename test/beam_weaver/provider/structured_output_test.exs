@@ -1,13 +1,8 @@
 defmodule BeamWeaver.Provider.StructuredOutputTest do
   use ExUnit.Case, async: true
 
-  alias BeamWeaver.Anthropic
   alias BeamWeaver.Core.Message
-  alias BeamWeaver.Google
-  alias BeamWeaver.Moonshot
-  alias BeamWeaver.OpenAI
   alias BeamWeaver.Provider.StructuredOutput
-  alias BeamWeaver.XAI
 
   test "a tool-call turn under a response schema passes through unparsed" do
     message = Message.assistant("", tool_calls: [%{id: "call-1", name: "lookup", args: %{"q" => "x"}}])
@@ -27,23 +22,14 @@ defmodule BeamWeaver.Provider.StructuredOutputTest do
     message = Message.assistant("not json")
     opts = [response_format: %{type: :json_object}]
 
-    assert {:error, %OpenAI.Error{type: :structured_output_parse_error}} =
-             StructuredOutput.maybe_parse(message, opts,
-               error_module: OpenAI.Error,
-               provider_name: "OpenAI"
-             )
+    assert {:error, %BeamWeaver.Core.Error{type: :structured_output_parse_error}} =
+             StructuredOutput.maybe_parse(message, opts, provider_name: "OpenAI")
 
-    assert {:error, %XAI.Error{type: :structured_output_parse_error}} =
-             StructuredOutput.maybe_parse(message, opts,
-               error_module: XAI.Error,
-               provider_name: "xAI"
-             )
+    assert {:error, %BeamWeaver.Core.Error{type: :structured_output_parse_error}} =
+             StructuredOutput.maybe_parse(message, opts, provider_name: "xAI")
 
-    assert {:error, %Moonshot.Error{type: :structured_output_parse_error}} =
-             StructuredOutput.maybe_parse(message, opts,
-               error_module: Moonshot.Error,
-               provider_name: "Moonshot"
-             )
+    assert {:error, %BeamWeaver.Core.Error{type: :structured_output_parse_error}} =
+             StructuredOutput.maybe_parse(message, opts, provider_name: "Moonshot")
   end
 
   test "tolerant providers keep the original message on invalid JSON" do
@@ -52,14 +38,12 @@ defmodule BeamWeaver.Provider.StructuredOutputTest do
 
     assert {:ok, ^message} =
              StructuredOutput.maybe_parse(message, opts,
-               error_module: Anthropic.Error,
                provider_name: "Anthropic",
                on_decode_error: :ok
              )
 
     assert {:ok, ^message} =
              StructuredOutput.parse(message, StructuredOutput.parser(opts),
-               error_module: Google.Error,
                provider_name: "Google",
                on_decode_error: :ok
              )
@@ -86,7 +70,6 @@ defmodule BeamWeaver.Provider.StructuredOutputTest do
                StructuredOutput.maybe_parse(
                  Message.assistant(~s({"answer":"pong"})),
                  [response_format: format],
-                 error_module: OpenAI.Error,
                  provider_name: "OpenAI"
                )
 
@@ -94,11 +77,10 @@ defmodule BeamWeaver.Provider.StructuredOutputTest do
     end
 
     for invalid_json_object <- [~s({"answer":42}), ~s({}), ~s([])] do
-      assert {:error, %OpenAI.Error{type: :structured_output_parse_error}} =
+      assert {:error, %BeamWeaver.Core.Error{type: :structured_output_parse_error}} =
                StructuredOutput.maybe_parse(
                  Message.assistant(invalid_json_object),
                  [response_format: %{name: "Answer", schema: schema}],
-                 error_module: OpenAI.Error,
                  provider_name: "OpenAI"
                )
     end
@@ -111,17 +93,23 @@ defmodule BeamWeaver.Provider.StructuredOutputTest do
         metadata: %{finish_reason: "MAX_TOKENS"}
       )
 
-    assert {:error, %Google.Error{} = error} =
-             StructuredOutput.parse(message, nil,
-               error_module: Google.Error,
-               provider_name: "Google"
-             )
+    assert {:error, %BeamWeaver.Core.Error{} = error} =
+             StructuredOutput.parse(message, nil, provider_name: "Google")
 
     assert error.type == :structured_output_parse_error
     assert error.message == "Google structured output was truncated before valid JSON"
     assert error.details.finish_reason == "max_tokens"
     assert error.details.response.content_length == 10_000
     assert byte_size(error.details.response.content_preview) < 5_000
+  end
+
+  test "truncated structured output is found in response metadata when the message has no finish reason" do
+    message = Message.assistant("{", response_metadata: %{"incomplete_details" => %{"reason" => "max_output_tokens"}})
+
+    assert {:error, %BeamWeaver.Core.Error{type: :structured_output_parse_error} = error} =
+             StructuredOutput.parse(message, nil, provider_name: "OpenAI")
+
+    assert error.details.finish_reason == "max_output_tokens"
   end
 
   test "truncated structured output detects OpenAI incomplete details with string keys" do
@@ -137,11 +125,8 @@ defmodule BeamWeaver.Provider.StructuredOutputTest do
         }
       )
 
-    assert {:error, %Google.Error{} = error} =
-             StructuredOutput.parse(message, nil,
-               error_module: Google.Error,
-               provider_name: "OpenAI"
-             )
+    assert {:error, %BeamWeaver.Core.Error{} = error} =
+             StructuredOutput.parse(message, nil, provider_name: "OpenAI")
 
     assert error.type == :structured_output_parse_error
     assert error.details.finish_reason == "incomplete"

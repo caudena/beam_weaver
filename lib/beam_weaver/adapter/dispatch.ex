@@ -7,8 +7,6 @@ defmodule BeamWeaver.Adapter.Dispatch do
 
   @spec module(term(), callback(), non_neg_integer(), keyword()) ::
           {:ok, module()} | {:error, Error.t()}
-  def module(adapter, callback, arity, opts \\ [])
-
   def module(%{__struct__: adapter_module}, callback, arity, opts) do
     if Code.ensure_loaded?(adapter_module) and function_exported?(adapter_module, callback, arity) do
       {:ok, adapter_module}
@@ -36,7 +34,7 @@ defmodule BeamWeaver.Adapter.Dispatch do
   end
 
   @spec call(term(), callback(), [term()], keyword()) :: term() | {:error, Error.t()}
-  def call(adapter, callback, args, opts \\ []) when is_list(args) do
+  def call(adapter, callback, args, opts) when is_list(args) do
     arity = length(args) + 1
 
     with {:ok, adapter_module} <- module(adapter, callback, arity, opts) do

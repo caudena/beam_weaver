@@ -21,3 +21,7 @@ defmodule BeamWeaver.Graph.Command do
   @doc "Parent graph target sentinel for subgraph commands."
   def parent, do: @parent
 end
+
+defimpl BeamWeaver.Core.Tool.Passthrough, for: BeamWeaver.Graph.Command do
+  def passthrough?(_command), do: true
+end

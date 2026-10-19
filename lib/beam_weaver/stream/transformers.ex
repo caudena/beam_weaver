@@ -1,11 +1,11 @@
 defmodule BeamWeaver.Stream.Transformers do
   @moduledoc """
-  Native reducers for graph data stream projections.
+  Reducer for graph data stream projections.
 
-  LangGraph exposes one transformer class per stream mode. BeamWeaver keeps the
-  same behavior as an immutable reducer over typed stream envelopes. The reducer
-  can be scoped to a graph namespace and emits `{mode, envelope}` tuples for the
-  selected projection modes.
+  A single immutable reducer over typed stream envelopes covers every stream
+  mode (`:values`, `:updates`, `:custom`, `:checkpoints`, `:tasks`, `:debug`,
+  `:lifecycle`). The reducer can be scoped to a graph namespace and emits
+  `{mode, envelope}` tuples for the selected projection modes.
   """
 
   alias BeamWeaver.Stream.Envelope
@@ -61,46 +61,29 @@ defmodule BeamWeaver.Stream.Transformers do
 
   @spec process_many(t(), Enumerable.t()) :: {:ok, t(), [{mode(), term()}]}
   def process_many(%__MODULE__{} = transformer, events) do
-    Enum.reduce(events, {:ok, transformer, []}, fn event, {:ok, acc, emitted} ->
-      case process(acc, event) do
-        {:ok, next, new_events} -> {:ok, next, emitted ++ new_events}
-        {:pass, next} -> {:ok, next, emitted}
-      end
-    end)
+    {emitted, transformer} = Enum.flat_map_reduce(events, transformer, &step/2)
+    {:ok, transformer, emitted}
   end
 
   @spec stream(Enumerable.t(), mode() | [mode()] | MapSet.t(mode()), keyword()) :: Enumerable.t()
-  def stream(events, modes \\ @modes, opts \\ []) do
-    transformer = new(modes, opts)
+  def stream(events, modes \\ @modes, opts \\ []),
+    do: Elixir.Stream.transform(events, new(modes, opts), &step/2)
 
-    events
-    |> Elixir.Stream.transform(transformer, fn event, acc ->
-      case process(acc, event) do
-        {:ok, next, emitted} -> {emitted, next}
-        {:pass, next} -> {[], next}
-      end
-    end)
+  defp step(event, transformer) do
+    case process(transformer, event) do
+      {:ok, next, emitted} -> {emitted, next}
+      {:pass, next} -> {[], next}
+    end
   end
 
   defp normalize_modes(%MapSet{} = modes), do: MapSet.intersection(modes, MapSet.new(@modes))
-  defp normalize_modes(mode) when is_atom(mode), do: normalize_modes([mode])
 
   defp normalize_modes(modes) do
-    modes
-    |> List.wrap()
-    |> Enum.flat_map(&normalize_mode/1)
-    |> MapSet.new()
+    for mode <- List.wrap(modes),
+        known = Enum.find(@modes, &(&1 == mode or Atom.to_string(&1) == mode)),
+        into: MapSet.new(),
+        do: known
   end
-
-  defp normalize_mode(mode) when mode in @modes, do: [mode]
-  defp normalize_mode("values"), do: [:values]
-  defp normalize_mode("updates"), do: [:updates]
-  defp normalize_mode("custom"), do: [:custom]
-  defp normalize_mode("checkpoints"), do: [:checkpoints]
-  defp normalize_mode("tasks"), do: [:tasks]
-  defp normalize_mode("debug"), do: [:debug]
-  defp normalize_mode("lifecycle"), do: [:lifecycle]
-  defp normalize_mode(_mode), do: []
 
   defp mode_for(%Events.GraphValue{}), do: {:ok, :values}
   defp mode_for(%Events.GraphUpdate{}), do: {:ok, :updates}

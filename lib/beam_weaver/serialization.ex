@@ -10,6 +10,10 @@ end
 defmodule BeamWeaver.Serialization.Registry do
   @moduledoc """
   Explicit decode allowlist for tagged BeamWeaver structs.
+
+  Only the structs registered here are rebuilt when a value loads. A saved
+  struct whose tag isn't registered, or whose module is no longer available,
+  loads as a map of its fields with string keys.
   """
 
   defstruct types: %{
@@ -39,6 +43,7 @@ defmodule BeamWeaver.Serialization.Registry do
               "beam_weaver.graph.overwrite" => BeamWeaver.Graph.Overwrite,
               "beam_weaver.graph.messages.remove" => BeamWeaver.Graph.Messages.Remove,
               "beam_weaver.graph.execution.task_request" => BeamWeaver.Graph.Execution.TaskRequest,
+              "beam_weaver.graph.execution.node_output" => BeamWeaver.Graph.Execution.NodeOutput,
               "beam_weaver.graph.execution_info" => BeamWeaver.Graph.ExecutionInfo,
               "beam_weaver.graph.channels.delta_snapshot" => BeamWeaver.Graph.Channels.DeltaSnapshot,
               "beam_weaver.core.error" => BeamWeaver.Core.Error,
@@ -46,6 +51,11 @@ defmodule BeamWeaver.Serialization.Registry do
               "beam_weaver.typesafe.choice_answer" => BeamWeaver.TypeSafe.ChoiceAnswer,
               "beam_weaver.typesafe.score_answer" => BeamWeaver.TypeSafe.ScoreAnswer,
               "beam_weaver.typesafe.noul_answer" => BeamWeaver.TypeSafe.NoulAnswer,
+              "beam_weaver.openai.decisions.response" => BeamWeaver.OpenAI.Decisions.Response,
+              "beam_weaver.openai.decisions.predicate_answer" => BeamWeaver.OpenAI.Decisions.PredicateAnswer,
+              "beam_weaver.openai.decisions.choice_answer" => BeamWeaver.OpenAI.Decisions.ChoiceAnswer,
+              "beam_weaver.openai.decisions.score_answer" => BeamWeaver.OpenAI.Decisions.ScoreAnswer,
+              "beam_weaver.openai.decisions.refusal_answer" => BeamWeaver.OpenAI.Decisions.RefusalAnswer,
               "beam_weaver.timeout_policy" => BeamWeaver.TimeoutPolicy,
               "beam_weaver.tracing.run" => BeamWeaver.Tracing.Run
             }
@@ -90,14 +100,22 @@ end
 defmodule BeamWeaver.Serialization.Config do
   @moduledoc """
   Explicit serialization configuration for durable adapters.
+
+  `:codec` and `:registry` select the codec and the structs it may load. Every
+  other option, such as `:encryption_key` for
+  `BeamWeaver.Serialization.Encrypted`, is kept in `opts` and passed to the
+  codec. `inspect/1` doesn't show them.
   """
 
+  @derive {Inspect, only: [:codec, :registry]}
   defstruct codec: BeamWeaver.Serialization.JSON,
-            registry: BeamWeaver.Serialization.Registry.new()
+            registry: BeamWeaver.Serialization.Registry.new(),
+            opts: []
 
   @type t :: %__MODULE__{
           codec: module(),
-          registry: BeamWeaver.Serialization.Registry.t()
+          registry: BeamWeaver.Serialization.Registry.t(),
+          opts: keyword()
         }
 
   @spec new(keyword() | map() | t() | nil) :: t()
@@ -106,16 +124,29 @@ defmodule BeamWeaver.Serialization.Config do
   def new(opts) when is_map(opts), do: opts |> Map.to_list() |> new()
 
   def new(opts) when is_list(opts) do
-    %__MODULE__{
-      codec: Keyword.get(opts, :codec, BeamWeaver.Serialization.JSON),
-      registry: Keyword.get(opts, :registry, BeamWeaver.Serialization.Registry.new())
-    }
+    {codec, opts} = Keyword.pop(opts, :codec, BeamWeaver.Serialization.JSON)
+    {registry, opts} = Keyword.pop_lazy(opts, :registry, &BeamWeaver.Serialization.Registry.new/0)
+    %__MODULE__{codec: codec, registry: registry, opts: opts}
   end
+
+  @doc false
+  @spec codec_opts(t()) :: keyword()
+  def codec_opts(%__MODULE__{} = config), do: Keyword.put(config.opts, :registry, config.registry)
 end
 
 defmodule BeamWeaver.Serialization.JSON do
   @moduledoc """
-  JSON/type-tagged portable serialization.
+  JSON serialization that loads back the values it saved.
+
+  Atoms, tuples, binaries that aren't UTF-8, dates and times, and the structs
+  in the `BeamWeaver.Serialization.Registry` are tagged. Map keys keep their
+  type at any depth: a JSON object names its atom keys under
+  `"__beam_weaver_atom_keys__"`, and a map with other keys, such as integers,
+  is saved as a list of entries. Loading creates no atoms, so an atom or an
+  atom key that doesn't exist in the running system comes back as a string.
+  A struct that can't be rebuilt, because its tag isn't in the registry or
+  its module is gone, comes back as a map of its fields. Each such atom and
+  tag is logged as a warning the first time it loads.
   """
 
   @behaviour BeamWeaver.Serialization.Codec
@@ -159,18 +190,32 @@ defmodule BeamWeaver.Serialization.JSON do
 end
 
 defmodule BeamWeaver.Serialization do
-  @moduledoc """
-  Safe public serialization facade.
+  @moduledoc ~S"""
+  Encode durable application values through an explicit allowlisted codec.
+
+  `dump/2` and `load/2` operate on encoded binaries. `dump_value/2` and
+  `load_value/2` operate on the JSON-compatible tagged representation. Return
+  values distinguish unsupported input from decoding failure; do not persist a
+  success marker when serialization failed.
+
+  The default JSON codec retains supported Elixir types without arbitrary term
+  loading or new atom creation. Application structs require stable registry
+  tags. Pass the same codec/registry/key configuration when writing and reading.
+  [Storage](storage.md#serialization) explains migration and encryption lifetimes.
   """
 
+  alias BeamWeaver.Serialization.Config
+
+  @doc "Serializes a supported value to {:ok, binary}, or returns a typed codec error."
   def dump(value, opts \\ []) do
     config = config(opts)
-    config.codec.dump(value, Keyword.put(opts, :registry, config.registry))
+    config.codec.dump(value, Config.codec_opts(config))
   end
 
+  @doc "Decodes a binary using the configured allowlisted codec; returns {:ok, value} or an error."
   def load(binary, opts \\ []) do
     config = config(opts)
-    config.codec.load(binary, Keyword.put(opts, :registry, config.registry))
+    config.codec.load(binary, Config.codec_opts(config))
   end
 
   @doc """
@@ -195,15 +240,9 @@ defmodule BeamWeaver.Serialization do
     end
   end
 
-  @doc false
-  def dump_json_value(value, opts \\ []), do: dump_value(value, opts)
-
-  @doc false
-  def load_json_value(value, opts \\ []), do: load_value(value, opts)
-
   defp config(opts) do
     opts
     |> Keyword.get(:serialization, opts)
-    |> BeamWeaver.Serialization.Config.new()
+    |> Config.new()
   end
 end

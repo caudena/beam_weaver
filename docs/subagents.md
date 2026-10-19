@@ -1,697 +1,634 @@
 # Subagents
 
-Subagents let a BeamWeaver agent delegate isolated work through the `task`
-tool. A subagent receives a fresh message context and runs as a normal
-BeamWeaver agent. It returns one final result to the parent; for structured
-specialists it can also capture the full output in graph state and return only
-a compact acknowledgement. This is useful when a task would otherwise fill the
-parent context with intermediate searches, file reads, tool outputs, or large
-specialist payloads.
+Delegate a self-contained task when it benefits from a specialist's tools,
+prompt or separate context window. The parent receives the child's result;
+it does not import every intermediate search and tool call into its messages.
+For a fixed application-selected sequence, use [Subgraphs](subgraphs.md).
 
-Use subagents for multi-step work, specialized tool sets, or tasks that should
-use a different model or prompt. Do not use them for simple one-step lookups, or
-when the parent must inspect every intermediate message as part of the active
-conversation.
+Complete [Installation](installation.md). Both agents below call OpenAI.
 
-{% hint style="info" %}
-**Subagents vs Graphs**
 
-Task subagents are launched by the model as tool calls. Use subagents when the
-parent model should choose the specialist. Use `graph do` when the application
-must control deterministic order, fanout, joins, retries, aggregation, or
-persistence. Use [Subgraphs](subgraphs.md) when you need a nested graph that is
-visible in the compiled topology, state history, and graph-level inspection
-APIs.
-{% endhint %}
+Run this page’s examples in order in one IEx session; later blocks reuse the modules and values defined earlier.
 
-## Composition Model
-
-BeamWeaver has one agent abstraction. There is no separate `DeepAgent` type and
-no `create_deep_agent` constructor. An agent becomes "deep" only by composing
-the capabilities it needs:
-
-- TODO planning through `BeamWeaver.Agent.Middleware.TodoList` or
-  `BeamWeaver.Tools.Todo`.
-- Virtual files through `filesystem`, `BeamWeaver.Agent.Middleware.Filesystem`,
-  or `BeamWeaver.Tools.Filesystem`.
-- Delegation through `subagents` or `BeamWeaver.Agent.Middleware.Subagents`.
-- Memory, compaction, overflow recovery, checkpointing, skills, and HITL
-  through their normal agent fields or middleware entries.
-
-Capabilities are positive declarations. If you do not include TODO middleware,
-there is no TODO behavior. If you do not include filesystem middleware or a
-filesystem agent field, there are no filesystem tools. If you do not configure
-subagents, there is no `task` tool.
-
-## Enable The Task Tool
-
-Declare synchronous subagents in a `subagents do` block. BeamWeaver adds a
-model-visible `task` tool only when at least one synchronous subagent is
-configured.
+## Delegate and capture a structured result
 
 ```elixir
-defmodule MyApp.Agents.Researcher do
-  use BeamWeaver.Agent
+defmodule MyApp.PolicyAnswer do
+  use BeamWeaver.Schema
+  field :refund_days, :integer
 
-  name "researcher"
-  description "Conduct multi-step web research and return concise sourced notes."
-
-  model BeamWeaver.Models.init_chat_model!("openai:gpt-5.4")
-
-  tools do
-    tool MyApp.Tools.WebSearch
-  end
-
-  system_prompt """
-  You are a focused research assistant.
-  Use web_search when useful.
-  Return only essential findings and source URLs.
-  Keep the response under 500 words.
-  """
+  field :source, :string,
+    enum: ["supplied_policy"],
+    description: "The identifier of the policy supplied in this assignment"
 end
 
-defmodule MyApp.Agents.MainAgent do
+defmodule MyApp.PolicyExpert do
   use BeamWeaver.Agent
 
-  name "main_agent"
-  description "Coordinate answers and delegate deep research."
+  name "policy_expert"
+  description "Extracts refund timing from policy text included in the assignment."
+  model "openai:gpt-5.4-mini", max_tokens: 256, timeout: 60_000
+  system_prompt "Extract only the supplied facts. Use source supplied_policy."
+  tools []
+  response_schema MyApp.PolicyAnswer
+end
 
-  model BeamWeaver.Models.init_chat_model!("openai:gpt-5.4")
+defmodule MyApp.Supervisor do
+  use BeamWeaver.Agent
 
-  tools do
-    tool MyApp.Tools.WebSearch
-  end
+  model "openai:gpt-5.4-mini", max_tokens: 512, timeout: 60_000
+
+  system_prompt "Delegate policy extraction to policy_expert exactly once. Include the full policy in the task. Then confirm completion."
 
   subagents do
-    subagent MyApp.Agents.Researcher
+    subagent MyApp.PolicyExpert, capture_output: :policy
+    include [BeamWeaver.Agent.GeneralPurposeSubagentProfile.new(enabled: false)]
   end
-
-  system_prompt """
-  Coordinate the answer. Delegate deep research to the researcher when a
-  question needs multiple searches or source synthesis.
-  """
 end
 
-{:ok, state} =
-  MyApp.Agents.MainAgent.invoke(%{
-    messages: [
-      BeamWeaver.Core.Message.user("Research recent changes in vector database pricing.")
-    ]
-  })
+{:ok, result} = MyApp.Supervisor.invoke(%{messages: ["Extract this policy: Refunds take five business days."]})
+%{"refund_days" => 5, "source" => "supplied_policy"} = result.subagent_outputs["policy"]
+true = Enum.any?(result.messages, &(&1.role == :tool and &1.name == "task"))
 ```
 
-The `task` tool accepts:
+The captured map proves the child produced the requested data. The parent
+sees a completion notice rather than the full answer unless configured otherwise.
+Disable the general-purpose worker when only the named specialist is intended.
 
-| Argument | Meaning |
+## When to delegate
+
+Use delegation to isolate long research, assign specialized tools or run
+independent tasks concurrently. A single lookup usually needs only a tool.
+Delegation adds model calls and latency; each child needs its own bounds.
+
+## The task tool
+
+`subagents` exposes `task` with `subagent_type` and `description`. The latter
+is the complete assignment and normally becomes the child's only user message.
+Include facts, constraints, desired output and completion criteria. A child
+with `inherit_messages: true` also receives parent conversational context with
+tool exchanges removed.
+
+Without capture, the parent receives final assistant text or structured JSON.
+Child failure becomes a tool error for the parent to handle; it does not
+necessarily fail the whole parent run. Inspect results rather than equating
+successful delegation with successful business work.
+
+## Declare subagents
+
+A child module is an ordinary agent with a useful name and description.
+`subagent Module, options` can override its declarations.
+
+| Option | Purpose |
 | --- | --- |
-| `description` | The full assignment for the subagent. Include all context the child needs. |
-| `subagent_name` or `subagent_type` | The configured subagent name, such as `"researcher"`. |
+| `name:`, `description:`, `system_prompt:` | Role and assignment instructions |
+| `model:`, `tools:`, `middleware:` | Child execution capabilities |
+| `capture_output:` | Store the answer in parent state |
+| `execution_mode:` | Loop, one structured call or research then generation |
+| `inherit_messages:` | Include filtered parent conversation |
+| `interrupt_on:` | Child review policy; false disables inherited review |
+| `base_middleware:` | Explicitly request parent workspace/skills/planning capabilities |
+| `filesystem:`, `permissions:`, `skills:` | Workspace and access overrides |
+| Limits and storage | Child-specific budgets, checkpointer and store |
 
-The child starts with `description` as its user message. The parent receives one
-tool result containing either the child's structured response encoded as JSON,
-or the last assistant message from the child.
+An omitted tool set can inherit parent tools; `tools: []` prevents that.
+Omitted review rules, recursion limits and storage can also inherit. Ordinary
+parent middleware such as retries, PII and call limits is **not** automatically
+copied to every explicit child. Declare shared policies deliberately.
 
-Parent messages are not inherited by default. Set `inherit_messages: true` only
-when the child really needs the parent transcript; BeamWeaver filters parent
-tool protocol messages before passing inherited messages to the child.
+`base_middleware:` supports filesystem, skills and task-list middleware, plus
+`:deepagents` for the general-purpose set including inherited context policy.
+Explicit child middleware of the same module replaces that inherited entry.
 
-## Application-Owned Child Lifecycles
+## Structured output
 
-The default synchronous middleware runs an ephemeral child inside BeamWeaver.
-Applications that own durable child admission and recovery instead configure a
-`BeamWeaver.Agent.Subagent.Host` adapter:
+A child `response_schema` produces JSON for the parent, or a map when captured.
+Choose a schema based on what the parent/application needs to decide next.
+Structured data does not validate the truth of supplied evidence; keep source
+references alongside extracted facts.
 
-```elixir
-middleware =
-  BeamWeaver.Agent.Middleware.Subagents.new(
-    host: %MyApp.ChildHost{},
-    child_mode: :background,
-    subagents: [
-      %BeamWeaver.Agent.Subagent.Spec{
-        name: "researcher",
-        description: "Collect source-backed facts"
-      }
-    ]
-  )
-```
+## Captured outputs
 
-Host mode passes one closed proposal to `admit_child/3`, then asks
-`child_result/3` for either a typed terminal projection or the identical pending
-background handle. It does not compile or invoke a nested agent, copy parent
-state, install child-output/cache channels, or infer success from a missing
-result. Background hosts cannot return `:needs_parent_input`.
+`capture_output: :key` stores output under the string key in
+`result.subagent_outputs`. The default deduplicates the same child/task
+description within a saved thread. Configure `dedupe: false` when freshness
+requires another execution; use `parent_result: :full` when the parent's model
+also needs the answer. Captured output follows checkpoint retention.
 
-BeamWeaver deliberately does not define the host's database rows, permissions,
-budgets, leases, or recovery policy. Those remain application responsibilities.
+## Subagents built at runtime
 
-## Parent And Child Ownership
+`BeamWeaver.Agent.Subagent.Spec.new/1` accepts a name, description and agent
+options, including `response_format:` for a schema/strategy. A `subagents do`
+block can `include` a runtime list. Specs can inherit omitted parent model,
+tools and review rules.
 
-The parent owns delegation policy. The child owns its prompt, model, tools,
-middleware, and structured output:
+Construct a specialist from runtime options, attach it to a parent, and retain its typed answer:
 
 ```elixir
-defmodule MyApp.Agents.NarrativeCompressor do
-  use BeamWeaver.Agent
-
-  name "narrative_compressor"
-  description "Build the authoritative relationship narrative and timeline."
-
-  model BeamWeaver.Models.init_chat_model!("openai:gpt-5.4")
-
-  tools do
-    tool MyApp.Tools.RelatedDeals
-  end
-
-  middleware do
-    use BeamWeaver.Agent.Middleware.ToolCallNormalization
-    use BeamWeaver.Agent.Middleware.StructuredOutputRetry, max_retries: 2
-  end
-
-  system_prompt "Return only the requested structured narrative output."
-  response_schema MyApp.Schemas.NarrativeOutput, name: "narrative_output"
-end
-
-defmodule MyApp.Agents.SummarySupervisor do
-  use BeamWeaver.Agent
-
-  name "summary_supervisor"
-  description "Coordinate deal summary specialists."
-
-  model BeamWeaver.Models.init_chat_model!("openai:gpt-5.4")
-
-  subagents do
-    subagent MyApp.Agents.NarrativeCompressor, capture_output: :narrative_output
-  end
-
-  system_prompt "Delegate narrative work to the narrative_compressor specialist."
-end
-```
-
-## Subagent Specs
-
-Module-based subagents are the preferred public DSL. Use
-`BeamWeaver.Agent.Subagent.Spec.new/1` only when the subagent list is generated
-at runtime from configuration. It accepts keyword lists and atom-keyed maps.
-
-| Field | Type | Behavior |
-| --- | --- | --- |
-| `:name` | string | Required. Unique subagent name selected by the parent through `task`. |
-| `:description` | string | Required. Model-facing description used to choose the right subagent. |
-| `:system_prompt` | string | Recommended. Prepended to BeamWeaver's focused-subagent prompt. BeamWeaver accepts `nil`, but useful subagents should define their role and output shape. |
-| `:tools` | list | Optional. Inherits parent tools when `nil`; use `[]` to give the subagent no parent tools. Any list replaces the inherited list. |
-| `:model` | model | Optional. Inherits the parent model when omitted. |
-| `:middleware` | list | Optional. Subagent-specific middleware. Parent middleware is not inherited. |
-| `:interrupt_on` | map or boolean | Optional. Inherits parent HITL configuration when omitted. A child map overrides the parent policy; current generated subagents treat `false` like inheritance, so use a narrower map, remove tools, or use a compiled subagent to opt out. Requires checkpointing to resume. |
-| `:skills` | list | Optional. Inherits parent skills when `nil`; use `[]` to opt out, or provide a list to replace the inherited skills. |
-| `:permissions` | list | Optional. Inherits parent filesystem permissions when omitted; a list replaces the inherited rules. |
-| `:response_format` | structured output config | Optional. Dynamic equivalent of `response_schema/2` on a child module. |
-| `:capture_output` | atom or keyword | Optional. Stores the child output in `state.subagent_outputs[key]` and returns a compact acknowledgement to the parent. Public Elixir config uses atom keys. |
-| `:execution_mode` | atom | Optional. `:agent_loop` by default; use `:structured_once` or `:research_then_generate` for specialist patterns. |
-
-Dynamic generated child agents use the same capability rules as module agents:
-tools and middleware are present only when you declare them. They do not
-automatically receive TODO, filesystem, skills, summarization, or compaction
-middleware.
-
-```elixir
-alias BeamWeaver.Agent.Subagent
-
-Subagent.Spec.new(
-  name: "file_researcher",
-  description: "Researches files and returns concise findings.",
-  system_prompt: "Use files only when needed and keep the answer short.",
-  tools: [MyApp.Tools.SearchDocs],
-  middleware: [
-    {BeamWeaver.Agent.Middleware.TodoList, tool_name: "write_todos"},
-    BeamWeaver.Agent.Middleware.Filesystem
-  ]
-)
-```
-
-For path rule examples and the distinction between inherited, replaced, and
-unrestricted subagent permissions, see [Filesystem Permissions](permissions.md).
-
-## Compiled Subagents
-
-For complex workflows, provide a prebuilt BeamWeaver agent with
-`BeamWeaver.Agent.Subagent.Compiled`. The `:agent` must be a module-defined
-agent or a `%BeamWeaver.Agent.Built{}` returned by `BeamWeaver.Agent.build/1`.
-
-```elixir
-alias BeamWeaver.Agent
-alias BeamWeaver.Agent.Subagent
-
-{:ok, analyzer} =
-  Agent.build(
-    name: "data-analyzer",
-    model: BeamWeaver.Models.init_chat_model!("openai:gpt-5.4"),
-    tools: [MyApp.Tools.QueryWarehouse],
-    system_prompt: "Analyze tabular data and return concise findings."
+specialist =
+  BeamWeaver.Agent.Subagent.Spec.new(
+    name: "policy_reader",
+    description: "Extracts refund timing from supplied policy text.",
+    model: "openai:gpt-5.4-mini",
+    model_opts: [max_tokens: 256, timeout: 60_000],
+    system_prompt: "Extract only supplied facts; use source supplied_policy.",
+    tools: [],
+    response_format: MyApp.PolicyAnswer,
+    capture_output: :runtime_policy
   )
 
-{:ok, supervisor} =
-  Agent.build(
-    name: "analysis-supervisor",
-    model: BeamWeaver.Models.init_chat_model!("openai:gpt-5.4"),
-    subagents: [
-      %Subagent.Compiled{
-        name: "data-analyzer",
-        description: "Analyzes warehouse data and reports trends.",
-        agent: analyzer
-      }
-    ]
+{:ok, parent} =
+  BeamWeaver.Agent.build(
+    model: "openai:gpt-5.4-mini",
+    model_opts: [max_tokens: 512, timeout: 60_000],
+    system_prompt: "Delegate to policy_reader exactly once and include the supplied policy.",
+    subagents: [specialist, BeamWeaver.Agent.GeneralPurposeSubagentProfile.new(enabled: false)]
   )
+
+{:ok, result} = BeamWeaver.Agent.invoke(parent, %{messages: ["Policy: refunds take five business days."]})
+%{"refund_days" => 5} = result.subagent_outputs["runtime_policy"]
 ```
 
-If you have a compiled graph rather than an agent, use
-[Subgraphs](subgraphs.md) or wrap the behavior in a BeamWeaver agent module.
-`Compiled` is intentionally an agent delegation API, not an arbitrary graph
-runnable slot.
+## Compiled subagents
 
-## General-Purpose Subagents
+`Subagent.Compiled` wraps an existing module or built agent as it is. It does
+not inherit the parent's tools/review rules and does not apply spec-style
+base middleware. It can still use parent storage and recursion limits where
+its own are absent. Choose this form when preserving an existing agent's
+configuration is the intended contract.
 
-Official Python Deep Agents automatically adds a synchronous `general-purpose`
-subagent by default. BeamWeaver's normal `BeamWeaver.Agent.build/1` and
-`use BeamWeaver.Agent` flow does not auto-inject that subagent. If you want a
-general-purpose delegate, declare it explicitly:
+Wrap the existing policy expert without rebuilding its tools or middleware from the parent:
 
 ```elixir
-defmodule MyApp.Agents.GeneralPurpose do
-  use BeamWeaver.Agent
-
-  name "general-purpose"
-  description "Handles isolated multi-step work when no specialist fits."
-
-  model BeamWeaver.Models.init_chat_model!("openai:gpt-5.4")
-
-  system_prompt """
-  You are a general-purpose delegated assistant.
-  Complete the task independently and return only the final answer.
-  """
-end
-
-defmodule MyApp.Agents.Supervisor do
-  use BeamWeaver.Agent
-
-  model BeamWeaver.Models.init_chat_model!("openai:gpt-5.4")
-
-  subagents do
-    subagent MyApp.Agents.GeneralPurpose
-  end
-end
-```
-
-To run without the `task` tool, omit `subagents`, pass `subagents: []`, or pass
-`subagents: false`. Async subagents use a separate tool surface and do not
-create the synchronous `task` tool by themselves.
-
-## Structured Output
-
-Subagents can use the same structured-output strategies as top-level agents.
-When a child agent writes `:structured_response`, the `task` tool returns that
-response as JSON to the parent.
-
-```elixir
-defmodule MyApp.Schemas.ResearchFindings do
-  use BeamWeaver.Schema
-
-  title "research_findings"
-  description "Concise sourced research findings."
-  strict true
-
-  field :summary, :string, required: true
-  field :confidence, :number, required: true
-  field :sources, {:array, :string}, required: true
-end
-
-defmodule MyApp.Agents.Researcher do
-  use BeamWeaver.Agent
-
-  name "researcher"
-  description "Researches a topic and returns structured findings."
-
-  model BeamWeaver.Models.init_chat_model!("openai:gpt-5.4")
-
-  tools do
-    tool MyApp.Tools.WebSearch
-  end
-
-  system_prompt "Return a concise structured answer with source URLs."
-  response_schema MyApp.Schemas.ResearchFindings, name: "research_findings", strategy: :tool
-end
-```
-
-Without `response_format`, the parent receives the last assistant message text
-from the child.
-
-## Captured Specialist Outputs
-
-Use `capture_output` when the parent should coordinate specialists without
-re-emitting their full structured payloads through the supervisor model. The
-child output is written to `state.subagent_outputs[key]`, while the `task` tool
-message contains a short JSON acknowledgement.
-
-```elixir
-defmodule MyApp.Schemas.NarrativeOutput do
-  use BeamWeaver.Schema
-
-  title "narrative_output"
-  strict true
-
-  field :summary, :string, required: true
-  field :timeline, {:array, :object}, required: true
-end
-
-defmodule MyApp.Agents.NarrativeCompressor do
-  use BeamWeaver.Agent
-
-  name "narrative_compressor"
-  description "Builds the authoritative relationship narrative and timeline."
-
-  model BeamWeaver.Models.init_chat_model!("openai:gpt-5.4")
-  system_prompt "Return only the requested structured narrative output."
-  response_schema MyApp.Schemas.NarrativeOutput,
-    name: "narrative_output",
-    strategy: :provider
-end
-
-defmodule MyApp.Agents.SummarySupervisor do
-  use BeamWeaver.Agent
-
-  model BeamWeaver.Models.init_chat_model!("openai:gpt-5.4")
-
-  subagents do
-    subagent MyApp.Agents.NarrativeCompressor, capture_output: :narrative_output
-  end
-end
-```
-
-After the parent calls `task`, the graph state includes:
-
-```elixir
-state.subagent_outputs["narrative_output"]
-# %{"summary" => "...", "timeline" => [...]}
-```
-
-The parent model sees only an acknowledgement similar to:
-
-```json
-{
-  "status": "captured",
-  "subagent_name": "narrative_compressor",
-  "capture_key": "narrative_output",
-  "cache_hit": false,
-  "input_hash": "..."
+child = %BeamWeaver.Agent.Subagent.Compiled{
+  name: "policy_expert",
+  description: "Extracts supplied policy facts.",
+  agent: MyApp.PolicyExpert,
+  capture_output: :compiled_policy
 }
-```
 
-Captured values are normalized to JSON-safe maps, lists, strings, numbers,
-booleans, or `nil`, and are persisted through checkpoints. Captured state is
-not inherited by child subagents, so specialist payloads do not recursively
-inflate child context.
-
-Captured subagents are visible in native traces as child agent runs and compact
-parent tool messages. The parent-visible tool output is the same compact
-acknowledgement the parent model saw; the captured `state.subagent_outputs`
-payload stays internal and is not uploaded as tool message content.
-
-Repeated captured calls are deduped by `{subagent_name, input_hash}` by
-default. BeamWeaver stores cache entries in `state.subagent_cache`; repeated
-calls with the same subagent and same task input return from cache without
-rerunning the child.
-
-Override this only when needed:
-
-```elixir
-subagents do
-  subagent MyApp.Agents.LiveMarketResearcher,
-    capture_output: [key: :market_snapshot, dedupe: false]
-
-  subagent MyApp.Agents.SmallClassifier,
-    capture_output: [key: :classification, parent_result: :full]
-end
-```
-
-Use `parent_result: :full` only for small outputs that the supervisor genuinely
-needs to read directly. The default acknowledgement keeps the supervisor
-context small.
-
-## Named Specialist Tools
-
-The generic `task` tool is convenient, but some applications want named
-application tool traces such as `run_narrative_compressor` or
-`run_fact_extractor`. In that case, expose normal application tools and have
-those tools run the specialist agent themselves. Add
-`BeamWeaver.Agent.Middleware.SubagentOutputs` to the supervisor so captured
-payloads have mergeable graph channels:
-
-```elixir
-defmodule MyApp.SummaryAgent do
-  use BeamWeaver.Agent
-
-  alias BeamWeaver.Agent.Middleware
-
-  model BeamWeaver.Models.init_chat_model!("openai:gpt-5.4")
-
-  tools do
-    tool MyApp.Tools.RunNarrativeCompressor
-    tool MyApp.Tools.RunFactExtractor
-  end
-
-  middleware do
-    use Middleware.TodoList, tool_name: "write_todos"
-    use Middleware.SubagentOutputs
-  end
-end
-```
-
-The named tool should return a `BeamWeaver.Graph.Command` that merges the full
-JSON-safe output into `:subagent_outputs` and returns only a compact tool
-message to the parent model. This gives traces and logs meaningful tool names
-while keeping large specialist JSON out of the supervisor transcript.
-
-## Execution Modes
-
-`execution_mode` controls how the child agent runs:
-
-| Mode | Behavior |
-| --- | --- |
-| `:agent_loop` | Default behavior. The child can use tools and loop until it produces a final answer. |
-| `:structured_once` | Runs one model call and enforces a one-call limit. Use this for specialists that should directly produce structured output without autonomous filesystem or TODO loops. |
-| `:research_then_generate` | Runs a tool-enabled research pass, then a separate tool-free structured generation pass. Use this for tool-enabled structured specialists. |
-
-Lean specialists need no negative flags. If the child module does not declare
-TODO, filesystem, or subagents, those capabilities do not exist:
-
-```elixir
-defmodule MyApp.Agents.StageRecommender do
-  use BeamWeaver.Agent
-
-  name "stage_recommender"
-  description "Recommends the correct pipeline stage."
-
-  model BeamWeaver.Models.init_chat_model!("openai:gpt-5.4")
-  system_prompt "Return the best pipeline stage."
-  response_schema MyApp.Schemas.StageRecommendation,
-    name: "stage_recommendation",
-    strategy: :provider
-end
-```
-
-If a specialist needs tools before producing structured output, prefer
-`:research_then_generate` instead of combining provider-native structured
-output with active tools:
-
-```elixir
-defmodule MyApp.Agents.DealFactExtractor do
-  use BeamWeaver.Agent
-
-  name "deal_fact_extractor"
-  description "Researches related records, then emits structured facts."
-
-  model BeamWeaver.Models.init_chat_model!("openai:gpt-5.4")
-
-  tools do
-    tool MyApp.Tools.RelatedDeals
-  end
-
-  middleware do
-    use BeamWeaver.Agent.Middleware.Filesystem
-  end
-
-  system_prompt "Research first, then return structured facts."
-  response_schema MyApp.Schemas.FactsOutput, name: "facts_output", strategy: :provider
-end
-```
-
-The research pass can use the configured tools and middleware. The generation
-pass receives the original task plus concise research notes, does not inherit
-the parent transcript, and has no tools. This keeps structured-output parsing
-bounded and avoids provider tool/JSON interaction problems.
-
-## Runtime Context
-
-Runtime context passed to the parent invocation propagates to synchronous
-subagents. Tools inside the child can read it with explicit injection:
-
-```elixir
-alias BeamWeaver.Core.Tool
-
-user_lookup =
-  Tool.from_function!(
-    name: "user_lookup",
-    description: "Look up data for the current user.",
-    input_schema: %{
-      "type" => "object",
-      "properties" => %{
-        "query" => %{"type" => "string"},
-        "context" => %{"type" => "object"}
-      },
-      "required" => ["query", "context"]
-    },
-    injected: [context: :context],
-    handler: fn input, _opts ->
-      context = input[:context] || input["context"] || %{}
-      user_id = context[:user_id] || context["user_id"]
-      query = input[:query] || input["query"]
-
-      "Data for #{user_id}: #{query}"
-    end
+{:ok, parent} =
+  BeamWeaver.Agent.build(
+    model: "openai:gpt-5.4-mini",
+    model_opts: [max_tokens: 512, timeout: 60_000],
+    system_prompt: "Delegate policy extraction to policy_expert once; include the supplied text.",
+    subagents: [child, BeamWeaver.Agent.GeneralPurposeSubagentProfile.new(enabled: false)]
   )
+
+{:ok, result} = BeamWeaver.Agent.invoke(parent, %{messages: ["Refunds take five business days."]})
+%{"refund_days" => 5} = result.subagent_outputs["compiled_policy"]
 ```
 
-For subagent-specific configuration, either namespace fields in the context map
-or model them as separate keys:
+## Checked when the agent is built
+
+Parent validation checks child definitions for invalid models, tools,
+middleware, response formats and unknown options; errors identify the child.
+Actual construction is deferred until delegation. Module-level validation is
+cached until code changes, so dynamic data sources should be validated when
+your application updates them, not assumed to be freshly checked every call.
+
+## The general-purpose subagent
+
+The default worker shares the parent's model, ordinary tools, workspace,
+skills and selected context/profile policies, but not all parent middleware
+or a task list. Configure it with `GeneralPurposeSubagentProfile`, disable it
+as above, or replace it with a child named `"general-purpose"`.
+
+## Execution modes
+
+| Mode | Work performed |
+| --- | --- |
+| `:agent_loop` | Normal tool/model loop |
+| `:structured_once` | One structured model answer |
+| `:research_then_generate` | Research with tools, then a tool-free formatting call |
+
+The last mode separates evidence gathering from structured generation.
+Account for both phases in limits. An explicit child `ModelCallLimit` replaces
+the default one-call limit of structured-once mode.
+The child’s system prompt is reused in both phases. Make tool instructions
+conditional on tools being available, and tell the generation phase to use
+the research context it receives.
+
+For extraction with no research phase, declare a single structured call and run the module as a child:
 
 ```elixir
-Agent.invoke(agent, input,
-  context: %{
-    user_id: "user-123",
-    researcher_max_depth: 3,
-    fact_checker_strict_mode: true
-  }
-)
+defmodule MyApp.OnePassPolicy do
+  use BeamWeaver.Agent
+  model "openai:gpt-5.4-mini", max_tokens: 256, timeout: 60_000
+  system_prompt "Extract the refund timing. Set source to supplied_policy."
+  tools []
+  response_schema MyApp.PolicyAnswer
+  execution_mode :structured_once
+end
+
+child =
+  BeamWeaver.Agent.Subagent.Spec.from_agent_module(MyApp.OnePassPolicy,
+    name: "one_pass_policy",
+    description: "Extracts supplied policy facts in one pass.",
+    capture_output: :one_pass
+  )
+
+{:ok, parent} =
+  BeamWeaver.Agent.build(
+    model: "openai:gpt-5.4-mini",
+    model_opts: [max_tokens: 512, timeout: 60_000],
+    system_prompt: "Delegate once to one_pass_policy and include the policy text.",
+    subagents: [child, BeamWeaver.Agent.GeneralPurposeSubagentProfile.new(enabled: false)]
+  )
+
+{:ok, answer} = BeamWeaver.Agent.invoke(parent, %{messages: ["Refunds take five business days."]})
+%{"refund_days" => 5, "source" => "supplied_policy"} = answer.subagent_outputs["one_pass"]
 ```
 
-When a shared tool needs to know which child called it, inject
-`:tool_runtime` and inspect runtime config:
+For research-then-generation, the child first obtains evidence with a tool, then formats its final answer without tools. An observer confirms the lookup actually ran:
 
 ```elixir
-Tool.from_function!(
-  name: "shared_lookup",
-  description: "Look up information with agent-specific behavior.",
-  input_schema: %{
-    "type" => "object",
-    "properties" => %{
-      "query" => %{"type" => "string"},
-      "tool_runtime" => %{"type" => "object"}
-    },
-    "required" => ["query", "tool_runtime"]
-  },
-  injected: [tool_runtime: :tool_runtime],
-  handler: fn input, _opts ->
-    runtime = input[:tool_runtime] || input["tool_runtime"]
-    config = runtime.config || %{}
+defmodule MyApp.ReadPolicyFact do
+  use BeamWeaver.Tool
+  name "read_policy_fact"
+  description "Read the sample refund timing policy."
+  injected :context, :context
 
-    name =
-      get_in(config, [:configurable, :subagent_name]) ||
-        get_in(config, ["configurable", "subagent_name"])
-
-    case name do
-      "fact-checker" -> MyApp.StrictLookup.search(input["query"] || input[:query])
-      _other -> MyApp.GeneralLookup.search(input["query"] || input[:query])
-    end
+  schema do
   end
-)
+
+  @impl true
+  def invoke(_tool, %{context: context}, _opts) do
+    send(context.observer, :policy_fact_read)
+    {:ok, "Refunds take five business days. Source: supplied_policy."}
+  end
+end
+
+defmodule MyApp.ResearchPolicy do
+  use BeamWeaver.Agent
+  name "research_policy"
+  description "Reads and extracts the sample policy."
+  model "openai:gpt-5.4-mini", max_tokens: 512, timeout: 60_000
+
+  system_prompt "When read_policy_fact is available, call it to obtain the policy. When research context is supplied instead, extract only those supplied facts."
+
+  tools [MyApp.ReadPolicyFact]
+  response_schema MyApp.PolicyAnswer
+  execution_mode :research_then_generate
+end
+
+child = BeamWeaver.Agent.Subagent.Spec.from_agent_module(MyApp.ResearchPolicy, capture_output: :researched)
+
+{:ok, parent} =
+  BeamWeaver.Agent.build(
+    model: "openai:gpt-5.4-mini",
+    model_opts: [max_tokens: 512, timeout: 60_000],
+    system_prompt:
+      "Delegate to research_policy once, then confirm completion. The application reads the captured answer.",
+    subagents: [child, BeamWeaver.Agent.GeneralPurposeSubagentProfile.new(enabled: false)]
+  )
+
+{:ok, answer} =
+  BeamWeaver.Agent.invoke(parent, %{messages: ["Read and report the refund timing policy."]},
+    context: %{observer: self()}
+  )
+
+%{"refund_days" => 5, "source" => "supplied_policy"} = answer.subagent_outputs["researched"]
+
+receive do
+  :policy_fact_read -> :ok
+after
+  0 -> raise "Research tool was never executed"
+end
 ```
 
-The parent-side tool message also carries metadata including `:subagent_name`
-and `:subagent_type`.
+## Context and shared state
+
+Children receive parent runtime context and selected public state, excluding
+parent messages unless requested, task lists and private bookkeeping. Child
+state changes can propagate back, including state-backed files. This is not
+process-level data isolation: give specialists only the state and capabilities
+they should use.
+
+With checkpoints, children use nested namespaces in the parent thread unless
+they supply storage. A child with its own saver under a parent without a thread
+uses a run-derived thread identity. Use stable application threading when
+results must be resumed later.
+
+This tool records a flag; it does not transfer money. Trusted context reaches the child and its state update reaches the parent:
+
+```elixir
+defmodule MyApp.Tools.FlagForRefund do
+  use BeamWeaver.Tool
+
+  alias BeamWeaver.Core.Message
+  alias BeamWeaver.Graph.Command
+
+  name "flag_for_refund"
+  description "Flag one of the current customer's orders for a refund."
+
+  injected :context, :context
+  injected :tool_call_id, :tool_call_id
+
+  schema do
+    field :order_id, :string
+  end
+
+  @impl true
+  def invoke(_tool, %{"order_id" => order_id, context: context, tool_call_id: id}, _opts) do
+    flag = "#{context.customer_id}/#{order_id}"
+    {:ok, %Command{update: %{refund_flag: flag, messages: [Message.tool("Flagged #{flag}.", tool_call_id: id)]}}}
+  end
+end
+
+defmodule MyApp.RefundClerk do
+  use BeamWeaver.Agent
+  name "refund_clerk"
+  description "Records a refund flag in application state."
+  model "openai:gpt-5.4-mini", max_tokens: 256, timeout: 60_000
+  system_prompt "Use flag_for_refund once for the assigned order, then confirm."
+  tools [MyApp.Tools.FlagForRefund]
+end
+
+defmodule MyApp.FlagSupervisor do
+  use BeamWeaver.Agent
+  model "openai:gpt-5.4-mini", max_tokens: 512, timeout: 60_000
+  system_prompt "Delegate the requested flag to refund_clerk exactly once, including the order ID."
+
+  subagents do
+    subagent MyApp.RefundClerk
+    include [BeamWeaver.Agent.GeneralPurposeSubagentProfile.new(enabled: false)]
+  end
+end
+
+{:ok, result} =
+  MyApp.FlagSupervisor.invoke(%{messages: ["Flag A-1001 for refund review."]}, context: %{customer_id: "cus_ada"})
+
+"cus_ada/A-1001" = result.refund_flag
+```
 
 ## Streaming
 
-Task subagents are launched from tool calls, so they do not appear as static
-subgraph nodes in graph topology. For UI or telemetry projections, collect or
-consume agent events and use `BeamWeaver.Agent.Subagent.StreamTransformer`:
+Child events arrive in the parent's stream with a subagent namespace and
+metadata identifying the child and originating task call. Match on those IDs
+to keep concurrent work separate. `Subagent.StreamTransformer` summarizes
+child runs, including nested status and values. Do not re-enumerate a live
+stream to obtain a second view; collect or dispatch once.
+
+Inspect parent and child tool events from one consumed stream:
 
 ```elixir
-alias BeamWeaver.Agent
-alias BeamWeaver.Agent.Subagent.StreamTransformer
+alias BeamWeaver.Stream.Events
 
-{:ok, events} = Agent.stream_events(agent, input)
-
-transformer = StreamTransformer.new(subagent_names: ["researcher"])
-{:ok, transformer, _new_handles} = StreamTransformer.process_many(transformer, events)
-transformer = StreamTransformer.finalize(transformer)
-
-for handle <- transformer.log do
-  IO.inspect(
-    %{
-      name: handle.graph_name,
-      status: handle.status,
-      task_input: handle.task_input,
-      output: BeamWeaver.Agent.Subagent.RunStream.output(handle)
-    },
-    label: "subagent"
+{:ok, events} =
+  MyApp.FlagSupervisor.stream_events(%{messages: ["Please refund order A-1001."]},
+    live: true,
+    context: %{customer_id: "cus_ada"}
   )
-end
+
+calls = for %{event: %Events.ToolStart{tool_name: tool}, namespace: namespace} <- events, do: {namespace, tool}
+true = Enum.any?(calls, fn {_, tool} -> tool == "task" end)
+true = Enum.any?(calls, fn {namespace, tool} -> namespace != [] and tool == "flag_for_refund" end)
 ```
 
-For graph subgraphs and agents compiled as graph nodes, use
-`BeamWeaver.Stream.Subgraphs` instead.
-
-For message, tool-call, lifecycle, nested subagent, and exact-arrival-order
-patterns, see [Event Streaming](event_streaming.md).
-
-## Async Subagents
-
-Use `async_subagents` or `BeamWeaver.Agent.Subagent.AsyncSpec` entries when the
-work should run on a remote Agent Protocol server and the parent should not
-block until completion.
+Project the same kind of stream into child run summaries:
 
 ```elixir
-async_subagents do
-  async_subagent "remote_research",
-    description: "Long-running background research worker.",
-    graph_id: "research_graph",
-    url: "https://agents.example.com"
+alias BeamWeaver.Agent.Subagent.{RunStream, StreamTransformer}
+
+{:ok, events} =
+  MyApp.FlagSupervisor.stream_events(
+    %{messages: ["Please refund order A-1001."]},
+    context: %{customer_id: "cus_ada"}
+  )
+
+transformer = StreamTransformer.new(subagent_names: ["refund_clerk"])
+{:ok, transformer, _updates} = StreamTransformer.process_many(transformer, events)
+[run] = StreamTransformer.finalize(transformer).log
+{:completed, "refund_clerk"} = {run.status, RunStream.name(run)}
+true = is_map(RunStream.output(run))
+```
+
+## Human review
+
+Nested tool review pauses the parent; resume_review on the parent continues
+that child. A parent whose descendants require review needs a checkpointer.
+Explicit child rules override inherited ones, and false can disable them.
+
+Multiple child reviews and already-completed siblings retain their execution
+state. A new parent message can cancel pending review without undoing work
+already completed. Bind review UI submissions to current saved state; see
+[Human Review](human_in_the_loop.md).
+
+Override the child’s review rule and resume through the parent using the same saved thread:
+
+```elixir
+child = BeamWeaver.Agent.Subagent.Spec.from_agent_module(MyApp.RefundClerk, interrupt_on: %{"flag_for_refund" => true})
+
+{:ok, parent} =
+  BeamWeaver.Agent.build(
+    model: "openai:gpt-5.4-mini",
+    model_opts: [max_tokens: 512, timeout: 60_000],
+    system_prompt: "Delegate A-1001 to refund_clerk so the runtime can review its flag request.",
+    subagents: [child, BeamWeaver.Agent.GeneralPurposeSubagentProfile.new(enabled: false)]
+  )
+
+opts = [
+  checkpointer: BeamWeaver.Checkpoint.ETS.new(),
+  config: %{"configurable" => %{"thread_id" => "child-review"}},
+  context: %{customer_id: "cus_ada"}
+]
+
+{:interrupted, interrupt} =
+  BeamWeaver.Agent.invoke(parent, %{messages: ["Submit A-1001 for refund flag review."]}, opts)
+
+{:ok, review} = BeamWeaver.Agent.HITL.from_interrupt(interrupt)
+"flag_for_refund" = hd(review.action_requests).name
+{:ok, result} = BeamWeaver.Agent.resume_review(parent, [BeamWeaver.Agent.HITL.decision(:approve)], opts)
+"cus_ada/A-1001" = result.refund_flag
+```
+
+## Async subagents
+
+Async delegation starts work through a client or remote service. It exposes
+five tools: start, check, update, cancel and list async tasks. Task IDs and
+statuses live in `async_tasks`; reuse the same saved thread to find them.
+An interrupted remote task is not final, while completed/error/timeout/cancelled
+states are final. Refresh status before reporting completion.
+
+Configure `AsyncSpec` with a `client:` implementing `Agent.Protocol.Client`,
+or a `url:` plus headers for `ReqClient`. The HTTP contract is:
+
+| Operation | Endpoint |
+| --- | --- |
+| Start | `POST /runs` |
+| Check | `GET /runs/:task_id` |
+| Update | `POST /runs/:task_id/input` |
+| Cancel | `POST /runs/:task_id/cancel` |
+
+Client callbacks receive parent thread/run/tool-call and trace identifiers.
+Treat them as correlation data, not proof of authorization. The remote service
+owns scheduling, persistence and cancellation. The complete
+[async server example](https://github.com/caudena/beam_weaver/blob/master/examples/deepagents/async_subagent_server.exs)
+shows a runnable service integration rather than an invented hosted URL.
+
+This complete local protocol client runs a small audit in a background task. It computes duplicate order IDs from the stated sample records; it does not pretend to contact a hosted audit service. The parent model makes real OpenAI calls to start and check the task:
+
+```elixir
+defmodule MyApp.LocalAuditClient do
+  @behaviour BeamWeaver.Agent.Protocol.Client
+
+  @impl true
+  def start_task(_spec, _payload, _opts) do
+    id = "audit-#{System.unique_integer([:positive])}"
+    running = %{"thread_id" => id, "status" => "running"}
+    Agent.update(MyApp.AuditTasks, &Map.put(&1, id, running))
+
+    {:ok, _} =
+      Task.start(fn ->
+        rows = [%{order_id: "A-1001"}, %{order_id: "A-1002"}, %{order_id: "A-1001"}]
+
+        duplicates =
+          rows |> Enum.frequencies_by(& &1.order_id) |> Enum.filter(fn {_, n} -> n > 1 end) |> Enum.map(&elem(&1, 0))
+
+        Agent.update(MyApp.AuditTasks, fn tasks ->
+          Map.update!(tasks, id, fn task ->
+            if task["status"] == "cancelled",
+              do: task,
+              else:
+                Map.merge(task, %{
+                  "status" => "success",
+                  "result" => "Duplicate order IDs: " <> Enum.join(duplicates, ", ")
+                })
+          end)
+        end)
+      end)
+
+    {:ok, running}
+  end
+
+  @impl true
+  def check_task(_spec, id, _opts), do: Agent.get(MyApp.AuditTasks, &Map.fetch(&1, id))
+
+  @impl true
+  def update_task(_spec, id, message, _opts) do
+    Agent.update(MyApp.AuditTasks, &Map.update!(&1, id, fn task -> Map.put(task, "reviewer_note", message) end))
+    check_task(nil, id, [])
+  end
+
+  @impl true
+  def cancel_task(_spec, id, _opts) do
+    Agent.update(MyApp.AuditTasks, &Map.update!(&1, id, fn task -> Map.put(task, "status", "cancelled") end))
+    check_task(nil, id, [])
+  end
+end
+
+defmodule MyApp.AsyncAuditAgent do
+  use BeamWeaver.Agent
+  model "openai:gpt-5.4-mini", max_tokens: 512, timeout: 60_000
+
+  system_prompt "When asked to start, call start_async_task once and return its ID without polling. When asked to check, call check_async_task with the exact provided ID and report the result."
+
+  async_subagents do
+    async_subagent "refund_auditor",
+      description: "Audits sample refunds for duplicate order IDs.",
+      graph_id: "refund_auditor",
+      client: MyApp.LocalAuditClient
+  end
+end
+
+{:ok, tasks} = Agent.start_link(fn -> %{} end, name: MyApp.AuditTasks)
+
+try do
+  opts = [checkpointer: BeamWeaver.Checkpoint.ETS.new(), config: %{"configurable" => %{"thread_id" => "async-audit"}}]
+
+  {:ok, started} =
+    MyApp.AsyncAuditAgent.invoke(
+      %{messages: ["Start a refund_auditor audit of the sample refunds. Do not check yet."]},
+      opts
+    )
+
+  [task_id] = Map.keys(started.async_tasks)
+
+  {:ok, checked} =
+    MyApp.AsyncAuditAgent.invoke(%{messages: ["Check audit #{task_id} and report the actual result."]}, opts)
+
+  true = checked.async_tasks[task_id].result =~ "A-1001"
+  true = Enum.any?(checked.messages, &(&1.role == :tool and &1.name == "check_async_task"))
+after
+  Agent.stop(tasks)
 end
 ```
 
-Async subagents expose `start_async_task`, `check_async_task`,
-`update_async_task`, `cancel_async_task`, and `list_async_tasks`. They are
-separate from the synchronous `task` tool. See
-[Async Subagents](async_subagents.md) for transport, lifecycle, state, and
-custom client details.
+## Application-owned child admission
 
-## Best Practices
+`BeamWeaver.Agent.Subagent.Host` is a separate boundary for an application
+that owns child scheduling and persistence. A closed `Proposal` describes
+task type, text, foreground/background mode and correlation ID; it grants no
+authority. The host validates admission and returns an opaque `Handle`.
 
-- Write descriptions that clearly tell the parent when to delegate.
-- Keep each subagent's tool set small. This improves focus and narrows the
-  permission surface.
-- Put output limits in the subagent prompt. Ask for summaries, not raw tool
-  dumps.
-- Use structured output when the parent needs to parse the result or pass it to
-  another tool.
-- Use `capture_output` for large structured specialist payloads that should be
-  authoritative in state but not re-serialized through the supervisor model.
-- Prefer `:research_then_generate` for specialists that need tools and must
-  end with structured output.
-- Have subagents write large artifacts to the filesystem and return file paths
-  plus summaries.
-- Use subgraphs rather than task subagents when you need static graph
-  introspection, state inspection, or graph-level persistence semantics.
+Result lookup returns a bounded typed result, an error, or the identical
+background handle while pending. Foreground work cannot remain pending, and
+background work cannot request synchronous parent input. Outcomes distinguish
+completion, failure, cancellation, blocked capability and needed input. The
+application owns authorization, recovery and evidence references.
+
+This foreground host enforces an application-supplied allowlist, executes a real model call, and stores the result behind an opaque handle. Replace the in-memory result map with your durable scheduler/store when deploying:
+
+```elixir
+defmodule MyApp.ForegroundHost do
+  @behaviour BeamWeaver.Agent.Subagent.Host
+  alias BeamWeaver.Agent.Subagent.Host.{Handle, Result}
+  defstruct [:model, :results]
+
+  @impl true
+  def admit_child(host, proposal, context) do
+    if proposal.type in context.allowed_types do
+      with {:ok, reply} <- BeamWeaver.Core.ChatModel.invoke(host.model, proposal.task) do
+        id = "child-#{System.unique_integer([:positive])}"
+        result = %Result{handle_id: id, outcome: :completed, content: BeamWeaver.Core.Message.text(reply)}
+        Agent.update(host.results, &Map.put(&1, id, result))
+        {:ok, %Handle{id: id, mode: proposal.mode}}
+      end
+    else
+      {:error, :unauthorized_child_type}
+    end
+  end
+
+  @impl true
+  def child_result(host, handle, _context), do: Agent.get(host.results, &Map.fetch(&1, handle.id))
+end
+
+alias BeamWeaver.Agent.Subagent.Host
+{:ok, results} = Agent.start_link(fn -> %{} end)
+
+try do
+  host =
+    struct!(MyApp.ForegroundHost,
+      results: results,
+      model: BeamWeaver.Models.init_chat_model!("openai:gpt-5.4-mini", max_tokens: 128, timeout: 60_000)
+    )
+
+  proposal = %Host.Proposal{
+    type: "calculation",
+    task: "Calculate 19 + 23 briefly.",
+    mode: :foreground,
+    correlation_id: "request-1"
+  }
+
+  context = %{allowed_types: ["calculation"]}
+  {:ok, handle} = Host.admit(host, proposal, context)
+  {:ok, result} = Host.result(host, handle, context)
+  :completed = result.outcome
+  true = result.content =~ "42"
+after
+  Agent.stop(results)
+end
+```
 
 ## Troubleshooting
 
-| Problem | Fix |
+| Symptom | Check |
 | --- | --- |
-| The parent does the work itself. | Make the subagent `description` more specific and tell the parent prompt when to delegate. |
-| The `task` tool is missing. | Configure at least one synchronous subagent. Async-only configuration exposes async tools, not `task`. |
-| Context is still bloated. | Instruct subagents to return concise summaries and write raw data to the filesystem. |
-| Captured output is missing. | Check `state.subagent_outputs["your_key"]`; the parent model only receives the acknowledgement unless `parent_result: :full` is configured. |
-| A captured subagent does not rerun. | Repeated captured calls are cached by subagent name and task input. Use `capture_output: [key: :your_key, dedupe: false]` for volatile work. |
-| The wrong subagent is selected. | Make descriptions mutually exclusive, for example separate "quick facts" from "deep research". |
-| A subagent cannot access an expected tool. | Check whether `:tools` was set. A list replaces inherited tools; `nil` inherits parent tools. |
-| A subagent cannot use `write_todos` or filesystem tools. | Add the corresponding middleware or filesystem configuration to the child agent. These tools are not implicit. |
-| A child cannot resume after HITL. | Ensure the parent has a checkpointer and the same thread configuration is used for resume. |
+| Parent does not delegate | Distinct descriptions and explicit delegation instructions |
+| Child lacks facts | Include them in the task or deliberately inherit messages |
+| Child has unexpected tools | Specify `tools: []` or an explicit set |
+| Missing workspace or skills | Child declarations or requested base middleware |
+| Captured answer seems stale | Deduplication and thread identity |
+| Missing checkpointer | A nested review requires saved continuation |
+| Unknown async task | Full task ID and original thread |

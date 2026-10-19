@@ -1,146 +1,114 @@
 defmodule BeamWeaver.Provider.ChatModel do
   @moduledoc false
 
-  defmacro __using__(_opts) do
+  # Shared invoke/stream flow for the provider chat models. A model module
+  # `use`s this and implements the callbacks below; `ChatRuntime` builds the
+  # request body, sends it, decodes the response and parses structured output.
+  #
+  #     use BeamWeaver.Provider.ChatModel, stream_source: :moonshot_chat_completions
+  #
+  # `exact_stream_events: true` routes `stream_exact_typed_events/3` through
+  # `send_request(:exact_stream_events, ...)`; otherwise it is unsupported.
+
+  alias BeamWeaver.Core.Message
+
+  @type body :: map() | binary()
+  @type call :: :invoke | :stream | :stream_response | :stream_events | :exact_stream_events
+
+  @callback request_body(model :: struct(), [Message.t()], keyword()) :: {:ok, body()} | {:error, term()}
+  @callback send_request(call(), model :: struct(), body(), keyword()) :: {:ok, term()} | {:error, term()}
+  @callback decode_response(response :: term(), keyword()) :: {:ok, Message.t()} | {:error, term()}
+  @callback parse_response(model :: struct(), Message.t(), keyword()) :: {:ok, Message.t()} | {:error, term()}
+  @callback stream_metadata(model :: struct(), body(), keyword()) :: map()
+  @callback forced_tool_choice?(model :: struct(), keyword()) :: boolean()
+
+  defmacro __using__(opts) do
+    source = Keyword.get(opts, :stream_source)
+    exact? = Keyword.get(opts, :exact_stream_events, false)
+
     quote do
       @behaviour BeamWeaver.Core.ChatModel
+      @behaviour BeamWeaver.Provider.ChatModel
 
       alias BeamWeaver.Provider.ChatModel.Options, as: ChatOptions
       alias BeamWeaver.Provider.ChatRuntime
 
+      @doc "Returns the native model identifier configured on this instance."
       @spec model_name(t()) :: String.t()
       def model_name(%__MODULE__{model: model}), do: model
 
-      @spec should_stream?(t()) :: boolean()
-      def should_stream?(model), do: should_stream?(model, [])
-
+      @doc "Resolves whether this call requests streaming from model and call options."
       @spec should_stream?(t(), keyword()) :: boolean()
-      def should_stream?(%__MODULE__{} = model, opts) do
-        ChatOptions.should_stream?(model, opts)
-      end
+      def should_stream?(%__MODULE__{} = model, opts \\ []), do: ChatOptions.should_stream?(model, opts)
 
-      @impl true
+      @doc "Returns the native model identifier used by provider dispatch."
+      def model_id(%__MODULE__{model: model}), do: model
+      @doc "Returns local capability metadata, not a live account-entitlement check."
+      def profile(%__MODULE__{profile: profile}), do: profile
+
+      @impl BeamWeaver.Core.ChatModel
       def resolve_invocation_model(%__MODULE__{} = model, _opts), do: {:ok, model}
 
-      def invoke(model, messages), do: invoke(model, messages, [])
-
-      @impl true
-      def invoke(%__MODULE__{} = model, messages, opts) do
-        with {:ok, model} <- resolve_invocation_model(model, opts) do
-          ChatRuntime.invoke(model, messages, opts, runtime_adapter())
-        end
+      @impl BeamWeaver.Core.ChatModel
+      def invoke(%__MODULE__{} = model, messages, opts \\ []) do
+        with {:ok, model} <- resolve_invocation_model(model, opts),
+             do: ChatRuntime.invoke(__MODULE__, model, messages, opts)
       end
 
-      def async_invoke(model, messages), do: async_invoke(model, messages, [])
-
-      def async_invoke(%__MODULE__{} = model, messages, opts) do
-        ChatRuntime.async_invoke(opts, &invoke(model, messages, &1))
+      @impl BeamWeaver.Core.ChatModel
+      def stream(%__MODULE__{} = model, messages, opts \\ []) do
+        with {:ok, model} <- resolve_invocation_model(model, opts),
+             do: ChatRuntime.stream(__MODULE__, model, messages, opts)
       end
 
-      def async_batch(model, message_batches), do: async_batch(model, message_batches, [])
-
-      def async_batch(%__MODULE__{} = model, message_batches, opts)
-          when is_list(message_batches) do
-        ChatRuntime.async_batch(message_batches, opts, &invoke(model, &1, &2))
+      @doc "Collects a provider stream into its completed decoded response, or returns an error."
+      def stream_response(%__MODULE__{} = model, messages, opts \\ []) do
+        with {:ok, model} <- resolve_invocation_model(model, opts),
+             do: ChatRuntime.stream_response(__MODULE__, model, messages, opts)
       end
 
-      def stream(model, messages), do: stream(model, messages, [])
+      @impl BeamWeaver.Core.ChatModel
+      def stream_events(%__MODULE__{} = model, messages, opts \\ []),
+        do: stream_typed_events(model, messages, opts)
 
-      @impl true
-      def stream(%__MODULE__{} = model, messages, opts) do
-        with {:ok, model} <- resolve_invocation_model(model, opts) do
-          ChatRuntime.stream(model, messages, opts, runtime_adapter())
-        end
+      @impl BeamWeaver.Core.ChatModel
+      def stream_typed_events(%__MODULE__{} = model, messages, opts \\ []) do
+        with {:ok, model} <- resolve_invocation_model(model, opts),
+             do: ChatRuntime.stream_events(__MODULE__, unquote(source), model, messages, opts)
       end
 
-      def async_stream(model, messages), do: async_stream(model, messages, [])
-
-      def async_stream(%__MODULE__{} = model, messages, opts) do
-        ChatRuntime.async_stream(opts, &stream(model, messages, &1))
+      @impl BeamWeaver.Core.ChatModel
+      if unquote(exact?) do
+        def stream_exact_typed_events(%__MODULE__{} = model, body, opts \\ []) when is_binary(body),
+          do: ChatRuntime.stream_exact_events(__MODULE__, unquote(source), model, body, opts)
+      else
+        def stream_exact_typed_events(%__MODULE__{}, body, _opts \\ []) when is_binary(body),
+          do:
+            {:error,
+             BeamWeaver.Core.Error.new(:unsupported_feature, "provider does not support exact typed stream events")}
       end
 
-      def stream_response(model, messages), do: stream_response(model, messages, [])
+      @impl BeamWeaver.Provider.ChatModel
+      def parse_response(_model, message, _opts), do: {:ok, message}
 
-      def stream_response(%__MODULE__{} = model, messages, opts) do
-        with {:ok, model} <- resolve_invocation_model(model, opts) do
-          ChatRuntime.stream_response(model, messages, opts, runtime_adapter())
-        end
-      end
+      @impl BeamWeaver.Provider.ChatModel
+      def stream_metadata(_model, _body, _opts), do: %{}
 
-      def async_stream_response(model, messages), do: async_stream_response(model, messages, [])
+      # Whether a call with these options may force a tool call
+      # (`tool_choice: :required`).
+      @impl BeamWeaver.Provider.ChatModel
+      def forced_tool_choice?(_model, _opts), do: true
 
-      def async_stream_response(%__MODULE__{} = model, messages, opts) do
-        ChatRuntime.async_stream(opts, &stream_response(model, messages, &1))
-      end
-
-      def stream_events(model, messages), do: stream_events(model, messages, [])
-
-      @impl true
-      def stream_events(%__MODULE__{} = model, messages, opts) do
-        with {:ok, model} <- resolve_invocation_model(model, opts) do
-          ChatRuntime.stream_events(model, messages, opts, runtime_adapter())
-        end
-      end
-
-      def async_stream_events(model, messages), do: async_stream_events(model, messages, [])
-
-      def async_stream_events(%__MODULE__{} = model, messages, opts) do
-        ChatRuntime.async_stream(opts, &stream_events(model, messages, &1))
-      end
-
-      def stream_typed_events(model, messages), do: stream_typed_events(model, messages, [])
-
-      @impl true
-      def stream_typed_events(%__MODULE__{} = model, messages, opts) do
-        with {:ok, model} <- resolve_invocation_model(model, opts) do
-          ChatRuntime.stream_events(model, messages, opts, runtime_adapter())
-        end
-      end
-
-      @impl true
-      def stream_exact_typed_events(%__MODULE__{} = model, body, opts \\ []) when is_binary(body) do
-        ChatRuntime.stream_exact_events(model, body, opts, runtime_adapter())
-      end
-
-      def async_stream_typed_events(model, messages), do: async_stream_typed_events(model, messages, [])
-
-      def async_stream_typed_events(%__MODULE__{} = model, messages, opts) do
-        ChatRuntime.async_stream(opts, &stream_typed_events(model, messages, &1))
-      end
-
-      def model_id(%__MODULE__{} = model), do: ChatRuntime.model_id(model)
-      def profile(%__MODULE__{} = model), do: ChatRuntime.profile(model)
-
-      defoverridable model_name: 1,
-                     should_stream?: 1,
-                     should_stream?: 2,
-                     resolve_invocation_model: 2,
-                     invoke: 2,
-                     invoke: 3,
-                     async_invoke: 2,
-                     async_invoke: 3,
-                     async_batch: 2,
-                     async_batch: 3,
-                     stream: 2,
-                     stream: 3,
-                     async_stream: 2,
-                     async_stream: 3,
-                     stream_response: 2,
-                     stream_response: 3,
-                     async_stream_response: 2,
-                     async_stream_response: 3,
+      defoverridable resolve_invocation_model: 2,
                      stream_events: 2,
                      stream_events: 3,
-                     async_stream_events: 2,
-                     async_stream_events: 3,
                      stream_typed_events: 2,
                      stream_typed_events: 3,
                      stream_exact_typed_events: 2,
                      stream_exact_typed_events: 3,
-                     async_stream_typed_events: 2,
-                     async_stream_typed_events: 3,
-                     model_id: 1,
-                     profile: 1
+                     parse_response: 3,
+                     stream_metadata: 3,
+                     forced_tool_choice?: 2
     end
   end
 end

@@ -1,8 +1,6 @@
 defmodule BeamWeaver.Agent.TodoListMiddlewareTest do
   use ExUnit.Case, async: true
 
-  # Upstream reference:
-
   alias BeamWeaver.Agent
   alias BeamWeaver.Agent.Middleware.TodoList
   alias BeamWeaver.Agent.ModelRequest
@@ -74,15 +72,7 @@ defmodule BeamWeaver.Agent.TodoListMiddlewareTest do
         tool_description: "Custom todo tool description"
       )
 
-    request = %ModelRequest{
-      model: %SequentialTodoModel{},
-      system_message: nil,
-      messages: [Message.user("hello")],
-      tools: [],
-      state: %{},
-      runtime: %{context: %{}},
-      model_opts: []
-    }
+    request = ModelRequest.new(messages: [Message.user("hello")])
 
     assert {:ok, %ModelRequest{} = modified} =
              TodoList.wrap_model_call(middleware, request, fn request -> {:ok, request} end)
@@ -97,15 +87,7 @@ defmodule BeamWeaver.Agent.TodoListMiddlewareTest do
   test "appends todo instructions to an existing system message" do
     middleware = TodoList.new()
 
-    request = %ModelRequest{
-      model: %SequentialTodoModel{},
-      system_message: Message.system("Original prompt"),
-      messages: [Message.user("hello")],
-      tools: [],
-      state: %{},
-      runtime: %{context: %{}},
-      model_opts: []
-    }
+    request = ModelRequest.new(system_prompt: "Original prompt", messages: [Message.user("hello")])
 
     assert {:ok, %ModelRequest{system_message: %Message{content: content}}} =
              TodoList.wrap_model_call(middleware, request, fn request -> {:ok, request} end)
@@ -197,43 +179,40 @@ defmodule BeamWeaver.Agent.TodoListMiddlewareTest do
   end
 
   test "parallel todo policy ignores unrelated tools and allows a single todo call" do
-    middleware = TodoList.new()
+    after_model = fn calls ->
+      TodoList.after_model(TodoList.new(), %{messages: [Message.assistant("", tool_calls: calls)]}, nil)
+    end
 
-    assert is_nil(
-             TodoList.after_model(
-               middleware,
-               %{
-                 messages: [
-                   Message.assistant("",
-                     tool_calls: [
-                       %{id: "other", name: "lookup", args: %{}},
-                       todo_call("call-1", %{"todos" => [%{"content" => "Task 1", "status" => "pending"}]})
-                     ]
-                   )
-                 ]
-               },
-               nil
-             )
-           )
+    other = %{id: "other", name: "lookup", args: %{}}
+    pending = fn id, content -> todo_call(id, %{"todos" => [%{"content" => content, "status" => "pending"}]}) end
 
-    assert %{messages: messages} =
-             TodoList.after_model(
-               middleware,
-               %{
-                 messages: [
-                   Message.assistant("",
-                     tool_calls: [
-                       %{id: "other", name: "lookup", args: %{}},
-                       todo_call("call-1", %{"todos" => [%{"content" => "Task 1", "status" => "pending"}]}),
-                       todo_call("call-2", %{"todos" => [%{"content" => "Task 2", "status" => "pending"}]})
-                     ]
-                   )
-                 ]
-               },
-               nil
-             )
+    assert is_nil(after_model.([other, pending.("call-1", "Task 1")]))
+    assert %{messages: messages} = after_model.([other, pending.("call-1", "Task 1"), pending.("call-2", "Task 2")])
 
     assert Enum.map(messages, & &1.tool_call_id) == ["call-1", "call-2"]
+  end
+
+  test "a renamed todo tool keeps its name in the prompt and the errors" do
+    middleware = TodoList.new(tool_name: "plan")
+
+    assert middleware.system_prompt =~ "## `plan`"
+    assert middleware.system_prompt =~ "The `plan` tool should never be called multiple times"
+    refute middleware.system_prompt =~ "write_todos"
+
+    calls = [
+      %{id: "call-1", name: "plan", args: %{"todos" => []}},
+      %{id: "call-2", name: "plan", args: %{"todos" => []}}
+    ]
+
+    assert %{messages: [first, _second]} =
+             TodoList.after_model(middleware, %{messages: [Message.assistant("", tool_calls: calls)]}, nil)
+
+    assert first.content =~ "The `plan` tool should never be called multiple times in parallel."
+    refute first.content =~ "write_todos"
+
+    [tool] = TodoList.tools(middleware)
+    assert {:error, error} = BeamWeaver.Tools.Todo.invoke(tool, %{state: %{}, tool_call_id: "call-3"}, [])
+    assert error.message == "plan input must include a todos array"
   end
 
   defp model(table, tool_calls) do

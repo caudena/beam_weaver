@@ -50,9 +50,10 @@ defmodule BeamWeaver.Tracing.Run do
   """
   @spec new(String.t() | atom(), keyword()) :: t()
   def new(name, opts \\ []) do
-    id = Keyword.get_lazy(opts, :id, &new_id/0)
+    id = Keyword.get_lazy(opts, :id, &ID.uuidv7/0)
     trace_id = Keyword.get(opts, :trace_id) || id
-    metadata = BeamWeaver.Tracing.Redactor.redact(Keyword.get(opts, :metadata, %{}))
+    raw_metadata = Keyword.get(opts, :metadata, %{})
+    metadata = BeamWeaver.Tracing.Redactor.redact(raw_metadata)
 
     %__MODULE__{
       id: id,
@@ -64,14 +65,19 @@ defmodule BeamWeaver.Tracing.Run do
       started_at: Keyword.get_lazy(opts, :started_at, &DateTime.utc_now/0),
       tags: normalize_tags(Keyword.get(opts, :tags, [])),
       metadata: metadata,
-      context_metadata: BeamWeaver.Tracing.Redactor.redact(Keyword.get(opts, :context_metadata, metadata)),
+      context_metadata: context_metadata(opts, raw_metadata, metadata),
       inputs: BeamWeaver.Tracing.Redactor.redact(Keyword.get(opts, :inputs)),
       usage: BeamWeaver.Tracing.Redactor.redact(Keyword.get(opts, :usage, %{}))
     }
   end
 
-  defp new_id do
-    ID.uuidv7()
+  # The context metadata is usually the run's own metadata, already redacted.
+  defp context_metadata(opts, raw_metadata, metadata) do
+    case Keyword.fetch(opts, :context_metadata) do
+      {:ok, ^raw_metadata} -> metadata
+      {:ok, context_metadata} -> BeamWeaver.Tracing.Redactor.redact(context_metadata)
+      :error -> metadata
+    end
   end
 
   defp normalize_tags(tags) do

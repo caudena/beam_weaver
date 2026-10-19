@@ -29,12 +29,5 @@ defmodule BeamWeaver.Core.ToolResult do
   end
 
   @spec error(term(), keyword()) :: t()
-  def error(content, opts \\ []) do
-    %__MODULE__{
-      content: content,
-      artifact: Keyword.get(opts, :artifact),
-      status: Keyword.get(opts, :status, :error),
-      metadata: Keyword.get(opts, :metadata, %{})
-    }
-  end
+  def error(content, opts \\ []), do: success(content, Keyword.put_new(opts, :status, :error))
 end

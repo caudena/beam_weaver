@@ -1,39 +1,17 @@
 defmodule BeamWeaver.OpenAI.Streaming.Lifecycle do
   @moduledoc false
 
+  alias BeamWeaver.OpenAI.MessageParts
   alias BeamWeaver.OpenAI.Streaming.Lifecycle.Content
   alias BeamWeaver.OpenAI.Streaming.Lifecycle.State
   alias BeamWeaver.OpenAI.Streaming.Shared
-  alias BeamWeaver.OpenAI.Streaming.SSE
+  alias BeamWeaver.Provider.SSE
 
-  @output_item_types [
-    "additional_tools",
-    "computer_call",
-    "computer_call_output",
-    "image_generation_call",
-    "web_search_call",
-    "file_search_call",
-    "code_interpreter_call",
-    "mcp_call",
-    "mcp_list_tools",
-    "mcp_approval_request",
-    "mcp_approval_response",
-    "tool_search_call",
-    "tool_search_output",
-    "custom_tool_call",
-    "apply_patch_call",
-    "apply_patch_call_output",
-    "compaction",
-    "function_call_output",
-    "local_shell_call",
-    "local_shell_call_output",
-    "program",
-    "program_output",
-    "shell_call",
-    "shell_call_output"
-  ]
-
-  @output_item_type_set Map.new(@output_item_types, &{&1, true})
+  # The output items whose events go as custom events, and which get a block
+  # of their own: all but reasoning and function calls, which become blocks
+  # of their kind, and `custom_tool_call_output`.
+  @output_item_types MessageParts.output_block_types() -- ~w(reasoning function_call custom_tool_call_output)
+  @custom_stream_prefixes ~w(custom_tool_call_input shell_call_command shell_call_output_content)
 
   @doc false
   @spec typed_custom_event?(map()) :: boolean()
@@ -44,44 +22,26 @@ defmodule BeamWeaver.OpenAI.Streaming.Lifecycle do
       when type in ["response.output_item.added", "response.output_item.done"],
       do: item_type in @output_item_types
 
-  def typed_custom_event?(%{"type" => "response.custom_tool_call_input." <> _suffix}),
-    do: true
-
-  def typed_custom_event?(%{"type" => "response.shell_call_command." <> _suffix}),
-    do: true
-
-  def typed_custom_event?(%{"type" => "response.shell_call_output_content." <> _suffix}),
-    do: true
-
+  # An output item's own events, such as `response.mcp_call.completed`, and
+  # the streamed input, command and output of custom and shell calls.
   def typed_custom_event?(%{"type" => "response." <> event_name}) do
-    case :binary.match(event_name, ".") do
-      {separator, 1} ->
-        event_name
-        |> binary_part(0, separator)
-        |> then(&Map.has_key?(@output_item_type_set, &1))
-
-      :nomatch ->
-        false
+    case String.split(event_name, ".", parts: 2) do
+      [prefix, _event] -> prefix in @output_item_types or prefix in @custom_stream_prefixes
+      [_event] -> false
     end
   end
 
   def typed_custom_event?(_event), do: false
 
   @spec events(binary() | [map()] | term()) :: [map()]
-  def events(body) when is_binary(body) do
-    body
-    |> SSE.events()
-    |> events()
-  end
+  def events(body) when is_binary(body), do: body |> SSE.events() |> events()
+  def events([]), do: []
 
   def events(parsed_events) when is_list(parsed_events) do
-    if parsed_events == [] do
-      []
-    else
-      parsed_events
-      |> Enum.reduce(State.initial(parsed_events), &apply_lifecycle_event/2)
-      |> State.finish(parsed_events)
-    end
+    parsed_events
+    |> Shared.pin_output_indexes()
+    |> Enum.reduce(State.initial(parsed_events), &apply_lifecycle_event/2)
+    |> State.finish(parsed_events)
   end
 
   def events(_body), do: []

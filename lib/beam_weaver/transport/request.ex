@@ -3,6 +3,8 @@ defmodule BeamWeaver.Transport.Request do
   Transport request passed to live and replay providers.
   """
 
+  use BeamWeaver.Provider.RedactedInspect
+
   @enforce_keys [:method, :url]
   defstruct method: :get,
             url: nil,
@@ -68,27 +70,14 @@ defmodule BeamWeaver.Transport.Request do
   Normalizes supported header formats into lowercase binary pairs.
   """
   @spec normalize_headers(map() | list()) :: [{String.t(), String.t()}]
-  def normalize_headers(headers) when is_map(headers) do
-    headers
-    |> Enum.flat_map(fn {key, value} -> normalize_header(key, value) end)
-    |> Enum.sort()
-  end
-
-  def normalize_headers(headers) when is_list(headers) do
+  def normalize_headers(headers) when is_map(headers) or is_list(headers) do
     headers
     |> Enum.flat_map(fn
-      {key, value} -> normalize_header(key, value)
+      {key, values} when is_list(values) -> Enum.map(values, &normalize_header_pair(key, &1))
+      {key, value} -> [normalize_header_pair(key, value)]
       other when is_binary(other) -> []
     end)
     |> Enum.sort()
-  end
-
-  defp normalize_header(key, values) when is_list(values) do
-    Enum.map(values, &normalize_header_pair(key, &1))
-  end
-
-  defp normalize_header(key, value) do
-    [normalize_header_pair(key, value)]
   end
 
   defp normalize_header_pair(key, value) do

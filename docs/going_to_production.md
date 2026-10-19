@@ -1,153 +1,206 @@
-# Going To Production
+# Production Integration
 
-BeamWeaver does not provide a hosted deployment platform, `langgraph.json`, or
-managed agent server. Production is your Elixir application: OTP supervision,
-releases, config, database migrations, schedulers, telemetry, and whatever HTTP
-or job boundary invokes your agents and graphs.
+A working agent becomes a production feature when your application owns its
+identity, resource lifecycle, failure policy and external actions. BeamWeaver
+runs inside your OTP application; it does not supply a job scheduler,
+authorization service or automatic restart queue.
 
-Use this page as a checklist and routing guide. The implementation details live
-in the linked topic pages so this guide stays small and avoids duplicating
-memory, sandbox, persistence, guardrail, and streaming docs.
+Use the [support-agent tutorial](tutorial.md) as the starting point, then
+complete the integration decisions below before exposing it to users.
 
-## Production Contract
+## Define the request boundary
 
-Every production invocation should separate conversation identity from trusted
-run context:
+Authenticate the caller before starting a run. Resolve the tenant, user and
+conversation in application code, and pass current trusted data through
+`context:`. Validate required context fields in the agent. Tool queries must
+actually constrain records by that identity; injection alone is not authorization.
 
-```elixir
-config = %{"configurable" => %{"thread_id" => "thread-123"}}
+Handle all three outcomes: completed state, a waiting interrupt and an error.
+A completed agent may have explained a failed action, so inspect structured
+outcomes or tool results where the product needs a business success/failure.
+[Agents](agents.md#run-an-agent) and [Runtime Context](runtime_context.md) define
+those contracts.
 
-context = %{
-  user_id: "user-123",
-  org_id: "org-456",
-  permissions: ["support:read"],
-  request_id: "req-789"
-}
+## Supervision
 
-MyApp.SupportAgent.invoke(input, config: config, context: context)
-```
+Own reusable resources under the appropriate application supervisor:
 
-`thread_id` scopes checkpointed conversation state. Reuse it for follow-up turns
-in the same conversation and generate a new one for a separate thread.
-
-`context` carries per-run facts supplied by your application boundary: user ID,
-tenant, permissions, feature flags, locale, request IDs, and credential handles.
-Do not let the model choose ownership values. Derive them from authenticated
-request/session state and pass them through `context:` or `server_info:`.
-
-## Identity And Tenancy
-
-BeamWeaver has no built-in user system. Your application should authenticate the
-request, authorize access, and pass only trusted identity into BeamWeaver.
-
-| Scope | Use |
+| Resource | Owner/lifetime |
 | --- | --- |
-| Thread | Conversation history, checkpoints, scratch files, and resumable interrupts. |
-| User | Private memory, private files, and per-user tools or credentials. |
-| Agent | Shared configuration for one agent module or assistant-like deployment. |
-| Organization | Shared policies, compliance rules, and organization knowledge. Prefer read-only access. |
+| Ecto repository | Application; start before storage users |
+| ETS saver/store/cache | A process that outlives all calls using its tables |
+| Provider admission limiter | Shared process for the intended quota scope |
+| Agent task | Request owner or durable job owner, depending on expected lifetime |
+| Shell/interpreter session | Run/thread owner with idle expiry and explicit cleanup |
+| Docker workspace | A long-lived owner for the chosen run/thread/customer scope |
+| Trace exporter | Application queue with bounded shutdown drain |
 
-For memory and filesystem namespaces, derive scope from trusted runtime context:
-`user_id`, `org_id`, agent name, or assistant ID from your own service layer.
+Do not allocate ETS or start containers in agent declarations: declarations
+are evaluated on each call. An Ecto adapter is a lightweight value around a
+supervised repo; it does not start the repo. [Storage](storage.md) provides
+the complete PostgreSQL and SQLite setup.
 
-See [Runtime](runtime.md), [Persistence](persistence.md), [Memory](memory.md),
-and [Filesystem](filesystem.md).
-
-## Deployment Shape
-
-Run BeamWeaver like any other OTP application:
-
-- start agents, queues, stores, and telemetry subscribers under supervision;
-- use releases and runtime config for provider keys and endpoint URLs;
-- run Ecto migrations for checkpoint, memory, and queue tables;
-- use Oban, Quantum, Kubernetes CronJobs, or another scheduler for background
-  consolidation and maintenance work;
-- expose your own HTTP, Phoenix Channel, LiveView, or job interface around
-  `invoke/3`, `stream_events/3`, and resume APIs.
-
-Do not rely on LangGraph Platform conventions such as `langgraph.json`, hosted
-thread APIs, or automatic deployment infrastructure. Integrate those
-as external services only where your application explicitly chooses to.
-
-## Checklist
-
-| Concern | Production decision | BeamWeaver docs |
-| --- | --- | --- |
-| Conversation state | Use a checkpointer and stable `thread_id`. | [Persistence](persistence.md), [Short-Term Memory](short_term_memory.md) |
-| Durable execution | Pick durable adapters and node boundaries; set timeouts and recursion limits. | [Durable Execution](durable_execution.md), [Fault Tolerance](fault_tolerance.md) |
-| Human review | Use checkpointed HITL for sensitive tools and resumable approvals. | [Human-In-The-Loop](human_in_the_loop.md) |
-| Long-term memory | Scope by user, agent, or org; make shared policy memory read-only. | [Memory](memory.md), [Long-Term Memory](long_term_memory.md) |
-| Files | Pick local, store-backed, composite, or sandbox-backed filesystems. | [Filesystem](filesystem.md), [Permissions](permissions.md) |
-| Code execution | Use sandbox adapters for untrusted command execution; keep secrets outside sandboxes. | [Sandboxes](sandboxes.md) |
-| Skills | Load only the skill sources each agent or subagent should see. | [Skills](skills.md), [Subagents](subagents.md) |
-| Model usage | Set model timeouts, retry/fallback policy, and provider limits. | [Models](models.md), [Fault Tolerance](fault_tolerance.md), [Rate Limiting](rate_limiting.md) |
-| Tool usage | Restrict tools, add HITL where needed, and limit or retry external API tools deliberately. | [Tools](tools.md), [Guardrails](guardrails.md), [Prebuilt Middleware](prebuilt_middleware.md) |
-| Sensitive data | Redact tracing data and avoid putting credentials in model-visible state. | [Tracing](tracing.md), [Guardrails](guardrails.md), [Sandboxes](sandboxes.md) |
-| Streaming UI | Consume one event stream and route typed envelopes to your UI or transport. | [Event Streaming](event_streaming.md) |
-| Observability | Attach telemetry, export traces intentionally, and monitor exporter queues. | [Tracing](tracing.md) |
-| Tests | Run integration tests for the adapters and workflows you deploy. | [Replay](replay.md) |
-
-## Invocation Patterns
-
-For request/response APIs, call `invoke/3` from a supervised request handler or
-job process:
+This complete local application keeps ETS resources in a supervised owner and runs agent work under a task supervisor. ETS is used here so the example runs without a database; replace its saver with the Ecto setup in Storage for restart durability:
 
 ```elixir
-case MyApp.SupportAgent.invoke(input, config: config, context: context) do
-  {:ok, state} -> {:ok, state}
-  {:interrupted, interrupt} -> {:needs_review, interrupt}
-  {:error, error} -> {:error, error}
+defmodule MyApp.AgentResources do
+  use GenServer
+  def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  def get, do: GenServer.call(__MODULE__, :get)
+  @impl true
+  def init(_opts), do: {:ok, %{saver: BeamWeaver.Checkpoint.ETS.new(), store: BeamWeaver.Memory.ETS.new()}}
+  @impl true
+  def handle_call(:get, _from, state), do: {:reply, state, state}
+end
+
+defmodule MyApp.ProductionAgent do
+  use BeamWeaver.Agent
+  model "openai:gpt-5.4-mini", max_tokens: 256, timeout: 60_000
+  system_prompt "Answer briefly from the supplied conversation."
+  run_timeout 90_000
+  middleware [{BeamWeaver.Agent.Middleware.ModelRetry, max_retries: 1, initial_delay: 500}]
+
+  context_schema do
+    field :customer_id, :string, required: true
+  end
+end
+
+children = [MyApp.AgentResources, {Task.Supervisor, name: MyApp.AgentTasks}]
+{:ok, supervisor} = Supervisor.start_link(children, strategy: :one_for_one)
+
+try do
+  resources = MyApp.AgentResources.get()
+
+  opts = [
+    checkpointer: resources.saver,
+    store: resources.store,
+    config: %{"configurable" => %{"thread_id" => "ada-support-1"}},
+    context: %{customer_id: "ada"}
+  ]
+
+  task =
+    Task.Supervisor.async_nolink(MyApp.AgentTasks, fn ->
+      MyApp.ProductionAgent.invoke(%{messages: ["Remember A-1001 arrives Thursday."]}, opts)
+    end)
+
+  {:ok, _state} = Task.await(task, 100_000)
+  {:ok, saved} = MyApp.ProductionAgent.get_state(opts)
+  2 = length(saved.values.messages)
+  {:ok, result} = MyApp.ProductionAgent.invoke(%{messages: ["Which day does A-1001 arrive?"]}, opts)
+  true = BeamWeaver.Core.Message.text(List.last(result.messages)) =~ "Thursday"
+after
+  Supervisor.stop(supervisor)
 end
 ```
 
-For live UIs, call `stream_events/3` and forward typed envelopes through your
-transport:
+## Choose durable state deliberately
 
-```elixir
-{:ok, events} =
-  MyApp.SupportAgent.stream_events(input,
-    config: config,
-    context: context,
-    live: true
-  )
+Use a database checkpointer for conversations, review pauses or workflows that
+must survive restarts. ETS only lasts as long as its owner. Reuse a thread ID
+for one conversation, authorize all access to it and coordinate simultaneous
+writes where the product requires one ordered history.
 
-Enum.each(events, fn envelope ->
-  MyAppWeb.AgentChannel.push_event(socket, envelope)
-end)
-```
+Use memory namespaces for facts shared across conversations. Use persistent
+workspace storage for files that must survive a run. These are different
+lifetimes: a persistent checkpoint does not make a temporary local directory
+durable, and a persistent file does not automatically restore a conversation.
 
-Consume a live stream once. If multiple UI components need the same updates,
-fan out from one process through PubSub, channels, LiveView assigns, or your own
-projection state.
+## Configure credentials and models
 
-## Secrets
+Load secrets in your application's runtime configuration. Never rely on a
+dependency's config files being evaluated. Validate the selected model through
+a real request in the deployment environment: construction alone checks
+neither access nor account limits.
 
-Keep provider API keys, OAuth tokens, database credentials, and customer secrets
-outside model-visible state. Prefer host-side tools that perform authenticated
-work without exposing the credential to the model or sandbox.
+Make fallback policy explicit. A fallback can change cost, capability and the
+provider receiving data. Keep provider credentials outside agent workspaces
+and command environments. [Configuration](configuration.md) and the
+[provider reference](providers.md) cover supported settings.
 
-For sandboxed code execution:
+## Bound work
 
-- do not upload secrets as files;
-- do not inject broad environment variables into the sandbox;
-- restrict network access where possible;
-- treat sandbox outputs as untrusted input;
-- implement credential proxying or host-side tools when sandbox code must call
-  authenticated APIs.
+Use a model output limit, provider request timeout, tool/node timeout,
+whole-run timeout and graph step budget for their respective boundaries.
+Add model/tool call limits where repeated work must be capped. Size rate
+limiters for your provider/account/model quota and deployment node count.
 
-See [Sandboxes](sandboxes.md), [Tools](tools.md), and [Guardrails](guardrails.md).
+Retries multiply across layers. Count provider attempts across model middleware,
+graph node retry and job retry rather than treating each as an independent
+small budget. Retry mutating actions only with idempotency and reconciliation.
+[Durable Execution](durable_execution.md) explains interruption and recovery.
 
-## Background Work
+## Protect external actions
 
-Use normal Elixir scheduling and jobs for production maintenance:
+Keep tools narrow and validate their arguments and ownership in code. A prompt
+or skill is guidance, not an access-control boundary. Use `interrupt_on` when
+approval is required, and tie review submissions to current saved state so an
+old browser card cannot approve different pending work.
 
-- memory consolidation across recent conversations;
-- trace export queue flushing and dead-letter handling;
-- checkpoint pruning and retention;
-- sandbox cleanup by thread or agent scope;
-- index refresh and retrieval ingestion;
-- eval or conformance jobs against production-like adapters.
+Give external operations stable application IDs. If a timeout leaves the
+outcome unknown, query the service before sending another payment, message
+or write. A checkpoint cannot roll back an action that already happened.
 
-These are application jobs, not BeamWeaver-specific hosted cron features. Use
-Oban or your existing scheduler and invoke BeamWeaver agents, graphs, memory
-stores, and checkpoint APIs from those jobs.
+## Run work outside the request callback
+
+Consume live streams in a task, not in a LiveView callback. Correlate UI events
+with a run ID and distinguish provisional tokens, final messages, errors and
+review pauses. Cancel request-owned work when its UI owner goes away; keep
+longer work under a durable job owner instead.
+
+For restart recovery, persist the thread ID and inspect pending execution
+before continuing. Nothing is automatically rescheduled just because the
+checkpoint exists. [Streaming](streaming.md#push-tokens-to-a-liveview) covers
+consumer ownership; [Subagents](subagents.md#async-subagents) covers remote work.
+
+## Observe behavior and delivery
+
+Record provider identity, model usage, tool outcomes and nested task results.
+Use trace IDs for diagnosis without placing secrets or entire customer objects
+in metadata. Monitor rate limiting, provider failures, latency and interrupted
+runs, along with trace-export backlog and dead letters.
+
+Exporter configuration is not proof of delivery. [Tracing](tracing.md) includes
+a real local HTTP delivery example and explains hosted-account requirements.
+
+## Plan retention and migrations
+
+Run library migrations through your deployment process, then verify the
+selected adapters' schemas. Back up durable data and encryption keys together
+with a recovery procedure. Use stable serialization tags for application
+structs that checkpoints must restore after code changes.
+
+Define retention for checkpoints, memories, cached answers, vector records,
+files and provider-uploaded resources. Cleanup must include all pages and
+namespaces owned by a tenant. A bounded search result is not an exhaustive
+account-deletion list. See [Storage](storage.md#keep-tables-small).
+
+## Validate before rollout
+
+Application tests should exercise tool arguments/results, structured answers,
+review/resume, duplicate-action prevention and recoverable failures. Use fake
+models for deterministic failure branches, then run representative live
+integrations with the actual deployed providers and models.
+
+Exercise persistence with the database adapter you deploy. Verify command
+workloads in the actual sandbox runtime and inspect generated artifacts.
+A passing model call does not prove tool execution, retrieval relevance,
+cache hits or restart recovery; check the observable result of each capability.
+
+## Release and shutdown
+
+Stop admitting new work before shutdown where your application supports it.
+Let short tasks finish within bounded supervisor budgets; record unfinished
+threads for later continuation. Flush telemetry/export queues and collect
+workspace artifacts before cleanup. Reconcile external side effects when
+completion is ambiguous.
+
+A local package build verifies the package contents and consumer behavior.
+Availability through Hex is a separate release step. The installation guide
+states the current release target and verification boundary.
+
+## Next steps
+
+Use [Testing](testing.md) for application test patterns,
+[Storage](storage.md) for migrations and persistence,
+[Tracing](tracing.md) for diagnosis, and
+[Durable Execution](durable_execution.md) for retries and recovery.

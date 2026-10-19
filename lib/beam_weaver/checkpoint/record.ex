@@ -3,6 +3,8 @@ defmodule BeamWeaver.Checkpoint.Metadata do
   Typed checkpoint metadata used at adapter/runtime boundaries.
   """
 
+  alias BeamWeaver.MapAccess
+
   defstruct source: nil,
             step: nil,
             writes: %{},
@@ -13,45 +15,33 @@ defmodule BeamWeaver.Checkpoint.Metadata do
 
   @type t :: %__MODULE__{}
 
+  @fields [:source, :step, :writes, :parents, :thread, :run_id]
+
   @spec from_map(map()) :: t()
   def from_map(metadata) when is_map(metadata) do
     %__MODULE__{
-      source: get(metadata, :source),
-      step: get(metadata, :step),
-      writes: get(metadata, :writes, %{}),
-      parents: get(metadata, :parents, %{}),
-      thread: get(metadata, :thread, %{}),
-      run_id: get(metadata, :run_id),
-      extra:
-        Map.drop(metadata, [
-          :source,
-          "source",
-          :step,
-          "step",
-          :writes,
-          "writes",
-          :parents,
-          "parents",
-          :thread,
-          "thread",
-          :run_id,
-          "run_id"
-        ])
+      source: MapAccess.get(metadata, :source),
+      step: MapAccess.get(metadata, :step),
+      writes: MapAccess.get(metadata, :writes, %{}),
+      parents: MapAccess.get(metadata, :parents, %{}),
+      thread: MapAccess.get(metadata, :thread, %{}),
+      run_id: MapAccess.get(metadata, :run_id),
+      extra: Map.drop(metadata, @fields ++ Enum.map(@fields, &Atom.to_string/1))
     }
   end
-
-  defp get(map, key, default \\ nil), do: Map.get(map, key, Map.get(map, to_string(key), default))
 end
 
 defmodule BeamWeaver.Checkpoint.Record do
   @moduledoc """
   Typed checkpoint tuple projection.
 
-  Existing saver callbacks keep returning map-compatible tuples. This struct is
-  the stable typed shape for conformance tests, exporters, and future adapters.
+  Projects saver tuple maps into named fields for application inspection,
+  exporters and adapter implementations. It does not write or activate a
+  checkpoint; use BeamWeaver.Checkpoint for storage operations.
   """
 
   alias BeamWeaver.Checkpoint.Metadata
+  alias BeamWeaver.MapAccess
 
   defstruct [
     :config,
@@ -86,23 +76,21 @@ defmodule BeamWeaver.Checkpoint.Record do
       checkpoint: checkpoint,
       metadata: metadata,
       parent_config: Map.get(tuple, :parent_config),
-      version: get(checkpoint, :v),
-      id: get(checkpoint, :id),
-      timestamp: get(checkpoint, :ts),
+      version: MapAccess.get(checkpoint, :v),
+      id: MapAccess.get(checkpoint, :id),
+      timestamp: MapAccess.get(checkpoint, :ts),
       source: metadata.source,
       step: metadata.step,
       writes: metadata.writes,
       parents: metadata.parents,
-      pending_sends: get(checkpoint, :pending_sends, []),
-      tasks: get(checkpoint, :tasks, []),
+      pending_sends: MapAccess.get(checkpoint, :pending_sends, []),
+      tasks: MapAccess.get(checkpoint, :tasks, []),
       pending_writes: Map.get(tuple, :pending_writes, []),
       pending_write_records: Map.get(tuple, :pending_write_records, []),
       pending_write_paths: Map.get(tuple, :pending_write_paths, []),
       namespace: namespace(config)
     }
   end
-
-  defp get(map, key, default \\ nil), do: Map.get(map, key, Map.get(map, to_string(key), default))
 
   defp namespace(config) do
     config

@@ -39,12 +39,12 @@ defmodule BeamWeaver.Migrations.Postgres.Checkpoint.V01 do
     """)
 
     execute("""
-    CREATE INDEX IF NOT EXISTS #{Util.index(prefix, opts.checkpoints_table, "thread_idx")}
+    CREATE INDEX IF NOT EXISTS #{Util.index(opts.checkpoints_table, "thread_idx")}
     ON #{checkpoints} (thread_id, checkpoint_ns, checkpoint_id DESC)
     """)
 
     execute("""
-    CREATE INDEX IF NOT EXISTS #{Util.index(prefix, opts.checkpoints_table, "metadata_run_id_idx")}
+    CREATE INDEX IF NOT EXISTS #{Util.index(opts.checkpoints_table, "metadata_run_id_idx")}
     ON #{checkpoints} ((metadata->>'run_id'))
     """)
   end
@@ -64,8 +64,7 @@ defmodule BeamWeaver.Migrations.Postgres.Memory.V01 do
   alias BeamWeaver.Migrations.Postgres.Util
 
   def up(%{opts: opts} = spec) do
-    prefix = spec[:prefix]
-    table = Util.qualify(prefix, opts.table)
+    table = Util.qualify(spec[:prefix], opts.table)
 
     execute("""
     CREATE TABLE IF NOT EXISTS #{table} (
@@ -81,24 +80,22 @@ defmodule BeamWeaver.Migrations.Postgres.Memory.V01 do
     """)
 
     execute("""
-    CREATE INDEX IF NOT EXISTS #{Util.index(prefix, opts.table, "namespace_idx")}
+    CREATE INDEX IF NOT EXISTS #{Util.index(opts.table, "namespace_idx")}
     ON #{table} USING gin (namespace)
     """)
 
     execute("""
-    CREATE INDEX IF NOT EXISTS #{Util.index(prefix, opts.table, "metadata_idx")}
+    CREATE INDEX IF NOT EXISTS #{Util.index(opts.table, "metadata_idx")}
     ON #{table} USING gin (metadata)
     """)
 
     execute("""
-    CREATE INDEX IF NOT EXISTS #{Util.index(prefix, opts.table, "expires_at_idx")}
+    CREATE INDEX IF NOT EXISTS #{Util.index(opts.table, "expires_at_idx")}
     ON #{table} (expires_at)
     """)
   end
 
-  def down(%{opts: opts} = spec) do
-    execute("DROP TABLE IF EXISTS #{Util.qualify(spec[:prefix], opts.table)}")
-  end
+  def down(spec), do: Util.drop_table(spec)
 end
 
 defmodule BeamWeaver.Migrations.Postgres.Cache.V01 do
@@ -109,8 +106,7 @@ defmodule BeamWeaver.Migrations.Postgres.Cache.V01 do
   alias BeamWeaver.Migrations.Postgres.Util
 
   def up(%{opts: opts} = spec) do
-    prefix = spec[:prefix]
-    table = Util.qualify(prefix, opts.table)
+    table = Util.qualify(spec[:prefix], opts.table)
 
     execute("""
     CREATE TABLE IF NOT EXISTS #{table} (
@@ -125,14 +121,12 @@ defmodule BeamWeaver.Migrations.Postgres.Cache.V01 do
     """)
 
     execute("""
-    CREATE INDEX IF NOT EXISTS #{Util.index(prefix, opts.table, "expires_at_idx")}
+    CREATE INDEX IF NOT EXISTS #{Util.index(opts.table, "expires_at_idx")}
     ON #{table} (expires_at)
     """)
   end
 
-  def down(%{opts: opts} = spec) do
-    execute("DROP TABLE IF EXISTS #{Util.qualify(spec[:prefix], opts.table)}")
-  end
+  def down(spec), do: Util.drop_table(spec)
 end
 
 defmodule BeamWeaver.Migrations.Postgres.VectorStore.V01 do
@@ -143,8 +137,7 @@ defmodule BeamWeaver.Migrations.Postgres.VectorStore.V01 do
   alias BeamWeaver.Migrations.Postgres.Util
 
   def up(%{opts: opts} = spec) do
-    prefix = spec[:prefix]
-    table = Util.qualify(prefix, opts.table)
+    table = Util.qualify(spec[:prefix], opts.table)
 
     if opts.create_extension? do
       execute("CREATE EXTENSION IF NOT EXISTS vector")
@@ -164,36 +157,36 @@ defmodule BeamWeaver.Migrations.Postgres.VectorStore.V01 do
     """)
 
     execute("""
-    CREATE INDEX IF NOT EXISTS #{Util.index(prefix, opts.table, "namespace_idx")}
+    CREATE INDEX IF NOT EXISTS #{Util.index(opts.table, "namespace_idx")}
     ON #{table} (namespace)
     """)
 
-    execute(index_sql(prefix, table, opts))
+    if opts.index, do: execute(index_sql(table, opts))
   end
 
-  def down(%{opts: opts} = spec) do
-    execute("DROP TABLE IF EXISTS #{Util.qualify(spec[:prefix], opts.table)}")
-  end
+  def down(spec), do: Util.drop_table(spec)
 
-  defp index_sql(prefix, table, %{index: :hnsw} = opts) do
+  defp index_sql(table, %{index: :hnsw} = opts) do
     with_opts =
-      opts.index_opts
-      |> Keyword.get(:with, Keyword.take(opts.index_opts, [:m, :ef_construction]))
-      |> Util.format_index_with(default: "m = 16, ef_construction = 64")
+      case Keyword.get(opts.index_opts, :with, Keyword.take(opts.index_opts, [:m, :ef_construction])) do
+        with_opts when is_binary(with_opts) -> with_opts
+        [_ | _] = with_opts -> Enum.map_join(with_opts, ", ", fn {key, value} -> "#{key} = #{value}" end)
+        _default -> "m = 16, ef_construction = 64"
+      end
 
     """
-    CREATE INDEX IF NOT EXISTS #{Util.index(prefix, opts.table, "embedding_hnsw_idx")}
+    CREATE INDEX IF NOT EXISTS #{Util.index(opts.table, "embedding_hnsw_idx")}
     ON #{table}
     USING hnsw (embedding #{Util.vector_opclass(opts)})
     WITH (#{with_opts})
     """
   end
 
-  defp index_sql(prefix, table, opts) do
+  defp index_sql(table, opts) do
     lists = Keyword.get(opts.index_opts, :lists, 100)
 
     """
-    CREATE INDEX IF NOT EXISTS #{Util.index(prefix, opts.table, "embedding_ivfflat_idx")}
+    CREATE INDEX IF NOT EXISTS #{Util.index(opts.table, "embedding_ivfflat_idx")}
     ON #{table}
     USING ivfflat (embedding #{Util.vector_opclass(opts)})
     WITH (lists = #{lists})
@@ -209,8 +202,7 @@ defmodule BeamWeaver.Migrations.Postgres.RecordManager.V01 do
   alias BeamWeaver.Migrations.Postgres.Util
 
   def up(%{opts: opts} = spec) do
-    prefix = spec[:prefix]
-    table = Util.qualify(prefix, opts.table)
+    table = Util.qualify(spec[:prefix], opts.table)
 
     execute("""
     CREATE TABLE IF NOT EXISTS #{table} (
@@ -225,17 +217,15 @@ defmodule BeamWeaver.Migrations.Postgres.RecordManager.V01 do
     """)
 
     execute("""
-    CREATE INDEX IF NOT EXISTS #{Util.index(prefix, opts.table, "source_idx")}
+    CREATE INDEX IF NOT EXISTS #{Util.index(opts.table, "source_idx")}
     ON #{table} (namespace, source_id)
     """)
 
     execute("""
-    CREATE INDEX IF NOT EXISTS #{Util.index(prefix, opts.table, "updated_at_idx")}
+    CREATE INDEX IF NOT EXISTS #{Util.index(opts.table, "updated_at_idx")}
     ON #{table} (updated_at)
     """)
   end
 
-  def down(%{opts: opts} = spec) do
-    execute("DROP TABLE IF EXISTS #{Util.qualify(spec[:prefix], opts.table)}")
-  end
+  def down(spec), do: Util.drop_table(spec)
 end

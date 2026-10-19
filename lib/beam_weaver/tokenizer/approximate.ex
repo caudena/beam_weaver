@@ -33,14 +33,6 @@ defmodule BeamWeaver.Tokenizer.Approximate do
   def split_tokens(%__MODULE__{mode: :characters}, text, _opts) when is_binary(text),
     do: {:ok, String.graphemes(text)}
 
-  def split_tokens(%__MODULE__{mode: :words}, text, _opts) when is_binary(text) do
-    tokens =
-      Regex.scan(~r/\S+\s*/u, text)
-      |> Enum.map(fn [token] -> token end)
-
-    {:ok, tokens}
-  end
-
   def split_tokens(%__MODULE__{}, text, _opts) when is_binary(text),
     do: {:ok, Regex.scan(~r/\S+\s*/u, text) |> Enum.map(fn [token] -> token end)}
 end

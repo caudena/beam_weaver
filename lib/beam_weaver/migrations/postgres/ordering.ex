@@ -6,8 +6,7 @@ defmodule BeamWeaver.Migrations.Postgres.Checkpoint.Ordering do
   alias BeamWeaver.Migrations.Postgres.Util
 
   def up(%{opts: opts} = spec) do
-    prefix = spec[:prefix]
-    table = Util.qualify(prefix, opts.checkpoints_table)
+    table = Util.qualify(spec[:prefix], opts.checkpoints_table)
 
     execute("ALTER TABLE #{table} ADD COLUMN IF NOT EXISTS commit_order bigint")
 
@@ -32,7 +31,7 @@ defmodule BeamWeaver.Migrations.Postgres.Checkpoint.Ordering do
     execute("ALTER TABLE #{table} ALTER COLUMN commit_order SET NOT NULL")
 
     execute("""
-    CREATE UNIQUE INDEX IF NOT EXISTS #{Util.index(prefix, opts.checkpoints_table, "commit_order_idx")}
+    CREATE UNIQUE INDEX IF NOT EXISTS #{Util.index(opts.checkpoints_table, "commit_order_idx")}
     ON #{table} (thread_id, checkpoint_ns, commit_order)
     """)
   end

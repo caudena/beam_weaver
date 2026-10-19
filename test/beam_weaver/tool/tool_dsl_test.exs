@@ -2,8 +2,7 @@ defmodule BeamWeaver.Tool.DSLTest do
   use ExUnit.Case, async: true
 
   alias BeamWeaver.Core.Tool
-  alias BeamWeaver.Runnable
-  alias BeamWeaver.Tool.Converter
+  alias BeamWeaver.Core.ToolResult
   alias BeamWeaver.Tool.Renderer
 
   defmodule SearchDocs do
@@ -56,8 +55,34 @@ defmodule BeamWeaver.Tool.DSLTest do
     def invoke(_tool, input, _opts), do: {:ok, input}
   end
 
+  defmodule FilterOrders do
+    use BeamWeaver.Tool
+
+    name("filter_orders")
+    description("Filter orders by status, tag and date range")
+
+    schema do
+      field(:filters, :object,
+        nullable: true,
+        properties: %{status: %{type: "string", enum: ["open", "shipped"]}, limit: %{type: "integer", maximum: 50}}
+      )
+
+      field(:region, %{type: "object", properties: %{code: %{type: "string"}}, additionalProperties: false},
+        required: false,
+        nullable: true
+      )
+
+      field(:tags, :array, required: false, nullable: true, items: %{type: "string", maxLength: 8})
+      field(:range, {:object, [{:from, :date}, {:to, :date, required: false}]}, required: false, nullable: true)
+      field(:priority, :string, required: false, nullable: true, enum: ["low", "high"])
+    end
+
+    @impl true
+    def invoke(_tool, input, _opts), do: {:ok, input}
+  end
+
   defmodule DirectTool do
-    @behaviour BeamWeaver.Core.Tool
+    use BeamWeaver.Core.Tool
 
     defstruct []
 
@@ -72,10 +97,29 @@ defmodule BeamWeaver.Tool.DSLTest do
     def invoke(_tool, input, _opts), do: {:ok, String.upcase(input.value)}
   end
 
-  defmodule DemoToolkit do
-    @behaviour BeamWeaver.ToolKit
+  # Its schema is built from the struct, which the DSL can't declare.
+  defmodule SectionSearch do
+    use BeamWeaver.Core.Tool
 
-    def tools(_opts), do: [SearchDocs, %DirectTool{}]
+    defstruct sections: ["billing", "shipping", "returns"]
+
+    @impl true
+    def name(_tool), do: "search_section"
+
+    @impl true
+    def description(_tool), do: "Search one section of the help center."
+
+    @impl true
+    def input_schema(%__MODULE__{sections: sections}) do
+      %{
+        "type" => "object",
+        "properties" => %{"query" => %{"type" => "string"}, "section" => %{"type" => "string", "enum" => sections}},
+        "required" => ["query", "section"]
+      }
+    end
+
+    @impl true
+    def invoke(_tool, %{"query" => query, "section" => section}, _opts), do: {:ok, "#{section}: #{query}"}
   end
 
   test "module DSL compiles to a normal executable tool behaviour" do
@@ -95,7 +139,7 @@ defmodule BeamWeaver.Tool.DSLTest do
     assert Tool.raw_input_schema(%SearchDocs{}).properties["runtime"].type == "object"
     refute Map.has_key?(Tool.input_schema(%SearchDocs{}).properties, "runtime")
 
-    assert {:ok, %{query: "refunds", limit: 5}} =
+    assert {:ok, %ToolResult{content: %{query: "refunds", limit: 5}, artifact: nil}} =
              Tool.invoke(%SearchDocs{}, %{query: "refunds", runtime: %{}})
   end
 
@@ -160,39 +204,80 @@ defmodule BeamWeaver.Tool.DSLTest do
     assert error.message == "tool input is not in enum"
   end
 
+  test "a nullable object or array field accepts nil and validates any other value" do
+    schema = Tool.input_schema(%FilterOrders{})
+
+    assert :ok = Tool.validate_input(schema, %{filters: nil, region: nil, tags: nil, range: nil})
+
+    assert {:ok, %{"filters" => %{"status" => "open", "limit" => 10}, "range" => %{"from" => "2026-10-01"}}} =
+             Tool.normalize_input(schema, %{
+               filters: %{status: "open", limit: 10},
+               region: %{code: "eu"},
+               tags: ["rush"],
+               range: %{from: "2026-10-01"}
+             })
+
+    for {input, message} <- [
+          {%{filters: %{status: "lost"}}, "tool input is not in enum"},
+          {%{filters: %{limit: 51}}, "number is too large"},
+          {%{filters: nil, region: %{code: "eu", zone: "west"}}, "tool input contains unknown keys"},
+          {%{filters: nil, tags: ["much-too-long"]}, "string is too long"},
+          {%{filters: nil, range: %{to: "2026-10-31"}}, "tool input is missing required keys"}
+        ] do
+      assert {:error, %{type: :invalid_input, message: ^message}} = Tool.validate_input(schema, input)
+    end
+  end
+
+  test "a nullable enum field lists nil among its values and accepts it" do
+    schema = Tool.input_schema(%FilterOrders{})
+
+    assert schema.properties["priority"].enum == ["low", "high", nil]
+    assert :ok = Tool.validate_input(schema, %{filters: nil, priority: nil})
+
+    assert {:error, %{message: "tool input is not in enum"}} =
+             Tool.validate_input(schema, %{filters: nil, priority: "urgent"})
+  end
+
+  test "provider tool schemas keep nil in a nullable field's enum" do
+    messages = [BeamWeaver.Core.Message.user("List open orders.")]
+
+    bodies =
+      for module <- [
+            BeamWeaver.OpenAI.ChatModel,
+            BeamWeaver.OpenAI.ChatCompletionsModel,
+            BeamWeaver.Anthropic.ChatModel,
+            BeamWeaver.Google.ChatModel,
+            BeamWeaver.XAI.ChatModel,
+            BeamWeaver.XAI.ChatCompletionsModel
+          ] do
+        assert {:ok, body} = module.request_body(module.new([]), messages, tools: [FilterOrders])
+        {module, body["tools"]}
+      end
+
+    strict = [
+      {:openai_strict, BeamWeaver.OpenAI.ToolCalling.function(%FilterOrders{}, strict: true)},
+      {:anthropic_strict, BeamWeaver.Anthropic.Tools.function(%FilterOrders{}, strict: true)}
+    ]
+
+    for {renderer, rendered} <- bodies ++ strict do
+      assert priority_enums(rendered) == [["low", "high", nil]], inspect(renderer)
+    end
+  end
+
   test "direct behaviour modules work without the macro" do
     assert {:ok, "ADA"} = Tool.invoke(%DirectTool{}, %{value: "ada"})
     assert Tool.input_schema(%DirectTool{}).required == [:value]
   end
 
-  test "converter handles modules, structs, toolkits, and duplicate toolkit names" do
-    assert {:ok, tool} = Converter.to_tool(SearchDocs)
-    assert %Tool{} = tool
-    assert Tool.name(tool) == "search_docs"
+  test "use BeamWeaver.Core.Tool defaults the optional callbacks and takes a computed schema" do
+    search = %SectionSearch{sections: ["billing", "returns"]}
 
-    assert {:ok, [search, direct]} = Converter.to_tools(DemoToolkit)
-    assert Enum.map([search, direct], &Tool.name/1) == ["search_docs", "direct_tool"]
+    assert {:ok, "billing: refund"} = Tool.invoke(search, %{"query" => "refund", "section" => "billing"})
+    assert {:error, %{type: :invalid_input}} = Tool.invoke(search, %{"query" => "refund", "section" => "shipping"})
+    assert Tool.input_schema(search)["properties"]["section"]["enum"] == ["billing", "returns"]
 
-    assert {:error, error} = Converter.to_tools([SearchDocs, %SearchDocs{}])
-    assert error.type == :duplicate_tool
-  end
-
-  test "runnable conversion invokes the runnable through the tool boundary" do
-    runnable =
-      Runnable.lambda(fn input, _opts -> {:ok, %{echo: input["value"] || input[:value]}} end)
-
-    assert {:ok, tool} =
-             Converter.to_tool(runnable,
-               name: "echo",
-               description: "Echoes input",
-               input_schema: %{
-                 type: "object",
-                 properties: %{value: %{type: "string"}},
-                 required: [:value]
-               }
-             )
-
-    assert {:ok, %{echo: "hello"}} = Tool.invoke(tool, %{value: "hello"})
+    assert {Tool.injected(search), Tool.return_direct(search), Tool.concurrent?(search)} == {%{}, false, true}
+    assert {Tool.max_result_chars(search), Tool.tags(search), Tool.metadata(search)} == {:unlimited, [], %{}}
   end
 
   test "provider-safe name validation happens while rendering provider schemas" do
@@ -222,4 +307,9 @@ defmodule BeamWeaver.Tool.DSLTest do
     assert with_args =~ "query"
     refute with_args =~ "runtime"
   end
+
+  defp priority_enums(%{"properties" => %{"priority" => %{"enum" => enum}}}), do: [enum]
+  defp priority_enums(%{} = map), do: Enum.flat_map(Map.values(map), &priority_enums/1)
+  defp priority_enums(list) when is_list(list), do: Enum.flat_map(list, &priority_enums/1)
+  defp priority_enums(_value), do: []
 end

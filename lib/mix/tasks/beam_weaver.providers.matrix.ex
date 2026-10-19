@@ -35,13 +35,11 @@ defmodule Mix.Tasks.BeamWeaver.Providers.Matrix do
   defp check!([]), do: Mix.raise("provider compatibility matrix is empty")
 
   defp check!(matrix) do
-    providers = matrix |> Enum.map(& &1.provider) |> Enum.uniq() |> Enum.sort()
     required = [:anthropic, :deepseek, :fake, :google, :openai, :typesafe, :xai, :zai]
-    missing = required -- providers
 
-    case missing do
+    case required -- Enum.map(matrix, & &1.provider) do
       [] -> Mix.shell().info("provider compatibility matrix OK")
-      _providers -> Mix.raise("provider compatibility matrix is missing: #{inspect(missing)}")
+      missing -> Mix.raise("provider compatibility matrix is missing: #{inspect(missing)}")
     end
   end
 
@@ -61,9 +59,7 @@ defmodule Mix.Tasks.BeamWeaver.Providers.Matrix do
         ]
       end)
 
-    ([header, divider] ++ rows)
-    |> Enum.map(&Enum.join(&1, " | "))
-    |> Enum.map_join("\n", &("| " <> &1 <> " |"))
+    Enum.map_join([header, divider | rows], "\n", &("| " <> Enum.join(&1, " | ") <> " |"))
   end
 
   defp flag(true), do: "yes"

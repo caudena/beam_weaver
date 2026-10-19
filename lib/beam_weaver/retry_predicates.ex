@@ -6,16 +6,15 @@ defmodule BeamWeaver.RetryPredicates do
   @transient_statuses [408, 409, 425, 429, 500, 502, 503, 504, 529]
   @transient_types [
     :timeout,
+    :connection,
     :closed,
     :closed_connection,
-    :transport_error,
     :transport_failure,
-    :http_error,
+    :server_error,
     :overloaded,
     :overload,
     :rate_limit,
     :rate_limited,
-    :rate_limit_error,
     :transient
   ]
 
@@ -24,12 +23,9 @@ defmodule BeamWeaver.RetryPredicates do
 
   @spec transient?(term()) :: boolean()
   def transient?(%{details: details, type: type} = error) when is_map(details) do
-    if explicit_non_retryable?(details) do
-      false
-    else
-      retryable_details?(details) or type in @transient_types or transient_message?(details) or
-        transient_message?(Map.get(error, :message))
-    end
+    not explicit_non_retryable?(details) and
+      (retryable_details?(details) or type in @transient_types or transient_message?(details) or
+         transient_message?(Map.get(error, :message)))
   end
 
   def transient?(%{type: type}) when type in @transient_types, do: true
@@ -38,12 +34,8 @@ defmodule BeamWeaver.RetryPredicates do
   def transient?(_error), do: false
 
   defp retryable_details?(details) do
-    cond do
-      explicit_non_retryable?(details) -> false
-      Map.get(details, :retryable) == true or Map.get(details, "retryable") == true -> true
-      status(details) in @transient_statuses -> true
-      true -> false
-    end
+    Map.get(details, :retryable) == true or Map.get(details, "retryable") == true or
+      status(details) in @transient_statuses
   end
 
   defp explicit_non_retryable?(details) do

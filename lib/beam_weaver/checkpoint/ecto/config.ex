@@ -1,14 +1,6 @@
 defmodule BeamWeaver.Checkpoint.Ecto.Config do
   @moduledoc false
 
-  alias BeamWeaver.Checkpoint
-
-  def generated_id do
-    System.unique_integer([:positive, :monotonic])
-    |> Integer.to_string()
-    |> String.pad_leading(20, "0")
-  end
-
   def checkpoint_map(configurable, namespace, checkpoint_id) do
     configurable
     |> Map.get("checkpoint_map", %{})
@@ -22,20 +14,15 @@ defmodule BeamWeaver.Checkpoint.Ecto.Config do
 
   def normalize_checkpoint_map(_other), do: %{}
 
-  def put_checkpoint_target_namespace(checkpoint, configurable) do
-    case Map.get(configurable, "checkpoint_target_ns") do
-      nil -> checkpoint
-      target -> Map.put(checkpoint, "checkpoint_target_ns", target)
-    end
-  end
+  def stored_config(thread_id, namespace, checkpoint_id, checkpoint_map, target_ns) do
+    configurable = %{
+      "thread_id" => thread_id,
+      "checkpoint_ns" => namespace,
+      "checkpoint_id" => checkpoint_id,
+      "checkpoint_map" => checkpoint_map
+    }
 
-  def put_target_namespace(config, %{"checkpoint_target_ns" => nil}), do: config
-
-  def put_target_namespace(config, configurable) do
-    case Map.get(configurable, "checkpoint_target_ns") do
-      nil -> config
-      target -> put_in(config, ["configurable", "checkpoint_target_ns"], target)
-    end
+    %{"configurable" => BeamWeaver.MapShape.put_present(configurable, "checkpoint_target_ns", target_ns)}
   end
 
   def normalize_write({channel, value}), do: {to_string(channel), value}
@@ -47,14 +34,6 @@ defmodule BeamWeaver.Checkpoint.Ecto.Config do
 
   def load_write_value(%{"__beam_weaver_checkpoint_write__" => 1, "value" => value}), do: value
   def load_write_value(value), do: value
-
-  def before_checkpoint_id(nil), do: nil
-
-  def before_checkpoint_id(config) do
-    config
-    |> Checkpoint.configurable()
-    |> Map.get("checkpoint_id")
-  end
 
   def stringify_keys(map) when is_map(map) do
     Map.new(map, fn {key, value} -> {to_string(key), value} end)

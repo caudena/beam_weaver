@@ -1,15 +1,15 @@
 defmodule BeamWeaver.Agent.Middleware.Memory do
   @moduledoc "Middleware that loads `AGENTS.md` memory files into the system prompt."
 
-  @behaviour BeamWeaver.Agent.Middleware
+  use BeamWeaver.Agent.Middleware
 
   alias BeamWeaver.Agent.ModelRequest
   alias BeamWeaver.Filesystem
+  alias BeamWeaver.Filesystem.FileDataUtils
   alias BeamWeaver.Filesystem.State
   alias BeamWeaver.Graph
 
-  import BeamWeaver.Agent.Middleware.Helpers,
-    only: [append_prompt: 2, runtime_store: 1, state_value: 2]
+  import BeamWeaver.Agent.Middleware.Helpers, only: [append_prompt: 2, runtime_store: 1]
 
   @memory_system_prompt """
   <agent_memory>
@@ -46,21 +46,22 @@ defmodule BeamWeaver.Agent.Middleware.Memory do
     %{state_key => Graph.private_channel(BeamWeaver.Graph.Channels.LastValue)}
   end
 
+  @impl true
   def before_model(%__MODULE__{} = middleware, state, runtime) do
-    if Map.has_key?(state || %{}, middleware.state_key) or
-         Map.has_key?(state || %{}, to_string(middleware.state_key)) do
+    if Map.has_key?(state, middleware.state_key) or Map.has_key?(state, to_string(middleware.state_key)) do
       %{}
     else
-      %{middleware.state_key => load_memory(middleware, state || %{}, runtime)}
+      %{middleware.state_key => load_memory(middleware, state, runtime)}
     end
   end
 
+  @impl true
   def wrap_model_call(%__MODULE__{} = middleware, %ModelRequest{} = request, handler) do
     memory =
-      case state_value(request.state, middleware.state_key) do
+      case Map.get(request.state, middleware.state_key) do
         memory when is_map(memory) -> memory
         memory when is_binary(memory) -> %{"memory" => memory}
-        _other -> load_memory(middleware, request.state || %{}, request.runtime)
+        _other -> load_memory(middleware, request.state, request.runtime)
       end
 
     request =
@@ -83,20 +84,14 @@ defmodule BeamWeaver.Agent.Middleware.Memory do
       limit: 10_000
     ]
 
-    Map.new(middleware.paths, fn path ->
-      content =
-        case Filesystem.read(middleware.backend, path, opts) do
-          %Filesystem.ReadResult{error: nil, file_data: %Filesystem.FileData{content: content}} ->
-            content || ""
-
-          _missing ->
-            nil
-        end
-
-      {path, content}
-    end)
-    |> Enum.reject(fn {_path, content} -> content in [nil, ""] end)
-    |> Map.new()
+    # An empty memory file reads as the backends' empty-file reminder, which
+    # is no memory.
+    for path <- middleware.paths,
+        %Filesystem.ReadResult{error: nil, file_data: %Filesystem.FileData{content: content}} <-
+          [Filesystem.read(middleware.backend, path, opts)],
+        content not in [nil, "", FileDataUtils.empty_content_warning()],
+        into: %{},
+        do: {path, content}
   end
 
   defp format_memory(%__MODULE__{} = middleware, contents) do

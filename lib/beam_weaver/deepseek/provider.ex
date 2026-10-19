@@ -19,7 +19,8 @@ defmodule BeamWeaver.DeepSeek.Provider do
         {:ok, BeamWeaver.DeepSeek.ChatModel}
 
       {:ok, :responses} ->
-        {:ok, BeamWeaver.DeepSeek.ResponsesModel}
+        with :ok <- BeamWeaver.DeepSeek.ResponsesModel.validate_options(opts),
+             do: {:ok, BeamWeaver.DeepSeek.ResponsesModel}
 
       {:error, api} ->
         {:error,
@@ -47,6 +48,7 @@ defmodule BeamWeaver.DeepSeek.Provider do
     %{
       api_families: [:chat_completions, :responses],
       openai_compatible: true,
+      standalone_tools: [:search, :fetch],
       default_api: :chat_completions
     }
   end

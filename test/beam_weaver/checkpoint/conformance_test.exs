@@ -5,19 +5,20 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
   alias BeamWeaver.Checkpoint.Ecto
   alias BeamWeaver.Checkpoint.ETS
   alias BeamWeaver.Checkpoint.PendingWrite
-  alias BeamWeaver.Checkpoint.ResumeDelivery
-  alias BeamWeaver.Compaction.Canonical
-  alias BeamWeaver.Core.Async
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Graph.Channel
   alias BeamWeaver.Graph.Channels.DeltaSnapshot
+  alias BeamWeaver.Graph.Interrupt
   alias BeamWeaver.Test.LivePostgres
   alias BeamWeaver.Test.LiveSQLite
   alias BeamWeaver.Test.PostgresRepo
   alias BeamWeaver.Test.SQLiteRepo
 
-  for adapter <- [:ets, :postgres, :sqlite] do
+  # The `_encrypted` savers store every checkpoint, write and metadata map
+  # encrypted, so SQL can't read their metadata.
+  for adapter <- [:ets, :postgres, :sqlite, :postgres_encrypted, :sqlite_encrypted] do
     describe "#{adapter} checkpoint saver conformance" do
-      if adapter == :postgres do
+      if adapter in [:postgres, :postgres_encrypted] do
         @describetag :postgres
       end
 
@@ -76,9 +77,63 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
         assert record.metadata.run_id == metadata.run_id
       end
 
+      test "gives back maps with the keys they were put with, at any depth", %{saver: saver} do
+        line = %{sku: "S-1", qty: 2}
+        order = %{:id => "A-1001", :status => :open, :lines => [line], "gift_note" => "Happy birthday"}
+        channel_values = %{order: order, totals: %{1 => 40, 2 => 15}, paid: %{true => ["A-1001"], false => []}}
+        metadata = metadata(source: "loop", step: 1, step_update: %{load: %{order: order}})
+
+        assert {:ok, stored} =
+                 Checkpoint.put(saver, config(), checkpoint(channel_values: channel_values), metadata, %{})
+
+        interrupt = %Interrupt{id: "interrupt-1", value: %{question: "Refund this line?", line: line}}
+        writes = [{"order", %{order: order}}, {"__interrupt__", [interrupt]}]
+        assert :ok = Checkpoint.put_writes(saver, stored, writes, "task-1")
+
+        assert %{checkpoint: loaded, metadata: loaded_metadata, pending_writes: pending_writes} =
+                 Checkpoint.get_tuple(saver, stored)
+
+        assert loaded["channel_values"] == channel_values
+        assert loaded_metadata["step_update"] == %{load: %{order: order}}
+        assert pending_writes == [{"task-1", "order", %{order: order}}, {"task-1", "__interrupt__", [interrupt]}]
+      end
+
+      # `Checkpoint.ETS` compares a filter's top-level values for equality;
+      # the Ecto saver matches the leaves of nested maps.
+      if adapter != :ets do
+        test "matches nested metadata filters whether their keys are atoms or strings", %{saver: saver} do
+          config = config()
+          put_checkpoint!(saver, config, %{}, metadata(step: 1, step_update: %{"review" => %{"verdict" => "revise"}}))
+          put_checkpoint!(saver, config, %{}, metadata(step: 2, step_update: %{review: %{verdict: "accept", score: 4}}))
+
+          assert [%{metadata: %{"step" => 1}}] =
+                   Checkpoint.list(saver, config, filter: %{step_update: %{review: %{verdict: "revise"}}})
+
+          assert [%{metadata: %{"step" => 2}}] =
+                   Checkpoint.list(saver, config, filter: %{step_update: %{"review" => %{"verdict" => "accept"}}})
+
+          assert [%{metadata: %{"step" => 2}}] =
+                   Checkpoint.list(saver, config, filter: %{step_update: %{review: %{verdict: "accept"}}})
+        end
+
+        # `Checkpoint.ETS` numbers checkpoints with a counter that lives as long
+        # as its table; the Ecto saver's ids must stay unique across restarts.
+        test "gives a checkpoint without an id a UUIDv7", %{saver: saver} do
+          config = config()
+          new = Map.delete(checkpoint([]), "id")
+
+          assert {:ok, first} = Checkpoint.put(saver, config, new, metadata(step: 1), %{})
+          assert {:ok, second} = Checkpoint.put(saver, first, new, metadata(step: 2), %{})
+
+          ids = Enum.map([first, second], & &1["configurable"]["checkpoint_id"])
+          assert Enum.all?(ids, &(&1 =~ ~r/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/))
+          assert Enum.uniq(ids) == ids
+          assert [%{metadata: %{"step" => 2}}, %{metadata: %{"step" => 1}}] = Checkpoint.list(saver, config)
+        end
+      end
+
       test "merges config metadata, strips null characters, and restores missing checkpoint defaults",
            %{saver: saver} do
-        # Upstream reference:
         config =
           config()
           |> Map.put("metadata", %{
@@ -208,7 +263,6 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
       end
 
       test "lists across all threads and namespaces when no config is supplied", %{saver: saver} do
-        # Upstream reference:
         thread_a = unique("thread")
         thread_b = unique("thread")
 
@@ -244,8 +298,7 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
 
         namespaces =
           saver
-          |> Checkpoint.async_list(%{"configurable" => %{"thread_id" => thread_b}})
-          |> Async.await()
+          |> Checkpoint.list(%{"configurable" => %{"thread_id" => thread_b}})
           |> Enum.map(& &1.config["configurable"]["checkpoint_ns"])
           |> MapSet.new()
 
@@ -308,60 +361,67 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
                  Checkpoint.get_tuple(saver, next)
       end
 
-      test "async saver facade mirrors get list put writes copy delete prune operations", %{
-        saver: saver
-      } do
+      test "put_many stores each write's own task id and path", %{saver: saver} do
+        checkpoint = checkpoint(channel_values: %{"value" => 1}, channel_versions: %{"value" => 1})
+
+        entry = %{
+          config: config(unique("thread")),
+          checkpoint: checkpoint,
+          metadata: metadata([]),
+          versions: checkpoint["channel_versions"],
+          writes: [{"t1", "ch", 1}, {"t2", "ch", 2, "node:path"}]
+        }
+
+        assert {:ok, [stored]} = Checkpoint.put_many(saver, [entry])
+
+        assert %{pending_writes: writes, pending_write_paths: paths} = Checkpoint.get_tuple(saver, stored)
+        assert Enum.sort(writes) == [{"t1", "ch", 1}, {"t2", "ch", 2}]
+        assert Enum.sort(paths) == [{"t1", "ch", ""}, {"t2", "ch", "node:path"}]
+      end
+
+      test "saver facade covers get list put writes copy delete prune operations", %{saver: saver} do
         thread_id = unique("async-thread")
         run_id = unique("run")
 
         assert {:ok, stored} =
-                 Checkpoint.async_put(
+                 Checkpoint.put(
                    saver,
                    config(thread_id),
                    checkpoint(channel_values: %{"value" => 1}),
                    metadata(step: 0, run_id: run_id),
                    %{"value" => 1}
                  )
-                 |> Async.await()
 
-        assert :ok =
-                 Checkpoint.async_put_writes(saver, stored, [{"value", 2}], unique("task"))
-                 |> Async.await()
+        assert :ok = Checkpoint.put_writes(saver, stored, [{"value", 2}], unique("task"))
 
         assert %{
                  checkpoint: %{"channel_values" => %{"value" => 1}},
                  pending_writes: [{_task_id, "value", 2}]
-               } = Checkpoint.async_get_tuple(saver, stored) |> Async.await()
+               } = Checkpoint.get_tuple(saver, stored)
 
-        assert %{"channel_values" => %{"value" => 1}} =
-                 Checkpoint.async_get(saver, stored) |> Async.await()
+        assert %{"channel_values" => %{"value" => 1}} = Checkpoint.get(saver, stored)
 
         assert [%{metadata: %{"run_id" => ^run_id}}] =
-                 Checkpoint.async_list(saver, config(thread_id), filter: %{run_id: run_id})
-                 |> Async.await()
+                 Checkpoint.list(saver, config(thread_id), filter: %{run_id: run_id})
 
-        assert :ok =
-                 Checkpoint.async_copy_thread(saver, thread_id, "#{thread_id}-copy")
-                 |> Async.await()
+        assert :ok = Checkpoint.copy_thread(saver, thread_id, "#{thread_id}-copy")
 
         assert %{checkpoint: %{"channel_values" => %{"value" => 1}}} =
                  Checkpoint.get_tuple(saver, config("#{thread_id}-copy"))
 
-        assert :ok = Checkpoint.async_delete_for_runs(saver, [run_id]) |> Async.await()
+        assert :ok = Checkpoint.delete_for_runs(saver, [run_id])
         assert [] = Checkpoint.list(saver, config(thread_id), filter: %{run_id: run_id})
 
         assert {:ok, pruned} =
-                 Checkpoint.async_put(
+                 Checkpoint.put(
                    saver,
                    config(thread_id),
                    checkpoint(channel_values: %{"value" => 3}),
                    metadata(step: 1),
                    %{"value" => 3}
                  )
-                 |> Async.await()
 
-        assert :ok =
-                 Checkpoint.async_prune(saver, [thread_id], strategy: :delete) |> Async.await()
+        assert :ok = Checkpoint.prune(saver, [thread_id], strategy: :delete)
 
         assert nil == Checkpoint.get_tuple(saver, pruned)
       end
@@ -369,7 +429,6 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
       test "attaches parent __tasks__ pending sends to the next checkpoint only", %{
         saver: saver
       } do
-        # Upstream reference:
         thread_id = unique("thread")
 
         first =
@@ -459,10 +518,8 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
         assert Enum.map(history["items"].writes, & &1.value) == ["a", "b"]
       end
 
-      test "delta channel history omits target writes and is safe under concurrent async calls",
-           %{
-             saver: saver
-           } do
+      test "delta channel history omits target writes and returns ancestor writes without a seed",
+           %{saver: saver} do
         thread_id = unique("thread")
 
         root =
@@ -499,18 +556,14 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
             metadata(step: 2)
           )
 
-        first = Checkpoint.async_get_delta_channel_history(saver, latest, ["items"])
-        second = Checkpoint.async_get_delta_channel_history(saver, latest, ["items"])
+        history = Checkpoint.get_delta_channel_history(saver, latest, ["items"])
 
-        for result <- [Async.await(first), Async.await(second)] do
-          assert result["items"].seed == Channel.missing()
-          assert Enum.map(result["items"].writes, & &1.value) == ["pending", "first", "second"]
-        end
+        assert history["items"].seed == Channel.missing()
+        assert Enum.map(history["items"].writes, & &1.value) == ["pending", "first", "second"]
       end
 
       test "delta channel history handles empty channels, independent seeds, and plain migration seeds",
            %{saver: saver} do
-        # Upstream reference:
         thread_id = unique("thread")
 
         step0 = put_checkpoint!(saver, config(thread_id), %{}, metadata(step: 0))
@@ -755,7 +808,6 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
 
       test "delete_thread and delete_for_runs are no-op safe and remove writes across namespaces",
            %{saver: saver} do
-        # Upstream reference:
         delete_thread = unique("thread")
         preserve_thread = unique("thread")
         delete_run = unique("run")
@@ -811,7 +863,6 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
       test "copy_thread is a fork: nonexistent sources no-op and source ordering is unchanged", %{
         saver: saver
       } do
-        # Upstream reference:
         source_thread = unique("thread")
         target_thread = unique("thread")
 
@@ -908,7 +959,6 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
 
       test "prune keep_latest is per namespace, preserves latest writes, and ignores missing threads",
            %{saver: saver} do
-        # Upstream reference:
         assert :ok = Checkpoint.prune(saver, [])
         assert :ok = Checkpoint.prune(saver, [unique("missing-thread")])
 
@@ -984,55 +1034,237 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
         assert [] = Checkpoint.list(saver, config(other_thread))
       end
 
-      if adapter != :ets do
-        test "strict resume delivery commits and replays an exact receipt", %{saver: saver} do
-          source =
-            put_checkpoint!(
-              saver,
-              config(),
-              %{"messages" => ["parent"]},
-              metadata(step: 0)
-            )
+      test "delta channel history starts at the nearest of several snapshots", %{saver: saver} do
+        thread_id = unique("thread")
 
-          assert :ok =
-                   Checkpoint.put_writes(
-                     saver,
-                     source,
-                     [{"messages", "unrelated pending value"}],
-                     "unrelated-task",
-                     "parent:work"
-                   )
+        head =
+          Enum.reduce(0..5, config(thread_id), fn step, parent ->
+            values = if step in [0, 3], do: %{"ch" => %DeltaSnapshot{value: step}}, else: %{}
+            stored = put_checkpoint!(saver, parent, values, metadata(step: step))
+            if step not in [0, 3], do: :ok = Checkpoint.put_writes(saver, stored, [{"ch", step}], unique("task"))
+            stored
+          end)
 
-          payload = %{"result" => "child done"}
+        assert %{"ch" => %{seed: 3, writes: [%PendingWrite{value: 4}]}} =
+                 Checkpoint.get_delta_channel_history(saver, head, ["ch"])
+      end
 
-          assert {:ok, delivery} =
-                   ResumeDelivery.new(%{
-                     delivery_id: unique("delivery"),
-                     source_checkpoint_id: root_id(source),
-                     source_ordinal: 1,
-                     payload: payload,
-                     payload_hash: Canonical.hash(payload),
-                     terminal_evidence: %{
-                       "state" => "completed",
-                       "result_hash" => Canonical.hash(payload)
-                     }
-                   })
+      test "delta channel history replays the writes saved on a plain value seed, and reads the latest checkpoint without an id",
+           %{saver: saver} do
+        thread_id = unique("thread")
+        writes = %{0 => "older", 1 => "on-seed", 2 => "after-seed", 3 => "on-head"}
 
-          assert {:ok, stage} = Checkpoint.stage_resume(saver, source, delivery)
-          assert {:ok, receipt} = Checkpoint.continue_staged(saver, stage)
-          assert :ok = Checkpoint.verify_resume_receipt(saver, receipt)
-          assert {:ok, ^receipt} = Checkpoint.continue_staged(saver, stage)
+        head =
+          Enum.reduce(0..3, config(thread_id), fn step, parent ->
+            values = Map.get(%{0 => %{"ch" => [10]}, 1 => %{"ch" => [10, 20]}}, step, %{})
+            stored = put_checkpoint!(saver, parent, values, metadata(step: step))
+            :ok = Checkpoint.put_writes(saver, stored, [{"ch", writes[step]}], unique("task"))
+            stored
+          end)
 
-          assert %{pending_writes: [{"unrelated-task", "messages", "unrelated pending value"}]} =
-                   Checkpoint.get_tuple(saver, receipt.resulting_config)
+        history = Checkpoint.get_delta_channel_history(saver, head, ["ch"])
+        assert history["ch"].seed == [10, 20]
+        assert Enum.map(history["ch"].writes, & &1.value) == ["on-seed", "after-seed"]
+        assert Checkpoint.get_delta_channel_history(saver, config(thread_id), ["ch"]) == history
+      end
+
+      test "a checkpoint put again under its descendant keeps its parent", %{saver: saver} do
+        thread_id = unique("thread")
+        first = put_checkpoint!(saver, config(thread_id), %{}, metadata(step: 0))
+        second = put_checkpoint!(saver, first, %{}, metadata(step: 1))
+
+        assert {:ok, _config} =
+                 Checkpoint.put(saver, second, checkpoint(checkpoint_id: root_id(first)), metadata(step: 0), %{})
+
+        assert %{parent_config: nil} = Checkpoint.get_tuple(saver, first)
+        assert %{"ch" => %{writes: []}} = Checkpoint.get_delta_channel_history(saver, second, ["ch"])
+      end
+
+      test "prune rejects an unknown strategy and keeps the thread", %{saver: saver} do
+        thread_id = unique("thread")
+        first = put_checkpoint!(saver, config(thread_id), %{"value" => 1}, metadata(step: 0))
+        put_checkpoint!(saver, first, %{"value" => 2}, metadata(step: 1))
+
+        assert {:error, %Error{type: :invalid_prune_strategy}} =
+                 Checkpoint.prune(saver, [thread_id], strategy: :keep_all)
+
+        assert length(Checkpoint.list(saver, config(thread_id))) == 2
+      end
+
+      test "prune keeps the delta history of the latest checkpoint's branch, not the newest snapshot's",
+           %{saver: saver} do
+        # root -> step -> snapshot -> older_branch
+        #         step -> forked -> latest
+        thread_id = unique("thread")
+        root = put_step!(saver, config(thread_id), %{}, %{"items" => ["a"]})
+        step = put_step!(saver, root, %{}, %{"items" => ["b"]})
+        snapshot = put_step!(saver, step, %{"items" => %DeltaSnapshot{value: ["a", "b", "s"]}}, %{})
+        older_branch = put_step!(saver, snapshot, %{}, %{"items" => ["c"]})
+        forked = put_step!(saver, step, %{}, %{"items" => ["d"]})
+        latest = put_step!(saver, forked, %{}, %{"items" => ["e"]})
+        history = Checkpoint.get_delta_channel_history(saver, latest, ["items"])
+
+        assert :ok = Checkpoint.prune(saver, [thread_id])
+
+        assert saver |> Checkpoint.list(config(thread_id)) |> Enum.map(& &1.config) ==
+                 Enum.map([latest, forked, step, root], &Checkpoint.get_tuple(saver, &1).config)
+
+        assert Checkpoint.get_tuple(saver, snapshot) == nil
+        assert Checkpoint.get_tuple(saver, older_branch) == nil
+        assert Checkpoint.get_delta_channel_history(saver, latest, ["items"]) == history
+      end
+
+      test "prune keeps every delta channel's history and makes the first checkpoint it keeps a root",
+           %{saver: saver} do
+        thread_id = unique("thread")
+        first = put_step!(saver, config(thread_id), %{}, %{"a" => ["a0"], "b" => ["b0"]})
+        b_snapshot = put_step!(saver, first, %{"b" => %DeltaSnapshot{value: ["b0", "b1"]}}, %{"a" => ["a1"]})
+        middle = put_step!(saver, b_snapshot, %{}, %{"a" => ["a2"], "b" => ["b2"]})
+
+        a_snapshot =
+          put_step!(saver, middle, %{"a" => %DeltaSnapshot{value: ["a0", "a1", "a2", "a3"]}}, %{"b" => ["b3"]})
+
+        latest = put_step!(saver, a_snapshot, %{}, %{"a" => ["a4"], "b" => ["b4"]})
+        history = Checkpoint.get_delta_channel_history(saver, latest, ["a", "b"])
+
+        assert :ok = Checkpoint.prune(saver, [thread_id])
+
+        assert Checkpoint.get_tuple(saver, first) == nil
+        assert %{parent_config: nil} = Checkpoint.get_tuple(saver, b_snapshot)
+        assert Checkpoint.get_delta_channel_history(saver, latest, ["a", "b"]) == history
+        assert {:ok, _config} = Checkpoint.fork_at(saver, latest, unique("thread"))
+      end
+
+      test "prune keeps a delta channel's writes saved only as a paused step's pending writes", %{saver: saver} do
+        thread_id = unique("thread")
+        counters = %{"counters_since_delta_snapshot" => %{"items" => [0, 1]}}
+        paused = put_checkpoint!(saver, config(thread_id), %{}, metadata(step: 0) |> Map.merge(counters))
+        :ok = Checkpoint.put_writes(saver, paused, [{"items", "finished-task"}], unique("task"))
+        continued = put_checkpoint!(saver, paused, %{}, metadata(step: 1) |> Map.merge(counters))
+        latest = put_checkpoint!(saver, continued, %{}, metadata(step: 2) |> Map.merge(counters))
+
+        assert :ok = Checkpoint.prune(saver, [thread_id])
+
+        assert %{"items" => %{writes: [%PendingWrite{value: "finished-task"}]}} =
+                 Checkpoint.get_delta_channel_history(saver, latest, ["items"])
+      end
+
+      test "prune drops a subgraph call's namespace when it deletes the checkpoint the call belongs to",
+           %{saver: saver} do
+        thread_id = unique("thread")
+
+        call = fn root, namespace ->
+          %{
+            "configurable" => %{
+              "thread_id" => thread_id,
+              "checkpoint_ns" => namespace,
+              "checkpoint_map" => %{"" => root_id(root)}
+            }
+          }
+        end
+
+        first = put_checkpoint!(saver, config(thread_id), %{"value" => 1}, metadata(step: 0))
+        put_checkpoint!(saver, call.(first, "sub:task_a"), %{"n" => 1}, metadata(step: 0))
+        latest = put_checkpoint!(saver, first, %{"value" => 2}, metadata(step: 1))
+        paused_call = put_checkpoint!(saver, call.(latest, "sub:task_b"), %{"n" => 2}, metadata(step: 0))
+
+        assert :ok = Checkpoint.prune(saver, [thread_id])
+
+        assert [] = Checkpoint.list(saver, config(thread_id, checkpoint_ns: "sub:task_a"))
+
+        assert [%{config: %{"configurable" => %{"checkpoint_id" => paused_id}}}] =
+                 Checkpoint.list(saver, config(thread_id, checkpoint_ns: "sub:task_b"))
+
+        assert paused_id == root_id(paused_call)
+        assert [%{metadata: %{"step" => 1}}] = Checkpoint.list(saver, config(thread_id))
+      end
+
+      test "delete_for_runs leaves a checkpoint whose parent it deleted forkable", %{saver: saver} do
+        thread_id = unique("thread")
+        [kept_run, deleted_run] = [unique("run"), unique("run")]
+
+        first = put_checkpoint!(saver, config(thread_id), %{"value" => 1}, metadata(step: 0, run_id: kept_run))
+
+        deleted =
+          put_checkpoint!(
+            saver,
+            config(thread_id, checkpoint_id: root_id(first)),
+            %{"value" => 2},
+            metadata(step: 1, run_id: deleted_run)
+          )
+
+        latest =
+          put_checkpoint!(
+            saver,
+            config(thread_id, checkpoint_id: root_id(deleted)),
+            %{"value" => 3},
+            metadata(step: 2, run_id: kept_run)
+          )
+
+        assert :ok = Checkpoint.delete_for_runs(saver, [deleted_run])
+        assert %{parent_config: nil} = Checkpoint.get_tuple(saver, latest)
+        assert %{parent_config: nil} = Checkpoint.get_tuple(saver, first)
+
+        assert {:ok, forked} = Checkpoint.fork_at(saver, latest, unique("thread"))
+        assert %{checkpoint: %{"channel_values" => %{"value" => 3}}} = Checkpoint.get_tuple(saver, forked)
+      end
+
+      test "delete_for_runs refuses to delete delta history that a later run reads", %{saver: saver} do
+        thread_id = unique("thread")
+        [first_run, second_run] = [unique("run"), unique("run")]
+
+        first_input = put_step!(saver, config(thread_id), %{}, %{"items" => ["first"]}, run_id: first_run)
+        first_step = put_step!(saver, first_input, %{}, %{"items" => ["n"]}, run_id: first_run)
+        second_input = put_step!(saver, first_step, %{}, %{"items" => ["second"]}, run_id: second_run)
+        put_step!(saver, second_input, %{}, %{"items" => ["n"]}, run_id: second_run)
+
+        assert {:error, %Error{type: :delta_history_in_use}} = Checkpoint.delete_for_runs(saver, [first_run])
+        assert length(Checkpoint.list(saver, config(thread_id))) == 4
+
+        assert :ok = Checkpoint.delete_for_runs(saver, [second_run])
+        assert [%{metadata: %{"run_id" => ^first_run}}, _first_input] = Checkpoint.list(saver, config(thread_id))
+
+        other_thread = unique("thread")
+        later_run = unique("run")
+        plain = put_checkpoint!(saver, config(other_thread), %{"value" => 1}, metadata(step: 0, run_id: later_run))
+        later_input = put_step!(saver, config(thread_id), %{}, %{"items" => ["later"]}, run_id: later_run)
+        put_step!(saver, later_input, %{}, %{"items" => ["n"]}, run_id: unique("run"))
+
+        # One of the run's threads still reads the run's history, so none of
+        # its checkpoints go, on any thread.
+        assert {:error, %Error{type: :delta_history_in_use}} = Checkpoint.delete_for_runs(saver, [later_run])
+        assert %{metadata: %{"run_id" => ^later_run}} = Checkpoint.get_tuple(saver, plain)
+
+        snapshot_thread = unique("thread")
+        old_run = unique("run")
+        old = put_step!(saver, config(snapshot_thread), %{}, %{"items" => ["old"]}, run_id: old_run)
+        put_step!(saver, old, %{"items" => %DeltaSnapshot{value: ["old", "new"]}}, %{}, run_id: unique("run"))
+
+        assert :ok = Checkpoint.delete_for_runs(saver, [old_run])
+        assert Checkpoint.get_tuple(saver, old) == nil
+      end
+
+      if adapter in [:postgres, :sqlite] do
+        test "a prefix of nil, false or \"\" names no schema, as in the migration" do
+          for prefix <- [nil, false, ""] do
+            saver = new_saver(unquote(adapter), prefix: prefix)
+            stored = put_checkpoint!(saver, config(), %{"step" => 1}, metadata(step: 0))
+
+            assert %{checkpoint: %{"channel_values" => %{"step" => 1}}} = Checkpoint.get_tuple(saver, stored)
+            assert [_tuple] = Checkpoint.list(saver, stored)
+          end
         end
       end
     end
   end
 
-  defp new_saver(:ets), do: ETS.new()
+  defp new_saver(adapter, opts \\ [])
 
-  defp new_saver(:postgres) do
+  defp new_saver(:ets, _opts), do: ETS.new()
+  defp new_saver(:postgres_encrypted, _opts), do: new_saver(:postgres, serialization: encryption())
+  defp new_saver(:sqlite_encrypted, _opts), do: new_saver(:sqlite, serialization: encryption())
+
+  defp new_saver(:postgres, opts) do
     assert LivePostgres.available?()
 
     checkpoints = LivePostgres.unique_table("bw_conformance_checkpoints")
@@ -1045,10 +1277,10 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
       LivePostgres.clear_migration(version)
     end)
 
-    Ecto.new(repo: PostgresRepo, checkpoints_table: checkpoints, writes_table: writes)
+    Ecto.new([repo: PostgresRepo, checkpoints_table: checkpoints, writes_table: writes] ++ opts)
   end
 
-  defp new_saver(:sqlite) do
+  defp new_saver(:sqlite, opts) do
     checkpoints = LiveSQLite.unique_table("bw_conformance_checkpoints")
     writes = LiveSQLite.unique_table("bw_conformance_writes")
 
@@ -1064,8 +1296,10 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
       LiveSQLite.clear_migration(version)
     end)
 
-    Ecto.new(repo: SQLiteRepo, checkpoints_table: checkpoints, writes_table: writes)
+    Ecto.new([repo: SQLiteRepo, checkpoints_table: checkpoints, writes_table: writes] ++ opts)
   end
+
+  defp encryption, do: [codec: BeamWeaver.Serialization.Encrypted, encryption_key: :crypto.strong_rand_bytes(32)]
 
   defp put_checkpoint!(saver, config, channel_values, metadata) do
     checkpoint =
@@ -1077,6 +1311,12 @@ defmodule BeamWeaver.Checkpoint.ConformanceTest do
     {:ok, stored} =
       Checkpoint.put(saver, config, checkpoint, metadata, checkpoint["channel_versions"])
 
+    stored
+  end
+
+  defp put_step!(saver, config, channel_values, channel_deltas, metadata \\ []) do
+    checkpoint = checkpoint(channel_values: channel_values, channel_deltas: channel_deltas)
+    {:ok, stored} = Checkpoint.put(saver, config, checkpoint, metadata(metadata), %{})
     stored
   end
 

@@ -1,6 +1,6 @@
 defmodule BeamWeaver.Tools.Subagents do
   @moduledoc """
-  Toolkit for the standard DeepAgents `task` tool.
+  Toolkit for the `task` tool, which delegates work to a subagent.
 
   This is a composable convenience wrapper around
   `BeamWeaver.Agent.Middleware.Subagents`. Applications can include the

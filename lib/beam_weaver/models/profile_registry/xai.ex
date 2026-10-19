@@ -3,6 +3,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.XAI do
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Models.Profile
+  alias BeamWeaver.Models.ProfileRegistry
   alias BeamWeaver.Models.ProfileRegistry.Params
 
   @xai_deprecated_models %{
@@ -68,400 +69,255 @@ defmodule BeamWeaver.Models.ProfileRegistry.XAI do
   }
 
   @xai_non_chat_models %{
+    "grok-imagine-image-2.0" => "grok-imagine image APIs are not exposed through chat models",
+    "grok-imagine-video-1.5" => "grok-imagine video APIs are not exposed through chat models",
+    "grok-imagine-video-1.5-lite" => "grok-imagine video APIs are not exposed through chat models",
     "grok-imagine-image" => "grok-imagine image APIs are not exposed through chat models",
     "grok-imagine-image-quality" => "grok-imagine image APIs are not exposed through chat models",
     "grok-imagine-video" => "grok-imagine video APIs are not exposed through chat models"
   }
 
-  @profiles %{
-    {:xai, "grok-4.6"} =>
-      Profile.new(%{
-        provider: :xai,
-        id: "grok-4.6",
-        name: "Grok 4.6",
-        status: :active,
-        release_date: "2026-08-12",
-        last_updated: "2026-08-12",
-        responses_api: true,
-        chat_completions_api: true,
-        max_input_tokens: 500_000,
-        text_inputs: true,
-        image_inputs: true,
-        image_url_inputs: true,
-        text_outputs: true,
-        reasoning_output: true,
-        tool_calling: true,
-        tool_call_streaming: true,
-        tool_choice: true,
-        parallel_tool_calls: true,
-        structured_output: true,
-        streaming: true,
-        usage_metadata: true,
-        attachment: true,
-        supported_params: Params.xai_responses(),
-        supported_params_by_api: %{
-          responses: Params.xai_responses(),
-          chat_completions: Params.xai_chat_completions()
-        },
-        tokenizer: :o200k_base,
-        extra: %{
-          frontier: true,
-          knowledge_cutoff: "2026-02-01",
-          text_output_limit: :unlimited,
-          input_price_per_mtok: 2.00,
-          cached_input_price_per_mtok: 0.50,
-          output_price_per_mtok: 6.00,
-          higher_context_pricing_threshold_tokens: 200_000,
-          higher_context_input_price_per_mtok: 4.00,
-          higher_context_cached_input_price_per_mtok: 1.00,
-          higher_context_output_price_per_mtok: 12.00,
-          cost_currency: "USD",
-          pricing_source_url: "https://docs.x.ai/developers/pricing",
-          pricing_modes: [:standard, :priority],
-          priority_processing_price_multiplier: 2.0,
-          priority_processing_service_tier: :priority,
-          default_reasoning_effort: :high,
-          reasoning_efforts: [:low, :medium, :high, :xhigh],
-          regions: ["us-east-1", "us-west-2"]
-        }
-      }),
-    {:xai, "grok-4.5"} =>
-      Profile.new(%{
-        provider: :xai,
-        id: "grok-4.5",
-        name: "Grok 4.5",
-        release_date: "2026-07-08",
-        last_updated: "2026-08-12",
-        responses_api: true,
-        chat_completions_api: true,
-        max_input_tokens: 500_000,
-        max_output_tokens: 30_000,
-        text_inputs: true,
-        image_inputs: true,
-        image_url_inputs: true,
-        text_outputs: true,
-        reasoning_output: true,
-        tool_calling: true,
-        tool_call_streaming: true,
-        tool_choice: true,
-        parallel_tool_calls: true,
-        structured_output: true,
-        streaming: true,
-        usage_metadata: true,
-        attachment: true,
-        supported_params: Params.xai_responses(),
-        supported_params_by_api: %{
-          responses: Params.xai_responses(),
-          chat_completions: Params.xai_chat_completions()
-        },
-        tokenizer: :o200k_base,
-        extra: %{
-          input_price_per_mtok: 2.00,
-          cached_input_price_per_mtok: 0.30,
-          output_price_per_mtok: 6.00,
-          higher_context_pricing_threshold_tokens: 200_000,
-          higher_context_input_price_per_mtok: 4.00,
-          higher_context_cached_input_price_per_mtok: 0.60,
-          higher_context_output_price_per_mtok: 12.00,
-          cost_currency: "USD",
-          pricing_source_url: "https://docs.x.ai/developers/pricing",
-          pricing_modes: [:standard, :priority],
-          priority_processing_price_multiplier: 2.0,
-          priority_processing_service_tier: :priority,
-          default_reasoning_effort: :high,
-          reasoning_efforts: [:low, :medium, :high],
-          regions: ["us-east-1", "us-west-2"]
-        }
-      }),
-    {:xai, "grok-4.3"} =>
-      Profile.new(%{
-        provider: :xai,
-        id: "grok-4.3",
-        name: "Grok 4.3",
-        release_date: "2026-05-01",
-        last_updated: "2026-05-01",
-        responses_api: true,
-        chat_completions_api: true,
-        max_input_tokens: 1_000_000,
-        max_output_tokens: 30_000,
-        text_inputs: true,
-        image_inputs: true,
-        image_url_inputs: true,
-        text_outputs: true,
-        reasoning_output: true,
-        tool_calling: true,
-        tool_call_streaming: true,
-        tool_choice: true,
-        parallel_tool_calls: true,
-        structured_output: true,
-        streaming: true,
-        usage_metadata: true,
-        attachment: true,
-        supported_params: Params.xai_responses(),
-        supported_params_by_api: %{
-          responses: Params.xai_responses(),
-          chat_completions: Params.xai_chat_completions()
-        },
-        tokenizer: :o200k_base,
-        extra: %{
-          input_price_per_mtok: 1.25,
-          cached_input_price_per_mtok: 0.20,
-          output_price_per_mtok: 2.50,
-          higher_context_pricing_threshold_tokens: 200_000,
-          higher_context_input_price_per_mtok: 2.50,
-          higher_context_cached_input_price_per_mtok: 0.40,
-          higher_context_output_price_per_mtok: 5.00,
-          batch_discount_rate: 0.20
-        }
-      }),
-    {:xai, "grok-4.20-0309-reasoning"} =>
-      Profile.new(%{
-        provider: :xai,
-        id: "grok-4.20-0309-reasoning",
-        name: "Grok 4.20 (Reasoning)",
-        release_date: "2026-03-09",
-        last_updated: "2026-03-09",
-        responses_api: true,
-        chat_completions_api: true,
-        max_input_tokens: 1_000_000,
-        max_output_tokens: 30_000,
-        text_inputs: true,
-        image_inputs: true,
-        image_url_inputs: true,
-        text_outputs: true,
-        reasoning_output: true,
-        tool_calling: true,
-        tool_call_streaming: true,
-        tool_choice: true,
-        parallel_tool_calls: true,
-        structured_output: true,
-        streaming: true,
-        usage_metadata: true,
-        attachment: true,
-        supported_params: Params.xai_responses(),
-        supported_params_by_api: %{
-          responses: Params.xai_responses(),
-          chat_completions: Params.xai_chat_completions()
-        },
-        tokenizer: :o200k_base,
-        extra: %{
-          input_price_per_mtok: 1.25,
-          cached_input_price_per_mtok: 0.20,
-          output_price_per_mtok: 2.50,
-          higher_context_pricing_threshold_tokens: 200_000,
-          higher_context_input_price_per_mtok: 2.50,
-          higher_context_cached_input_price_per_mtok: 0.40,
-          higher_context_output_price_per_mtok: 5.00,
-          batch_discount_rate: 0.20
-        }
-      }),
-    {:xai, "grok-4.20-0309-non-reasoning"} =>
-      Profile.new(%{
-        provider: :xai,
-        id: "grok-4.20-0309-non-reasoning",
-        name: "Grok 4.20 (Non-Reasoning)",
-        release_date: "2026-03-09",
-        last_updated: "2026-03-09",
-        responses_api: true,
-        chat_completions_api: true,
-        max_input_tokens: 1_000_000,
-        max_output_tokens: 30_000,
-        text_inputs: true,
-        image_inputs: true,
-        image_url_inputs: true,
-        text_outputs: true,
-        reasoning_output: false,
-        tool_calling: true,
-        tool_call_streaming: true,
-        tool_choice: true,
-        parallel_tool_calls: true,
-        structured_output: true,
-        streaming: true,
-        usage_metadata: true,
-        attachment: true,
-        supported_params: Params.xai_responses(),
-        supported_params_by_api: %{
-          responses: Params.xai_responses(),
-          chat_completions: Params.xai_chat_completions()
-        },
-        tokenizer: :o200k_base,
-        extra: %{
-          input_price_per_mtok: 1.25,
-          cached_input_price_per_mtok: 0.20,
-          output_price_per_mtok: 2.50,
-          higher_context_pricing_threshold_tokens: 200_000,
-          higher_context_input_price_per_mtok: 2.50,
-          higher_context_cached_input_price_per_mtok: 0.40,
-          higher_context_output_price_per_mtok: 5.00,
-          batch_discount_rate: 0.20
-        }
-      }),
-    {:xai, "grok-build-0.1"} =>
-      Profile.new(%{
-        provider: :xai,
-        id: "grok-build-0.1",
-        name: "Grok Build 0.1",
-        release_date: "2026-03-09",
-        last_updated: "2026-03-09",
-        responses_api: true,
-        chat_completions_api: true,
-        max_input_tokens: 256_000,
-        max_output_tokens: 30_000,
-        text_inputs: true,
-        image_inputs: true,
-        image_url_inputs: true,
-        text_outputs: true,
-        reasoning_output: true,
-        tool_calling: true,
-        tool_call_streaming: true,
-        tool_choice: true,
-        parallel_tool_calls: true,
-        structured_output: true,
-        streaming: true,
-        usage_metadata: true,
-        attachment: true,
-        supported_params: Params.xai_responses(),
-        supported_params_by_api: %{
-          responses: Params.xai_responses(),
-          chat_completions: Params.xai_chat_completions()
-        },
-        tokenizer: :o200k_base,
-        extra: %{
-          input_price_per_mtok: 1.00,
-          cached_input_price_per_mtok: 0.20,
-          output_price_per_mtok: 2.00,
-          higher_context_pricing_threshold_tokens: 200_000,
-          higher_context_input_price_per_mtok: 2.00,
-          higher_context_cached_input_price_per_mtok: 0.40,
-          higher_context_output_price_per_mtok: 4.00
-        }
-      }),
-    {:xai, "grok-4.20-multi-agent-0309"} =>
-      Profile.new(%{
-        provider: :xai,
-        id: "grok-4.20-multi-agent-0309",
-        name: "Grok 4.20 Multi-Agent Beta",
-        release_date: "2026-03-09",
-        last_updated: "2026-03-09",
-        responses_api: true,
-        chat_completions_api: true,
-        max_input_tokens: 1_000_000,
-        max_output_tokens: 30_000,
-        text_inputs: true,
-        image_inputs: true,
-        image_url_inputs: true,
-        text_outputs: true,
-        reasoning_output: true,
-        tool_calling: true,
-        tool_call_streaming: true,
-        tool_choice: true,
-        parallel_tool_calls: true,
-        structured_output: true,
-        streaming: true,
-        usage_metadata: true,
-        attachment: true,
-        supported_params: Params.xai_responses(),
-        supported_params_by_api: %{
-          responses: Params.xai_responses(),
-          chat_completions: Params.xai_chat_completions()
-        },
-        tokenizer: :o200k_base,
-        extra: %{
-          input_price_per_mtok: 1.25,
-          cached_input_price_per_mtok: 0.20,
-          output_price_per_mtok: 2.50,
-          higher_context_pricing_threshold_tokens: 200_000,
-          higher_context_input_price_per_mtok: 2.50,
-          higher_context_cached_input_price_per_mtok: 0.40,
-          higher_context_output_price_per_mtok: 5.00,
-          batch_discount_rate: 0.20
-        }
-      }),
-    {:xai, "v1"} =>
-      Profile.new(%{
-        provider: :xai,
-        id: "v1",
-        name: "xAI Embedding v1",
-        supported_params: Params.xai_embedding(),
-        text_inputs: true,
-        text_outputs: false,
-        tokenizer: :o200k_base,
-        extra: %{
-          api_family: :embeddings,
-          embedding_model: true,
-          pricing_status: :not_listed_in_public_pricing,
-          pricing_last_checked: "2026-08-27",
-          pricing_source_url: "https://docs.x.ai/developers/pricing"
-        }
-      })
+  @grok_profile %{
+    provider: :xai,
+    responses_api: true,
+    chat_completions_api: true,
+    text_inputs: true,
+    image_inputs: true,
+    image_url_inputs: true,
+    pdf_inputs: true,
+    text_outputs: true,
+    reasoning_output: true,
+    tool_calling: true,
+    tool_call_streaming: true,
+    tool_choice: true,
+    parallel_tool_calls: true,
+    structured_output: true,
+    streaming: true,
+    usage_metadata: true,
+    attachment: true,
+    supported_params: Params.xai_responses(),
+    supported_params_by_api: %{
+      responses: Params.xai_responses(),
+      chat_completions: Params.xai_chat_completions()
+    },
+    tokenizer: :o200k_base
   }
-  def profiles_map, do: @profiles
+
+  @grok_4_20_extra %{
+    input_price_per_mtok: 1.25,
+    cached_input_price_per_mtok: 0.20,
+    output_price_per_mtok: 2.50,
+    higher_context_pricing_threshold_tokens: 200_000,
+    higher_context_input_price_per_mtok: 2.50,
+    higher_context_cached_input_price_per_mtok: 0.40,
+    higher_context_output_price_per_mtok: 5.00,
+    batch_discount_rate: 0.20
+  }
+
+  @profiles %{
+    {:xai, "grok-4.7"} =>
+      Profile.new(
+        Map.merge(@grok_profile, %{
+          id: "grok-4.7",
+          name: "Grok 4.7",
+          status: :active,
+          release_date: "2026-09-21",
+          last_updated: "2026-10-16",
+          max_input_tokens: 500_000,
+          reasoning_effort_default: :high,
+          reasoning_effort_levels: [:low, :medium, :high, :xhigh],
+          extra: %{
+            frontier: true,
+            knowledge_cutoff: "2026-05-01",
+            text_output_limit: :unlimited,
+            input_price_per_mtok: 2.00,
+            cached_input_price_per_mtok: 0.50,
+            output_price_per_mtok: 6.00,
+            higher_context_pricing_threshold_tokens: 200_000,
+            higher_context_input_price_per_mtok: 4.00,
+            higher_context_cached_input_price_per_mtok: 1.00,
+            higher_context_output_price_per_mtok: 12.00,
+            cost_currency: "USD",
+            pricing_source_url: "https://docs.x.ai/developers/pricing",
+            pricing_modes: [:standard, :priority],
+            priority_processing_price_multiplier: 2.0,
+            priority_processing_service_tier: :priority,
+            regions: ["us-east-1", "us-west-2", "us-central-1"]
+          }
+        })
+      ),
+    {:xai, "grok-4.6"} =>
+      Profile.new(
+        Map.merge(@grok_profile, %{
+          id: "grok-4.6",
+          name: "Grok 4.6",
+          status: :active,
+          release_date: "2026-08-12",
+          last_updated: "2026-08-12",
+          max_input_tokens: 500_000,
+          reasoning_effort_default: :high,
+          reasoning_effort_levels: [:low, :medium, :high, :xhigh],
+          extra: %{
+            frontier: true,
+            knowledge_cutoff: "2026-02-01",
+            text_output_limit: :unlimited,
+            input_price_per_mtok: 2.00,
+            cached_input_price_per_mtok: 0.50,
+            output_price_per_mtok: 6.00,
+            higher_context_pricing_threshold_tokens: 200_000,
+            higher_context_input_price_per_mtok: 4.00,
+            higher_context_cached_input_price_per_mtok: 1.00,
+            higher_context_output_price_per_mtok: 12.00,
+            cost_currency: "USD",
+            pricing_source_url: "https://docs.x.ai/developers/pricing",
+            pricing_modes: [:standard, :priority],
+            priority_processing_price_multiplier: 2.0,
+            priority_processing_service_tier: :priority,
+            regions: ["us-east-1", "us-west-2"]
+          }
+        })
+      ),
+    {:xai, "grok-4.5"} =>
+      Profile.new(
+        Map.merge(@grok_profile, %{
+          id: "grok-4.5",
+          name: "Grok 4.5",
+          release_date: "2026-07-08",
+          last_updated: "2026-08-12",
+          max_input_tokens: 500_000,
+          max_output_tokens: 30_000,
+          reasoning_effort_default: :high,
+          reasoning_effort_levels: [:low, :medium, :high],
+          extra: %{
+            input_price_per_mtok: 2.00,
+            cached_input_price_per_mtok: 0.30,
+            output_price_per_mtok: 6.00,
+            higher_context_pricing_threshold_tokens: 200_000,
+            higher_context_input_price_per_mtok: 4.00,
+            higher_context_cached_input_price_per_mtok: 0.60,
+            higher_context_output_price_per_mtok: 12.00,
+            cost_currency: "USD",
+            pricing_source_url: "https://docs.x.ai/developers/pricing",
+            pricing_modes: [:standard, :priority],
+            priority_processing_price_multiplier: 2.0,
+            priority_processing_service_tier: :priority,
+            regions: ["us-east-1", "us-west-2"]
+          }
+        })
+      ),
+    {:xai, "grok-4.3"} =>
+      Profile.new(
+        Map.merge(@grok_profile, %{
+          id: "grok-4.3",
+          name: "Grok 4.3",
+          release_date: "2026-05-01",
+          last_updated: "2026-05-01",
+          max_input_tokens: 1_000_000,
+          max_output_tokens: 30_000,
+          extra: @grok_4_20_extra
+        })
+      ),
+    {:xai, "grok-4.20-0309-reasoning"} =>
+      Profile.new(
+        Map.merge(@grok_profile, %{
+          id: "grok-4.20-0309-reasoning",
+          name: "Grok 4.20 (Reasoning)",
+          release_date: "2026-03-09",
+          last_updated: "2026-03-09",
+          max_input_tokens: 1_000_000,
+          max_output_tokens: 30_000,
+          extra: @grok_4_20_extra
+        })
+      ),
+    {:xai, "grok-4.20-0309-non-reasoning"} =>
+      Profile.new(
+        Map.merge(@grok_profile, %{
+          id: "grok-4.20-0309-non-reasoning",
+          name: "Grok 4.20 (Non-Reasoning)",
+          release_date: "2026-03-09",
+          last_updated: "2026-03-09",
+          max_input_tokens: 1_000_000,
+          max_output_tokens: 30_000,
+          reasoning_output: false,
+          extra: @grok_4_20_extra
+        })
+      ),
+    {:xai, "grok-build-0.1"} =>
+      Profile.new(
+        Map.merge(@grok_profile, %{
+          id: "grok-build-0.1",
+          name: "Grok Build 0.1",
+          release_date: "2026-03-09",
+          last_updated: "2026-03-09",
+          max_input_tokens: 256_000,
+          max_output_tokens: 30_000,
+          extra: %{
+            input_price_per_mtok: 1.00,
+            cached_input_price_per_mtok: 0.20,
+            output_price_per_mtok: 2.00,
+            higher_context_pricing_threshold_tokens: 200_000,
+            higher_context_input_price_per_mtok: 2.00,
+            higher_context_cached_input_price_per_mtok: 0.40,
+            higher_context_output_price_per_mtok: 4.00
+          }
+        })
+      ),
+    {:xai, "grok-4.20-multi-agent-0309"} =>
+      Profile.new(
+        Map.merge(@grok_profile, %{
+          id: "grok-4.20-multi-agent-0309",
+          name: "Grok 4.20 Multi-Agent Beta",
+          release_date: "2026-03-09",
+          last_updated: "2026-03-09",
+          max_input_tokens: 1_000_000,
+          max_output_tokens: 30_000,
+          extra: @grok_4_20_extra
+        })
+      )
+  }
+  @profiles Map.new(@profiles, fn {key, profile} ->
+              extra =
+                Map.merge(profile.extra, %{
+                  pricing_last_checked: "2026-10-19",
+                  pricing_source_url: "https://docs.x.ai/developers/pricing",
+                  higher_context_threshold_inclusive: true,
+                  tool_pricing: %{
+                    web_search: %{price_per_1000_calls: 5.0},
+                    x_search: %{price_per_1000_posts: 5.0, price_per_1000_profiles: 10.0},
+                    code_execution: %{price_per_1000_calls: 5.0},
+                    attachment_search: %{price_per_1000_calls: 5.0},
+                    collections_search: %{price_per_1000_calls: 2.5}
+                  }
+                })
+
+              extra =
+                if profile.id in ["grok-4.6", "grok-4.7"],
+                  do: Map.put(extra, :regional_processing_multiplier, 1.1),
+                  else: extra
+
+              {key, %{profile | extra: extra}}
+            end)
   def profiles, do: Map.values(@profiles)
 
   def resolve(model) do
     cond do
-      Map.has_key?(@xai_deprecated_models, model) ->
-        deprecated_model_error(model)
+      metadata = @xai_deprecated_models[model] ->
+        ProfileRegistry.deprecated_error(
+          :xai,
+          model,
+          "xAI model is retired or redirected",
+          Map.put(metadata, :retired_at, "2026-05-15T12:00:00-07:00")
+        )
 
-      Map.has_key?(@xai_non_chat_models, model) ->
-        non_chat_model_error(model)
+      reason = @xai_non_chat_models[model] ->
+        {:error,
+         Error.new(:unsupported_model, "xAI model is not a chat model", %{provider: :xai, model: model, reason: reason})}
 
-      Map.has_key?(@xai_chat_aliases, model) ->
-        alias_profile(model, Map.fetch!(@xai_chat_aliases, model))
+      canonical_id = @xai_chat_aliases[model] ->
+        ProfileRegistry.fetch_alias(@profiles, :xai, model, canonical_id)
 
       true ->
-        fetch_or_fallback(@profiles, :xai, model)
-    end
-  end
-
-  defp deprecated_model_error(model) do
-    metadata = Map.fetch!(@xai_deprecated_models, model)
-    replacement = metadata.replacement
-
-    details =
-      %{
-        provider: :xai,
-        model: model,
-        replacement: replacement,
-        expected: "xai:#{replacement}",
-        retired_at: "2026-05-15T12:00:00-07:00"
-      }
-      |> maybe_put_detail(:reasoning_effort, Map.get(metadata, :reasoning_effort))
-
-    {:error, Error.new(:deprecated_model, "xAI model is retired or redirected", details)}
-  end
-
-  defp non_chat_model_error(model) do
-    {:error,
-     Error.new(:unsupported_model, "xAI model is not a chat model", %{
-       provider: :xai,
-       model: model,
-       reason: Map.fetch!(@xai_non_chat_models, model)
-     })}
-  end
-
-  defp alias_profile(alias_id, canonical_id) do
-    case Map.fetch(@profiles, {:xai, canonical_id}) do
-      {:ok, profile} ->
-        extra =
-          profile.extra
-          |> Map.put(:canonical_model, canonical_id)
-          |> Map.put(:alias_model, alias_id)
-
-        {:ok, %{profile | id: alias_id, name: "#{profile.name} (alias)", extra: extra}}
-
-      :error ->
-        {:fallback, :xai, alias_id}
-    end
-  end
-
-  defp maybe_put_detail(details, _key, nil), do: details
-  defp maybe_put_detail(details, key, value), do: Map.put(details, key, value)
-
-  defp fetch_or_fallback(profiles, provider, model) do
-    case Map.fetch(profiles, {provider, model}) do
-      {:ok, profile} -> {:ok, profile}
-      :error -> {:fallback, provider, model}
+        ProfileRegistry.fetch_or_fallback(@profiles, :xai, model)
     end
   end
 end

@@ -28,9 +28,6 @@ defmodule BeamWeaver.Adapters.LivePostgresTest do
   alias BeamWeaver.Graph.ExecutionInfo
   alias BeamWeaver.Graph.Messages.Remove
   alias BeamWeaver.Graph.Send
-  alias BeamWeaver.Indexing.Record
-  alias BeamWeaver.Indexing.RecordManager
-  alias BeamWeaver.Indexing.RecordManager.EctoPostgres, as: EctoRecordManager
   alias BeamWeaver.Memory
   alias BeamWeaver.Memory.Ecto, as: EctoMemory
   alias BeamWeaver.Memory.GetOp
@@ -329,7 +326,7 @@ defmodule BeamWeaver.Adapters.LivePostgresTest do
     assert error.details.status == 401
     assert error.details.pid =~ "#PID"
 
-    {:ok, %{rows: [[stored_error]]}} =
+    {:ok, %{rows: [[%{"__beam_weaver_checkpoint_write__" => 1, "value" => stored_error}]]}} =
       Ecto.Adapters.SQL.query(
         BeamWeaver.Test.PostgresRepo,
         "SELECT value FROM #{writes} WHERE channel = '__error__' LIMIT 1",
@@ -727,7 +724,7 @@ defmodule BeamWeaver.Adapters.LivePostgresTest do
           checkpoint->'next_tasks'->0,
           metadata->'step_update'->'usage',
           value,
-          value->'tool_calls'->0
+          value->'value'->'tool_calls'->0
         FROM #{checkpoints}
         JOIN #{writes}
           USING (thread_id, checkpoint_ns, checkpoint_id)
@@ -760,7 +757,9 @@ defmodule BeamWeaver.Adapters.LivePostgresTest do
     assert stored_delta["__beam_weaver_type__"] == "beam_weaver.graph.messages.remove"
     assert stored_next_task["__beam_weaver_type__"] == "beam_weaver.graph.execution.task_request"
     assert stored_usage["__beam_weaver_type__"] == "beam_weaver.agent.usage"
-    assert stored_write["__beam_weaver_type__"] == "beam_weaver.core.message"
+    # Pending writes are stored inside an envelope that marks them as encoded.
+    assert %{"__beam_weaver_checkpoint_write__" => 1, "value" => stored_write_value} = stored_write
+    assert stored_write_value["__beam_weaver_type__"] == "beam_weaver.core.message"
 
     assert stored_write_tool_call["__beam_weaver_type__"] ==
              "beam_weaver.core.messages.tool_call"
@@ -779,7 +778,7 @@ defmodule BeamWeaver.Adapters.LivePostgresTest do
                    }
                  },
                  "messages" => [
-                   %Message{role: :user, metadata: %{"source" => :live_postgres}},
+                   %Message{role: :user, metadata: %{source: :live_postgres}},
                    %Message{role: :assistant, tool_calls: [%ToolCall{id: "call-live"}]}
                  ],
                  "snapshot" => %DeltaSnapshot{value: ["seed"]},
@@ -791,7 +790,7 @@ defmodule BeamWeaver.Adapters.LivePostgresTest do
              metadata: %{
                "run_id" => "run-structs",
                "step_update" => %{
-                 "usage" => %Usage{
+                 usage: %Usage{
                    input_tokens: 12,
                    output_tokens: 3,
                    total_tokens: 15,
@@ -812,6 +811,8 @@ defmodule BeamWeaver.Adapters.LivePostgresTest do
              tool_calls: [%ToolCall{id: "call-live", thought_signature: "sig-live"}]
            } = restored_assistant
 
+    # The invalid call goes back too, next to the error the agent answers it
+    # with, with no arguments since its JSON doesn't parse.
     assert {:ok,
             {nil,
              [
@@ -821,8 +822,10 @@ defmodule BeamWeaver.Adapters.LivePostgresTest do
                      "functionCall" => %{
                        "name" => "lookup",
                        "args" => %{"q" => "beam"}
-                     }
-                   }
+                     },
+                     "thoughtSignature" => "sig-live"
+                   },
+                   %{"functionCall" => %{"name" => "broken", "args" => %{}}}
                  ]
                }
              ]}} = BeamWeaver.Google.Messages.encode_messages([restored_assistant])
@@ -852,7 +855,6 @@ defmodule BeamWeaver.Adapters.LivePostgresTest do
         model: %FakeChatModel{response: "live child done"},
         summarization: false,
         compact_conversation: false,
-        checkpointer: saver,
         subagents: [
           %Spec{
             name: "worker",
@@ -873,6 +875,7 @@ defmodule BeamWeaver.Adapters.LivePostgresTest do
                runtime: %{
                  node: "tools",
                  task_id: "tool-node-task",
+                 checkpointer: saver,
                  config: %{"configurable" => %{"thread_id" => thread_id}}
                },
                tool_call_id: "call-live-subagent"
@@ -1016,60 +1019,9 @@ defmodule BeamWeaver.Adapters.LivePostgresTest do
     records = Checkpoint.list(saver, %{"configurable" => %{"thread_id" => thread_id}})
 
     assert Enum.any?(records, fn record ->
-             get_in(record.checkpoint, ["channel_values", "subagent_outputs", "worker_output", "answer"]) ==
+             get_in(record.checkpoint, ["channel_values", :subagent_outputs, "worker_output", "answer"]) ==
                "live capture"
            end)
-  end
-
-  test "checkpoint shallow postgres saver keeps only the latest checkpoint live" do
-    checkpoints = BeamWeaver.Test.LivePostgres.unique_table("bw_checkpoints_shallow")
-    writes = BeamWeaver.Test.LivePostgres.unique_table("bw_writes_shallow")
-
-    saver =
-      EctoCheckpoint.new(
-        repo: BeamWeaver.Test.PostgresRepo,
-        checkpoints_table: checkpoints,
-        writes_table: writes,
-        shallow?: true
-      )
-
-    migration = [adapters: [{:checkpoint, checkpoints_table: checkpoints, writes_table: writes}]]
-    version = BeamWeaver.Test.LivePostgres.migrate(migration)
-
-    on_exit(fn ->
-      BeamWeaver.Test.LivePostgres.drop_tables([writes, checkpoints])
-      BeamWeaver.Test.LivePostgres.clear_migration(version)
-    end)
-
-    config = %{"configurable" => %{"thread_id" => "thread-live-shallow"}}
-
-    {:ok, first_config} =
-      Checkpoint.put(
-        saver,
-        config,
-        %{"id" => "cp-shallow-1", "channel_values" => %{"step" => 1}},
-        %{source: "loop"},
-        %{"step" => 1}
-      )
-
-    assert :ok = Checkpoint.put_writes(saver, first_config, [{"step", 1}], "task-live")
-
-    {:ok, second_config} =
-      Checkpoint.put(
-        saver,
-        first_config,
-        %{"id" => "cp-shallow-2", "channel_values" => %{"step" => 2}},
-        %{source: "loop"},
-        %{"step" => 2}
-      )
-
-    assert [%{checkpoint: %{"id" => "cp-shallow-2"}, pending_writes: []}] =
-             Checkpoint.list(saver, config)
-
-    refute Checkpoint.get_tuple(saver, first_config)
-
-    assert %{checkpoint: %{"id" => "cp-shallow-2"}, parent_config: nil} =
-             Checkpoint.get_tuple(saver, second_config)
   end
 
   test "cache stores safe serialized values, TTLs, sweep, and namespace clear" do
@@ -1110,6 +1062,108 @@ defmodule BeamWeaver.Adapters.LivePostgresTest do
 
     assert :ok = Cache.clear(cache, [:tenant, "a"])
     assert :miss = Cache.lookup(cache, [:tenant, "a"], %{id: 1})
+  end
+
+  test "a node cached in Postgres gives back the update it returned, keys and all" do
+    table = BeamWeaver.Test.LivePostgres.unique_table("bw_cache_keys")
+    cache = EctoCache.new(repo: BeamWeaver.Test.PostgresRepo, table: table)
+    version = BeamWeaver.Test.LivePostgres.migrate(adapters: [{:cache, table: table}])
+
+    on_exit(fn ->
+      BeamWeaver.Test.LivePostgres.drop_tables([table])
+      BeamWeaver.Test.LivePostgres.clear_migration(version)
+    end)
+
+    calls = :counters.new(1, [])
+    order = %{id: "A-1001", status: :shipped, lines: [%{sku: "S-1", qty: 2}], totals: %{1 => 40}}
+
+    graph =
+      Graph.new()
+      |> Graph.add_node(
+        :lookup,
+        fn %{order_id: _order_id} ->
+          :counters.add(calls, 1, 1)
+          %{order: order}
+        end,
+        cache: true
+      )
+      |> Graph.add_edge(Graph.start(), :lookup)
+      |> Graph.add_edge(:lookup, Graph.end_node())
+      |> Graph.compile!(cache: cache)
+
+    assert {:ok, %{order: ^order}} = Compiled.invoke(graph, %{order_id: "A-1001"})
+    assert {:ok, %{order: ^order} = cached} = Compiled.invoke(graph, %{order_id: "A-1001"})
+    assert Map.keys(cached) |> Enum.sort() == [:order, :order_id]
+    assert :counters.get(calls, 1) == 1
+  end
+
+  test "an agent keeps its thread in an encrypted checkpointer live" do
+    checkpoints = BeamWeaver.Test.LivePostgres.unique_table("bw_checkpoints_sealed")
+    writes = BeamWeaver.Test.LivePostgres.unique_table("bw_writes_sealed")
+
+    version =
+      BeamWeaver.Test.LivePostgres.migrate(
+        adapters: [{:checkpoint, checkpoints_table: checkpoints, writes_table: writes}]
+      )
+
+    on_exit(fn ->
+      BeamWeaver.Test.LivePostgres.drop_tables([writes, checkpoints])
+      BeamWeaver.Test.LivePostgres.clear_migration(version)
+    end)
+
+    saver =
+      EctoCheckpoint.new(
+        repo: BeamWeaver.Test.PostgresRepo,
+        checkpoints_table: checkpoints,
+        writes_table: writes,
+        serialization: [codec: BeamWeaver.Serialization.Encrypted, encryption_key: :crypto.strong_rand_bytes(32)]
+      )
+
+    opts = [checkpointer: saver, config: %{"configurable" => %{"thread_id" => "thread-sealed"}}]
+
+    assert {:ok, _result} = UsageCheckpointAgent.invoke(%{messages: ["my card ends in 4111"]}, opts)
+    assert {:ok, snapshot} = UsageCheckpointAgent.get_state(opts)
+    assert ["my card ends in 4111", "with usage"] = Enum.map(snapshot.values.messages, &Message.text/1)
+    assert [_ | _] = Checkpoint.list(saver, opts[:config])
+
+    {:ok, %{rows: rows}} =
+      Ecto.Adapters.SQL.query(
+        BeamWeaver.Test.PostgresRepo,
+        "SELECT checkpoint::text || metadata::text FROM #{checkpoints}",
+        []
+      )
+
+    assert rows != []
+    refute Enum.any?(rows, fn [stored] -> stored =~ "4111" end)
+  end
+
+  test "cache encrypts entries with an encrypted serialization config live" do
+    table = BeamWeaver.Test.LivePostgres.unique_table("bw_cache_sealed")
+    sealed = [codec: BeamWeaver.Serialization.Encrypted, encryption_key: :crypto.strong_rand_bytes(32)]
+    cache = EctoCache.new(repo: BeamWeaver.Test.PostgresRepo, table: table, serialization: sealed)
+
+    version = BeamWeaver.Test.LivePostgres.migrate(adapters: [{:cache, table: table}])
+
+    on_exit(fn ->
+      BeamWeaver.Test.LivePostgres.drop_tables([table])
+      BeamWeaver.Test.LivePostgres.clear_migration(version)
+    end)
+
+    assert :ok = Cache.put(cache, [:tenant, "a"], %{id: 1}, %{"card" => "4111"})
+    assert {:hit, %{"card" => "4111"}, %{}} = Cache.lookup(cache, [:tenant, "a"], %{id: 1})
+
+    {:ok, %{rows: [[blob]]}} =
+      Ecto.Adapters.SQL.query(BeamWeaver.Test.PostgresRepo, "SELECT value FROM #{table}", [])
+
+    refute blob =~ "4111"
+
+    other_key = %{
+      cache
+      | serialization:
+          BeamWeaver.Serialization.Config.new(Keyword.put(sealed, :encryption_key, :crypto.strong_rand_bytes(32)))
+    }
+
+    assert {:error, %Error{type: :serialization_error}} = Cache.lookup(other_key, [:tenant, "a"], %{id: 1})
   end
 
   test "cache rejects corrupt values and legacy ETF payloads through the public codec path" do
@@ -1167,7 +1221,7 @@ defmodule BeamWeaver.Adapters.LivePostgresTest do
       EctoMemory.new(
         repo: BeamWeaver.Test.PostgresRepo,
         table: table,
-        refresh_on_read?: true,
+        refresh_ttl: true,
         default_ttl: 0.01
       )
 
@@ -1249,41 +1303,6 @@ defmodule BeamWeaver.Adapters.LivePostgresTest do
 
     assert :ok = VectorStore.delete(store, [id1, id2])
     assert {:ok, []} = VectorStore.similarity_search(store, "alpha", k: 2)
-  end
-
-  test "record manager stores and filters indexing records live" do
-    table = BeamWeaver.Test.LivePostgres.unique_table("bw_records")
-
-    manager =
-      EctoRecordManager.new(
-        repo: BeamWeaver.Test.PostgresRepo,
-        table: table,
-        namespace: "tenant-a"
-      )
-
-    version = BeamWeaver.Test.LivePostgres.migrate(adapters: [{:record_manager, table: table}])
-
-    on_exit(fn ->
-      BeamWeaver.Test.LivePostgres.drop_tables([table])
-      BeamWeaver.Test.LivePostgres.clear_migration(version)
-    end)
-
-    assert :ok =
-             RecordManager.put(manager, %Record{
-               id: "doc-1",
-               source_id: "source-a",
-               hash: "hash-a",
-               metadata: %{kind: "live"}
-             })
-
-    assert {:ok, %Record{id: "doc-1", metadata: %{"kind" => "live"}}} =
-             RecordManager.get(manager, "doc-1")
-
-    assert {:ok, [%Record{id: "doc-1"}]} =
-             RecordManager.list(manager, source_ids: ["source-a"])
-
-    assert :ok = RecordManager.delete(manager, ["doc-1"])
-    assert {:ok, nil} = RecordManager.get(manager, "doc-1")
   end
 
   defp captured_worker_output_schema do

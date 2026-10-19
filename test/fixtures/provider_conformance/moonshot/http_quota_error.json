@@ -2,7 +2,7 @@
   "expected": {
     "error": {
       "message": "Quota exceeded fixture",
-      "type": "quota_error"
+      "type": "billing_exhausted"
     }
   },
   "provider": "moonshot",

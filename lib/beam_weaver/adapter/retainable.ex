@@ -12,116 +12,28 @@ end
 defimpl BeamWeaver.Adapter.Retainable, for: BeamWeaver.Cache.ETS do
   def prune(cache, opts) do
     namespace = Keyword.get(opts, :namespace)
-    now = System.system_time(:millisecond)
-    cutoff = cutoff_ms(now, opts)
+    cutoff = cutoff_ms(opts)
 
-    entries =
-      cache.table
-      |> :ets.tab2list()
-      |> Enum.filter(fn {{entry_namespace, _key}, _entry} ->
-        is_nil(namespace) or entry_namespace == namespace
-      end)
+    aged =
+      for {key, %{inserted_at: inserted_at}} <- entries(cache.table, namespace),
+          is_integer(cutoff) and is_integer(inserted_at) and inserted_at <= cutoff,
+          do: :ets.delete(cache.table, key)
 
-    age_deleted =
-      entries
-      |> Enum.reduce(0, fn
-        {{entry_namespace, key}, %{inserted_at: inserted_at}}, acc
-        when is_integer(cutoff) and is_integer(inserted_at) and inserted_at <= cutoff ->
-          :ets.delete(cache.table, {entry_namespace, key})
-          acc + 1
-
-        _entry, acc ->
-          acc
-      end)
-
-    limit_deleted =
-      cache.table
-      |> :ets.tab2list()
-      |> Enum.filter(fn {{entry_namespace, _key}, _entry} ->
-        is_nil(namespace) or entry_namespace == namespace
-      end)
-      |> prune_to_limit(cache.table, Keyword.get(opts, :max_entries), &cache_inserted_at/1)
-
-    {:ok, age_deleted + limit_deleted}
+    limit_deleted = cache.table |> entries(namespace) |> prune_to_limit(cache.table, Keyword.get(opts, :max_entries))
+    {:ok, length(aged) + limit_deleted}
   end
 
-  defp cutoff_ms(_now, opts) do
+  defp entries(table, namespace) do
+    for {{entry_namespace, _key}, _entry} = entry <- :ets.tab2list(table),
+        is_nil(namespace) or entry_namespace == namespace,
+        do: entry
+  end
+
+  defp cutoff_ms(opts) do
     cond do
-      is_integer(Keyword.get(opts, :older_than_ms)) ->
-        Keyword.fetch!(opts, :older_than_ms)
-
-      is_integer(Keyword.get(opts, :max_age_ms)) ->
-        System.system_time(:millisecond) - Keyword.fetch!(opts, :max_age_ms)
-
-      true ->
-        nil
-    end
-  end
-
-  defp cache_inserted_at({{_namespace, _key}, entry}), do: Map.get(entry, :inserted_at, 0)
-
-  defp prune_to_limit(_entries, _table, nil, _time_fun), do: 0
-  defp prune_to_limit(_entries, _table, max_entries, _time_fun) when max_entries < 0, do: 0
-
-  defp prune_to_limit(entries, table, max_entries, time_fun) when is_integer(max_entries) do
-    entries
-    |> Enum.sort_by(time_fun, :desc)
-    |> Enum.drop(max_entries)
-    |> Enum.reduce(0, fn {{namespace, key}, _entry}, acc ->
-      :ets.delete(table, {namespace, key})
-      acc + 1
-    end)
-  end
-end
-
-defimpl BeamWeaver.Adapter.Retainable, for: BeamWeaver.Memory.ETS do
-  def prune(store, opts) do
-    namespace = Keyword.get(opts, :namespace)
-    cutoff = cutoff_datetime(opts)
-
-    entries =
-      store.items
-      |> :ets.tab2list()
-      |> Enum.filter(fn {{entry_namespace, _key}, _entry} ->
-        is_nil(namespace) or entry_namespace == namespace
-      end)
-
-    age_deleted =
-      entries
-      |> Enum.reduce(0, fn
-        {{entry_namespace, key}, %{updated_at: updated_at}}, acc
-        when not is_nil(cutoff) ->
-          if DateTime.compare(updated_at, cutoff) != :gt do
-            :ets.delete(store.items, {entry_namespace, key})
-            acc + 1
-          else
-            acc
-          end
-
-        _entry, acc ->
-          acc
-      end)
-
-    limit_deleted =
-      store.items
-      |> :ets.tab2list()
-      |> Enum.filter(fn {{entry_namespace, _key}, _entry} ->
-        is_nil(namespace) or entry_namespace == namespace
-      end)
-      |> prune_to_limit(store.items, Keyword.get(opts, :max_entries))
-
-    {:ok, age_deleted + limit_deleted}
-  end
-
-  defp cutoff_datetime(opts) do
-    case Keyword.get(opts, :older_than) do
-      %DateTime{} = value ->
-        value
-
-      _other ->
-        if is_integer(Keyword.get(opts, :max_age_ms)) do
-          DateTime.add(DateTime.utc_now(), -Keyword.fetch!(opts, :max_age_ms), :millisecond)
-        end
+      is_integer(Keyword.get(opts, :older_than_ms)) -> Keyword.fetch!(opts, :older_than_ms)
+      is_integer(Keyword.get(opts, :max_age_ms)) -> System.system_time(:millisecond) - Keyword.fetch!(opts, :max_age_ms)
+      true -> nil
     end
   end
 
@@ -130,10 +42,48 @@ defimpl BeamWeaver.Adapter.Retainable, for: BeamWeaver.Memory.ETS do
 
   defp prune_to_limit(entries, table, max_entries) when is_integer(max_entries) do
     entries
+    |> Enum.sort_by(fn {_key, entry} -> Map.get(entry, :inserted_at, 0) end, :desc)
+    |> Enum.drop(max_entries)
+    |> Enum.reduce(0, fn {key, _entry}, acc ->
+      :ets.delete(table, key)
+      acc + 1
+    end)
+  end
+end
+
+defimpl BeamWeaver.Adapter.Retainable, for: BeamWeaver.Memory.Ecto do
+  def prune(store, opts), do: BeamWeaver.Memory.Ecto.prune(store, opts)
+end
+
+defimpl BeamWeaver.Adapter.Retainable, for: BeamWeaver.Memory.ETS do
+  def prune(store, opts) do
+    namespace = Keyword.get(opts, :namespace)
+    cutoff = BeamWeaver.Memory.Query.prune_cutoff(opts)
+
+    aged =
+      for {{entry_namespace, key}, %{updated_at: updated_at}} <- entries(store.items, namespace),
+          not is_nil(cutoff) and DateTime.compare(updated_at, cutoff) != :gt,
+          do: BeamWeaver.Memory.ETS.delete(store, entry_namespace, key)
+
+    limit_deleted = store.items |> entries(namespace) |> prune_to_limit(store, Keyword.get(opts, :max_entries))
+    {:ok, length(aged) + limit_deleted}
+  end
+
+  defp entries(table, namespace) do
+    for {{entry_namespace, _key}, _entry} = entry <- :ets.tab2list(table),
+        is_nil(namespace) or entry_namespace == namespace,
+        do: entry
+  end
+
+  defp prune_to_limit(_entries, _store, nil), do: 0
+  defp prune_to_limit(_entries, _store, max_entries) when max_entries < 0, do: 0
+
+  defp prune_to_limit(entries, store, max_entries) when is_integer(max_entries) do
+    entries
     |> Enum.sort_by(fn {_key, item} -> item.updated_at end, {:desc, DateTime})
     |> Enum.drop(max_entries)
     |> Enum.reduce(0, fn {{namespace, key}, _item}, acc ->
-      :ets.delete(table, {namespace, key})
+      BeamWeaver.Memory.ETS.delete(store, namespace, key)
       acc + 1
     end)
   end

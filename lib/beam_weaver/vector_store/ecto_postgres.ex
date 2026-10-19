@@ -1,24 +1,32 @@
 defmodule BeamWeaver.VectorStore.EctoPostgres do
-  @moduledoc """
-  SQL-boundary Postgres/pgvector vector store adapter.
+  @moduledoc ~S"""
+  PostgreSQL/pgvector storage behind an application-owned Ecto repository.
 
-  The adapter deliberately avoids Ecto schemas. Callers provide a Repo and a
-  query module compatible with `Ecto.Adapters.SQL.query/3`, which keeps the SQL
-  boundary explicit for applications that wrap or instrument database calls.
+  Required constructor options are repo and embedding. Table, prefix, namespace,
+  dimensions and distance must match your migration and ingestion/query model.
+  The default query module is Ecto.Adapters.SQL; a compatible query module can
+  instrument the SQL boundary. Construction does not start a repo or create tables.
+
+  Documents are replaced by namespace/ID. Preserve stable source/chunk IDs when
+  reindexing and explicitly remove obsolete content. See [Storage](storage.md)
+  and [Retrieval](retrieval.md).
   """
 
   @behaviour BeamWeaver.VectorStore
 
+  alias BeamWeaver.VectorStore
   alias BeamWeaver.Adapter.Error, as: AdapterError
   alias BeamWeaver.Core.Document
   alias BeamWeaver.Core.EmbeddingModel
-  alias BeamWeaver.Core.Error
+  alias BeamWeaver.Migrations.Postgres.Util
+  alias BeamWeaver.Result
   alias BeamWeaver.VectorStore.Filter
   alias BeamWeaver.VectorStore.Scoring
 
   defstruct repo: nil,
             query_module: Ecto.Adapters.SQL,
             table: "beam_weaver_vectors",
+            prefix: nil,
             namespace: :default,
             embedding: nil,
             dimensions: 1_536,
@@ -31,10 +39,11 @@ defmodule BeamWeaver.VectorStore.EctoPostgres do
       repo: Keyword.fetch!(opts, :repo),
       query_module: Keyword.get(opts, :query_module, Ecto.Adapters.SQL),
       table: Keyword.get(opts, :table, "beam_weaver_vectors"),
+      prefix: Keyword.get(opts, :prefix),
       namespace: Keyword.get(opts, :namespace, :default),
       embedding: Keyword.fetch!(opts, :embedding),
       dimensions: Keyword.get(opts, :dimensions, 1_536),
-      distance: normalize_distance(Keyword.get(opts, :distance, :cosine)),
+      distance: Util.normalize_distance(Keyword.get(opts, :distance, :cosine)),
       index: Keyword.get(opts, :index, :ivfflat),
       index_opts: Keyword.get(opts, :index_opts, [])
     }
@@ -42,84 +51,54 @@ defmodule BeamWeaver.VectorStore.EctoPostgres do
 
   @impl true
   def add_documents(%__MODULE__{} = store, documents, opts) do
-    with :ok <- validate_documents(documents),
-         {:ok, vectors} <- embed_documents(store.embedding, documents, opts) do
+    with :ok <- VectorStore.validate_documents(documents),
+         {:ok, vectors} <- VectorStore.embed_documents(store.embedding, documents, opts) do
       explicit_ids = Keyword.get(opts, :ids, [])
 
-      Enum.reduce_while(Enum.zip(documents, vectors), {:ok, []}, fn {document, vector}, {:ok, ids} ->
-        index = length(ids)
-        id = id_for(document, explicit_ids, index)
+      sql = """
+      INSERT INTO #{table(store)}
+        (id, namespace, content, metadata, embedding, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, ($5::text)::vector, now(), now())
+      ON CONFLICT (namespace, id)
+      DO UPDATE SET content = EXCLUDED.content,
+                    metadata = EXCLUDED.metadata,
+                    embedding = EXCLUDED.embedding,
+                    updated_at = now()
+      """
 
-        sql = """
-        INSERT INTO #{store.table}
-          (id, namespace, content, metadata, embedding, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, ($5::text)::vector, now(), now())
-        ON CONFLICT (namespace, id)
-        DO UPDATE SET content = EXCLUDED.content,
-                      metadata = EXCLUDED.metadata,
-                      embedding = EXCLUDED.embedding,
-                      updated_at = now()
-        """
-
-        params = [
-          id,
-          namespace(store),
-          document.content,
-          document.metadata,
-          encode_vector(vector)
-        ]
-
-        case query(store, sql, params) do
-          {:ok, _result} -> {:cont, {:ok, [id | ids]}}
-          {:error, error} -> {:halt, {:error, normalize_error(error)}}
-        end
+      documents
+      |> Enum.zip(vectors)
+      |> Enum.with_index()
+      |> Result.traverse(fn {{document, vector}, index} ->
+        id = VectorStore.id_for(document, explicit_ids, index)
+        params = [id, namespace(store), document.content, document.metadata, encode_vector(vector)]
+        with {:ok, _result} <- query(store, sql, params), do: {:ok, id}
       end)
-      |> case do
-        {:ok, ids} -> {:ok, Enum.reverse(ids)}
-        other -> other
-      end
     end
   end
 
   @impl true
   def delete(%__MODULE__{} = store, ids, _opts) do
-    sql = "DELETE FROM #{store.table} WHERE namespace = $1 AND id = ANY($2)"
+    sql = "DELETE FROM #{table(store)} WHERE namespace = $1 AND id = ANY($2)"
 
-    case query(store, sql, [namespace(store), ids]) do
-      {:ok, _result} -> :ok
-      {:error, error} -> {:error, normalize_error(error)}
-    end
+    with {:ok, _result} <- query(store, sql, [namespace(store), ids]), do: :ok
   end
 
   def get_by_ids(%__MODULE__{} = store, ids, _opts) do
     sql = """
     SELECT id, content, metadata, embedding::text, 0 AS score
-    FROM #{store.table}
+    FROM #{table(store)}
     WHERE namespace = $1 AND id = ANY($2)
     ORDER BY array_position($2, id)
     """
 
-    case query(store, sql, [namespace(store), ids]) do
-      {:ok, result} ->
-        documents =
-          result
-          |> rows_from_result()
-          |> Enum.map(&document_from_row/1)
-          |> order_documents(ids)
-
-        {:ok, documents}
-
-      {:error, error} ->
-        {:error, normalize_error(error)}
-    end
+    with {:ok, result} <- query(store, sql, [namespace(store), ids]),
+         do: {:ok, result |> rows_from_result() |> Enum.map(&document_from_row/1) |> order_documents(ids)}
   end
 
   @impl true
-  def similarity_search(%__MODULE__{} = store, query, opts) do
-    with {:ok, scored} <- similarity_search_with_score(store, query, opts) do
-      {:ok, Enum.map(scored, &elem(&1, 0))}
-    end
-  end
+  def similarity_search(%__MODULE__{} = store, query, opts),
+    do: store |> similarity_search_with_score(query, opts) |> VectorStore.drop_scores()
 
   @impl true
   def similarity_search_with_score(%__MODULE__{} = store, query, opts) do
@@ -129,11 +108,8 @@ defmodule BeamWeaver.VectorStore.EctoPostgres do
   end
 
   @impl true
-  def similarity_search_by_vector(%__MODULE__{} = store, vector, opts) do
-    with {:ok, scored} <- search_by_vector_with_score(store, vector, opts) do
-      {:ok, Enum.map(scored, &elem(&1, 0))}
-    end
-  end
+  def similarity_search_by_vector(%__MODULE__{} = store, vector, opts),
+    do: store |> search_by_vector_with_score(vector, opts) |> VectorStore.drop_scores()
 
   @impl true
   def max_marginal_relevance_search(%__MODULE__{} = store, query, opts) do
@@ -143,21 +119,8 @@ defmodule BeamWeaver.VectorStore.EctoPostgres do
 
     with {:ok, query_vector} <- EmbeddingModel.embed_query(store.embedding, query, opts),
          {:ok, rows} <- search_rows(store, query_vector, Keyword.put(opts, :k, fetch_k)) do
-      candidates =
-        rows
-        |> Enum.map(fn row ->
-          doc = document_from_row(row)
-          vector = row_vector(row)
-          score = row_score(row)
-          {doc, vector, score}
-        end)
-
-      selected =
-        query_vector
-        |> Scoring.mmr(candidates, k, lambda, [])
-        |> Enum.map(&elem(&1, 0))
-
-      {:ok, selected}
+      candidates = Enum.map(rows, &{document_from_row(&1), decode_vector(&1["embedding"]), row_score(&1)})
+      {:ok, candidates |> Scoring.mmr(k, lambda) |> Enum.map(&elem(&1, 0))}
     end
   end
 
@@ -172,54 +135,24 @@ defmodule BeamWeaver.VectorStore.EctoPostgres do
     filter = Keyword.get(opts, :filter, %{})
 
     with {:ok, {filter_sql, filter_params}} <- Filter.to_sql(filter, 3) do
-      where =
-        ["namespace = $1", filter_sql] |> Enum.reject(&(&1 in ["", "TRUE"])) |> Enum.join(" AND ")
+      where = ["namespace = $1", filter_sql] |> Enum.reject(&(&1 in ["", "TRUE"])) |> Enum.join(" AND ")
 
       sql = """
       SELECT id, content, metadata, embedding::text, #{score_sql(store, "$2")} AS score
-      FROM #{store.table}
-      WHERE #{if where == "", do: "TRUE", else: where}
+      FROM #{table(store)}
+      WHERE #{where}
       ORDER BY embedding #{distance_operator(store)} ($2::text)::vector
       LIMIT #{max(k, 0)}
       """
 
-      params = [namespace(store), encode_vector(vector)] ++ filter_params
-
-      case query(store, sql, params) do
-        {:ok, result} -> {:ok, rows_from_result(result)}
-        {:error, error} -> {:error, normalize_error(error)}
-      end
+      with {:ok, result} <- query(store, sql, [namespace(store), encode_vector(vector)] ++ filter_params),
+           do: {:ok, rows_from_result(result)}
     end
-  end
-
-  defp normalize_distance(distance) when distance in [:cosine, "cosine"], do: :cosine
-  defp normalize_distance(distance) when distance in [:l2, :euclidean, "l2", "euclidean"], do: :l2
-
-  defp normalize_distance(distance)
-       when distance in [:inner_product, :max_inner_product, "inner_product", "max_inner_product"],
-       do: :inner_product
-
-  defp normalize_distance(_distance), do: :cosine
-
-  defp id_for(%Document{} = document, explicit_ids, index) do
-    explicit_ids
-    |> Enum.at(index)
-    |> Kernel.||(document.id)
-    |> Kernel.||(stable_id(document))
-    |> to_string()
   end
 
   defp order_documents(documents, ids) do
     by_id = Map.new(documents, &{&1.id, &1})
-
-    ids
-    |> Enum.map(&to_string/1)
-    |> Enum.flat_map(fn id ->
-      case by_id do
-        %{^id => document} -> [document]
-        _other -> []
-      end
-    end)
+    for id <- ids, document = by_id[to_string(id)], do: document
   end
 
   defp distance_operator(%__MODULE__{distance: :l2}), do: "<->"
@@ -235,73 +168,22 @@ defmodule BeamWeaver.VectorStore.EctoPostgres do
   defp score_sql(%__MODULE__{}, param),
     do: "1 - (embedding <=> (#{param}::text)::vector)"
 
-  defp query(%__MODULE__{} = store, sql, params) do
-    AdapterError.query(store, sql, params,
-      type: :vector_store_error,
-      message: "vector store adapter error"
-    )
-  end
+  # The table, in the Postgres schema `prefix:` names, quoted as the migration quotes it.
+  defp table(%__MODULE__{} = store), do: Util.qualify(store.prefix, store.table)
 
-  defp embed_documents(embedding, documents, opts) do
-    documents
-    |> Enum.map(& &1.content)
-    |> then(&EmbeddingModel.embed_documents(embedding, &1, opts))
-  end
+  defp query(%__MODULE__{} = store, sql, params),
+    do: AdapterError.query(store, sql, params, :vector_store_error, "vector store adapter error")
 
-  defp validate_documents(documents) do
-    if Enum.all?(documents, &match?(%Document{}, &1)),
-      do: :ok,
-      else: {:error, Error.new(:invalid_documents, "expected BeamWeaver documents")}
-  end
+  defp rows_from_result(%{columns: columns, rows: rows}), do: Enum.map(rows, &(columns |> Enum.zip(&1) |> Map.new()))
 
-  defp rows_from_result(%{columns: columns, rows: rows}) when is_list(columns) do
-    Enum.map(rows, fn row -> columns |> Enum.zip(row) |> Map.new() end)
-  end
+  defp document_from_row(row),
+    do: Document.new!(row["content"] || "", id: row["id"], metadata: row["metadata"] || %{})
 
-  defp rows_from_result(%{rows: rows}), do: Enum.map(rows, &row_map/1)
-  defp rows_from_result(rows) when is_list(rows), do: Enum.map(rows, &row_map/1)
-  defp rows_from_result(_result), do: []
-
-  defp row_map(%{} = row), do: row
-
-  defp row_map([id, content, metadata, embedding, score]),
-    do: %{
-      "id" => id,
-      "content" => content,
-      "metadata" => metadata,
-      "embedding" => embedding,
-      "score" => score
-    }
-
-  defp row_map(row), do: %{"row" => row}
-
-  defp document_from_row(row) do
-    Document.new!(
-      fetch_row(row, ["content", :content]) || "",
-      id: fetch_row(row, ["id", :id]),
-      metadata: fetch_row(row, ["metadata", :metadata]) || %{}
-    )
-  end
-
-  defp row_score(row), do: fetch_row(row, ["score", :score]) || 0
-
-  defp row_vector(row) do
-    row
-    |> fetch_row(["embedding", :embedding])
-    |> decode_vector()
-  end
-
-  defp fetch_row(row, keys) do
-    Enum.find_value(keys, fn key ->
-      if Map.has_key?(row, key), do: Map.fetch!(row, key), else: nil
-    end)
-  end
+  defp row_score(row), do: row["score"] || 0
 
   defp encode_vector(vector) when is_list(vector) do
     "[" <> Enum.map_join(vector, ",", &to_string/1) <> "]"
   end
-
-  defp decode_vector(vector) when is_list(vector), do: vector
 
   defp decode_vector(vector) when is_binary(vector) do
     vector
@@ -310,11 +192,7 @@ defmodule BeamWeaver.VectorStore.EctoPostgres do
     |> String.trim_trailing("]")
     |> String.split(",", trim: true)
     |> Enum.map(&parse_number/1)
-  rescue
-    _exception -> []
   end
-
-  defp decode_vector(_vector), do: []
 
   defp parse_number(value) do
     case Float.parse(String.trim(value)) do
@@ -323,13 +201,5 @@ defmodule BeamWeaver.VectorStore.EctoPostgres do
     end
   end
 
-  defp stable_id(%Document{} = document) do
-    :sha256
-    |> :crypto.hash(:erlang.term_to_binary({document.content, document.metadata}))
-    |> Base.encode16(case: :lower)
-  end
-
   defp namespace(store), do: to_string(store.namespace)
-
-  defp normalize_error(%Error{} = error), do: error
 end

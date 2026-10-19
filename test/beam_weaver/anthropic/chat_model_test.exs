@@ -4,29 +4,28 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
   alias BeamWeaver.Agent.StructuredOutput
   alias BeamWeaver.Anthropic.ChatModel
   alias BeamWeaver.Anthropic.Client
-  alias BeamWeaver.Anthropic.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Anthropic.Messages
-  alias BeamWeaver.Anthropic.OutputParsers
   alias BeamWeaver.Anthropic.Tools
   alias BeamWeaver.Core.ChatModel, as: CoreChatModel
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Core.Messages.ToolCall
   alias BeamWeaver.Models
-  alias BeamWeaver.Models.UsageCost
 
-  test "constructor accepts native options, profile defaults, and streaming intent" do
+  test "constructor accepts explicit options and streaming intent" do
     model =
       ChatModel.new(
-        model: "claude-sonnet-4-5",
+        model: "fixture-model",
+        profile: %{max_output_tokens: 123},
         endpoint: "https://proxy.test/v1/messages",
         count_tokens_endpoint: "https://proxy.test/v1/messages/count_tokens"
       )
 
-    assert model.model == "claude-sonnet-4-5"
+    assert model.model == "fixture-model"
     assert model.endpoint == "https://proxy.test/v1/messages"
     assert model.count_tokens_endpoint == "https://proxy.test/v1/messages/count_tokens"
-    assert model.max_tokens == 64_000
+    assert model.max_tokens == 123
 
     assert ChatModel.should_stream?(%ChatModel{streaming: true})
     assert ChatModel.should_stream?(%ChatModel{}, stream: true)
@@ -45,27 +44,21 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
   end
 
   test "client constructor reads config defaults and builds Anthropic headers" do
-    with_config(
-      :anthropic,
-      [
-        api_key: "env-secret"
-      ],
-      fn ->
-        client =
-          Client.new(
-            betas: ["tools-beta"],
-            default_headers: [{"user-agent", "beam-weaver-test"}]
-          )
+    BeamWeaver.TestSupport.ConfigHelper.put_config(:anthropic, api_key: "env-secret")
 
-        request = Client.request(client, %{"model" => "claude-haiku-4-5-20251001"})
+    client =
+      Client.new(
+        betas: ["tools-beta"],
+        default_headers: [{"user-agent", "beam-weaver-test"}]
+      )
 
-        assert request.url == "https://api.anthropic.com/v1/messages"
-        assert {"x-api-key", "env-secret"} in request.headers
-        assert {"anthropic-version", "2023-06-01"} in request.headers
-        assert {"anthropic-beta", "tools-beta"} in request.headers
-        assert {"user-agent", "beam-weaver-test"} in request.headers
-      end
-    )
+    request = Client.request(client, %{"model" => "claude-haiku-4-5-20251001"})
+
+    assert request.url == "https://api.anthropic.com/v1/messages"
+    assert {"x-api-key", "env-secret"} in request.headers
+    assert {"anthropic-version", "2023-06-01"} in request.headers
+    assert {"anthropic-beta", "tools-beta"} in request.headers
+    assert {"user-agent", "beam-weaver-test"} in request.headers
   end
 
   test "invokes Anthropic Messages API through fake transport and decodes assistant text" do
@@ -194,7 +187,7 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
   test "request body includes tools, structured output, thinking, mcp betas, and reused container" do
     model =
       ChatModel.new(
-        model: "claude-sonnet-4-5",
+        model: "claude-sonnet-4-6",
         thinking: %{type: :enabled, budget_tokens: 1024},
         reuse_last_container: true
       )
@@ -299,6 +292,7 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
 
     response_client =
       Client.new(
+        api_key: "test-key",
         transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
         transport_opts: [
           headers: [{"anthropic-workspace-id", "wrkspc_response"}],
@@ -410,13 +404,65 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
     assert body["output_config"] == %{"effort" => "high"}
   end
 
+  describe "reasoning_effort" do
+    defp effort_body(model_opts, call_opts) do
+      model = ChatModel.new(model_opts)
+
+      with {:ok, body} <- ChatModel.request_body(model, [Message.user("hello")], call_opts),
+           do: {:ok, Map.take(body, ["output_config", "thinking"])}
+    end
+
+    # `reasoning_effort` is the standard name of Anthropic's `effort`, and
+    # turns on adaptive thinking, with its summary shown, on a model that
+    # takes only adaptive thinking.
+    test "is sent as output_config.effort" do
+      assert {:ok, %{"output_config" => %{"effort" => "low"}, "thinking" => thinking}} =
+               effort_body([model: "claude-opus-4-7", reasoning_effort: :low], [])
+
+      assert thinking == %{"type" => "adaptive", "display" => "summarized"}
+
+      assert {:ok, %{"output_config" => %{"effort" => "medium"}}} =
+               effort_body([model: "claude-opus-4-7"], reasoning_effort: :medium)
+    end
+
+    test "effort: wins over reasoning_effort:, and the call's over the model's" do
+      assert {:ok, %{"output_config" => %{"effort" => "high"}}} =
+               effort_body([model: "claude-opus-4-7", reasoning_effort: :low, effort: :high], [])
+
+      assert {:ok, %{"output_config" => %{"effort" => "medium"}}} =
+               effort_body([model: "claude-opus-4-7", effort: :high], reasoning_effort: :medium)
+
+      assert {:ok, %{"output_config" => %{"effort" => "low"}}} =
+               effort_body([model: "claude-opus-4-7", effort: :high], output_config: %{effort: :low})
+    end
+
+    test "keeps the thinking the request sets, and adds none on a model with a thinking budget" do
+      assert {:ok, %{"thinking" => %{"type" => "disabled"}}} =
+               effort_body([model: "claude-opus-4-7", reasoning_effort: :low], thinking: %{type: :disabled})
+
+      assert {:ok, body} = effort_body([model: "claude-sonnet-4-6", reasoning_effort: :max], [])
+      assert body == %{"output_config" => %{"effort" => "max"}}
+    end
+
+    test "an effort the model doesn't take is an error before the request" do
+      assert {:error, %Error{type: :unsupported_model_param, details: details}} =
+               effort_body([model: "claude-opus-4-6"], reasoning_effort: :xhigh)
+
+      assert details.params == [:reasoning_effort]
+      assert details.supported == [:low, :medium, :high, :max]
+
+      assert {:error, %Error{details: %{params: [:reasoning_effort]}}} =
+               effort_body([model: "claude-haiku-4-5"], reasoning_effort: :low)
+    end
+  end
+
   test "Claude Opus 5 defaults to adaptive thinking and enforces its effort cap" do
     model = ChatModel.new(model: "claude-opus-5")
 
     assert {:ok, body} =
              ChatModel.request_body(model, [Message.user("hello")], effort: :max)
 
-    refute Map.has_key?(body, "thinking")
+    assert body["thinking"] == %{"type" => "adaptive", "display" => "summarized"}
     assert body["output_config"] == %{"effort" => "max"}
 
     for effort <- [:xhigh, :max] do
@@ -591,57 +637,8 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
     assert body["output_config"] == %{"effort" => "max"}
   end
 
-  test "Claude Fable 5.1 and Mythos 5.1 expose their exact limits and pricing" do
-    for {model_id, availability} <- [
-          {"claude-fable-5-1", :general_availability},
-          {"claude-mythos-5-1", :invite_only}
-        ] do
-      model = ChatModel.new(model: model_id)
-
-      assert model.max_tokens == 128_000
-      assert model.profile.max_input_tokens == 1_000_000
-      assert model.profile.max_output_tokens == 128_000
-      assert model.profile.extra.availability == availability
-      assert model.profile.extra.input_price_per_mtok == 10.0
-      assert model.profile.extra.output_price_per_mtok == 50.0
-      assert model.profile.extra.cache_read_price_per_mtok == 0.25
-      assert model.profile.extra.cached_input_price_per_mtok == 0.25
-      assert model.profile.extra.batch_cached_input_price_per_mtok == 0.125
-      assert model.profile.extra.prompt_cache_min_tokens == 512
-      assert model.profile.extra.knowledge_cutoff == "2026-06"
-      assert model.profile.extra.training_data_cutoff == "2026-06"
-      assert model.profile.extra.effort_levels == [:low, :medium, :high, :xhigh, :max]
-      assert model.profile.extra.tool_choice_modes == [:auto, :none]
-      assert model.profile.structured_output_with_tools
-
-      costs =
-        UsageCost.calculate(model.profile, %{
-          input_tokens: 1_000,
-          output_tokens: 2_000,
-          input_token_details: %{cache_read: 400}
-        })
-
-      assert_in_delta costs.total_cost, 0.1061, 1.0e-12
-    end
-  end
-
-  test "Claude Opus 5.5 profile prices usage and rejects incompatible requests" do
+  test "adaptive-only models reject disabled thinking, forced tools and legacy computer tools" do
     model = ChatModel.new(model: "claude-opus-5-5")
-    profile = model.profile
-
-    assert model.max_tokens == 128_000
-    assert profile.max_input_tokens == 1_000_000
-    assert profile.extra.default_effort == :medium
-    assert profile.extra.compaction_on_demand
-    assert profile.extra.input_price_per_mtok == 4.0
-    assert profile.extra.output_price_per_mtok == 20.0
-    assert profile.extra.cache_read_price_per_mtok == 0.2
-    assert profile.extra.cache_write_5m_price_per_mtok == 5.0
-    assert profile.extra.cache_write_1h_price_per_mtok == 8.0
-
-    costs = UsageCost.calculate(profile, %{input_tokens: 1_000_000, output_tokens: 1_000_000})
-    assert_in_delta costs.total_cost, 24.0, 1.0e-12
-
     messages = [Message.user("hello")]
 
     for builder <- [
@@ -760,6 +757,7 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
     transport_model =
       ChatModel.new(
         model: "claude-opus-5-5",
+        api_key: "test-key",
         transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
         transport_opts: [parent: self(), body: response]
       )
@@ -990,7 +988,12 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
       opts = Keyword.merge([tools: [lookup_tool]], StructuredOutput.provider_opts(strategy))
 
       assert {:ok, body} = ChatModel.request_body(model, [Message.user("look it up")], opts)
-      assert body["output_config"]["format"] == %{"type" => "json_schema", "schema" => schema}
+
+      assert body["output_config"]["format"] == %{
+               "type" => "json_schema",
+               "schema" => Map.put(schema, "additionalProperties", false)
+             }
+
       assert [%{"name" => "lookup"}] = body["tools"]
       refute Map.has_key?(body, "tool_choice")
     end
@@ -1039,7 +1042,7 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
       "properties" => %{"value" => %{"type" => "string"}}
     }
 
-    inner =
+    model =
       ChatModel.new(
         model: "claude-haiku-4-5-20251001",
         api_key: "anthropic-secret",
@@ -1055,7 +1058,7 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
               "messages" => [%{"role" => "user", "content" => "answer"}],
               "stream" => false,
               "output_config" => %{
-                "format" => %{"type" => "json_schema", "schema" => schema}
+                "format" => %{"type" => "json_schema", "schema" => Map.put(schema, "additionalProperties", false)}
               }
             }
           },
@@ -1070,34 +1073,42 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
         ]
       )
 
-    model = Models.with_structured_output(inner, schema)
+    response_format = %{name: "answer", schema: schema}
+
+    # The model's own profile has no native structured output.
+    assert {:error, %Error{type: :unsupported_feature}} =
+             CoreChatModel.invoke(model, [Message.user("answer")], response_format: response_format)
+
+    refute_received {:fake_transport_request, _request}
 
     assert {:ok, %Message{} = response} =
-             CoreChatModel.invoke(model, [Message.user("answer")], model: "claude-fable-5-1")
+             CoreChatModel.invoke(model, [Message.user("answer")],
+               model: "claude-fable-5-1",
+               response_format: response_format
+             )
 
-    assert response.metadata.structured_response == %{"value" => "native"}
+    assert response.metadata.parsed == %{"value" => "native"}
     assert response.response_metadata.model.requested_model == "claude-fable-5-1"
     assert response.response_metadata.model.profile_id == "claude-fable-5-1"
-    assert response.response_metadata.limits.max_input_tokens == 1_000_000
-    assert response.response_metadata.limits.max_output_tokens == 128_000
     assert_received {:fake_transport_request, _request}
   end
 
   test "raw extension maps cannot replace Anthropic-owned request fields" do
     messages = [Message.user("hello")]
-    model = ChatModel.new(model: "claude-fable-5")
 
-    for extension <- [:model_kwargs, :extra_body] do
-      opts =
-        [tool_choice: :any]
-        |> Keyword.put(extension, %{
-          model: "claude-fable-5-1",
-          thinking: %{type: :disabled},
-          tool_choice: %{type: :none},
-          betas: ["unvalidated-beta"],
-          extension_flag: true
-        })
+    extension = %{
+      model: "claude-fable-5-1",
+      thinking: %{type: :disabled},
+      tool_choice: %{type: :none},
+      betas: ["unvalidated-beta"],
+      extension_flag: true
+    }
 
+    # From the model and from the call.
+    for {model, opts} <- [
+          {ChatModel.new(model: "claude-fable-5", extra_body: extension), [tool_choice: :any]},
+          {ChatModel.new(model: "claude-fable-5"), [tool_choice: :any, extra_body: extension]}
+        ] do
       assert {:ok, body} = ChatModel.request_body(model, messages, opts)
       assert body["model"] == "claude-fable-5"
       assert body["tool_choice"] == %{"type" => "any"}
@@ -1298,6 +1309,7 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
   test "Anthropic prompt-length HTTP errors are normalized as context overflow" do
     model =
       ChatModel.new(
+        api_key: "test-key",
         transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
         transport_opts: [
           expect: %{method: :post, path: "/v1/messages"},
@@ -1319,68 +1331,68 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
     assert error.message =~ "prompt is too long"
   end
 
-  test "model initializer supports explicit and inferred Anthropic identifiers" do
-    for model <- [
-          "claude-haiku-4-5-20251001",
-          "claude-fable-5-1",
-          "claude-mythos-5-1",
-          "claude-opus-4-8",
-          "claude-opus-5",
-          "claude-sonnet-5",
-          "claude-fable-5",
-          "claude-mythos-5"
+  # Anthropic's request metadata has one field, `user_id`, a string of at
+  # most 512 characters. Anything else fails before the request, both when
+  # the model is created and on a call.
+  describe "metadata" do
+    for {name, metadata, message} <- [
+          {"another key", %{user_id: "user_123", source: :summarization},
+           "Anthropic metadata takes only :user_id, not :source"},
+          {"another string key", %{"tenant" => "acme"}, ~s(Anthropic metadata takes only :user_id, not "tenant")},
+          {"a user_id that isn't a string", %{user_id: 123}, "Anthropic metadata :user_id must be a string"},
+          {"a user_id longer than 512 characters", %{user_id: String.duplicate("u", 513)},
+           "Anthropic metadata :user_id takes at most 512 characters"},
+          {"a keyword list", [user_id: "user_123"], "Anthropic metadata must be a map with only :user_id"}
         ] do
-      assert {:ok, %ChatModel{model: ^model}} = Models.init_chat_model("anthropic:" <> model)
+      test "with #{name} fails before the request" do
+        metadata = unquote(Macro.escape(metadata))
+
+        assert {:error, %Error{type: :unsupported_model_param, message: unquote(message)} = error} =
+                 Models.init_chat_model("anthropic:claude-haiku-4-5", api_key: "k", metadata: metadata)
+
+        assert %{provider: :anthropic, model: "claude-haiku-4-5", params: [:metadata]} = error.details
+
+        model =
+          Models.init_chat_model!("anthropic:claude-haiku-4-5",
+            api_key: "k",
+            transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+            transport_opts: [parent: self()]
+          )
+
+        assert {:error, %Error{type: :unsupported_model_param, message: unquote(message)}} =
+                 CoreChatModel.invoke(model, [Message.user("ping")], metadata: metadata)
+
+        refute_received {:fake_transport_request, _request}
+      end
     end
 
-    assert {:ok, inferred} = Models.init_chat_model("claude-sonnet-4-6")
-    assert inferred.__struct__ == ChatModel
-  end
+    test "a model's own metadata is checked on every call" do
+      model = ChatModel.new(model: "claude-haiku-4-5", metadata: %{tenant: "acme"})
 
-  test "model initializer rejects deprecated and retired Anthropic identifiers" do
-    assert {:error, deprecated} =
-             Models.init_chat_model("anthropic:claude-sonnet-4-20250514")
+      assert {:error, %Error{message: "Anthropic metadata takes only :user_id, not :tenant"} = error} =
+               ChatModel.request_body(model, [Message.user("ping")])
 
-    assert deprecated.type == :deprecated_model
-    assert deprecated.details.provider == :anthropic
-    assert deprecated.details.replacement == "claude-sonnet-4-6"
-    assert deprecated.details.expected == "anthropic:claude-sonnet-4-6"
-    assert deprecated.details.retirement_date == "2026-06-15"
+      assert error.details.keys == [:tenant]
+    end
 
-    assert {:error, retired} =
-             Models.init_chat_model("anthropic:claude-3-7-sonnet-20250219")
+    test "a user_id, set on the model or on the call, goes through" do
+      model = Models.init_chat_model!("anthropic:claude-haiku-4-5", api_key: "k", metadata: %{user_id: "user_123"})
 
-    assert retired.type == :deprecated_model
-    assert retired.details.replacement == "claude-sonnet-4-6"
-    assert retired.details.retirement_date == "2026-02-19"
+      assert {:ok, %{"metadata" => %{"user_id" => "user_123"}}} = ChatModel.request_body(model, [Message.user("ping")])
 
-    assert {:error, opus} =
-             Models.init_chat_model("anthropic:claude-opus-4-20250514")
+      assert {:ok, %{"metadata" => %{"user_id" => "user_456"}}} =
+               ChatModel.request_body(model, [Message.user("ping")], metadata: %{"user_id" => "user_456"})
 
-    assert opus.type == :deprecated_model
-    assert opus.details.replacement == "claude-opus-4-8"
-    assert opus.details.expected == "anthropic:claude-opus-4-8"
-  end
+      assert {:ok, %{"metadata" => %{"user_id" => nil}}} =
+               ChatModel.request_body(model, [Message.user("ping")], metadata: %{user_id: nil})
+    end
 
-  test "output parser extracts Anthropic tool_use blocks" do
-    content = [
-      %{"type" => "text", "text" => "checking"},
-      %{"type" => "tool_use", "id" => "toolu_1", "name" => "lookup", "input" => %{"q" => "beam"}}
-    ]
+    test "a user_id of 512 characters goes through, however many bytes they take" do
+      # "é" is two bytes.
+      user_id = String.duplicate("é", 512)
+      model = Models.init_chat_model!("anthropic:claude-haiku-4-5", api_key: "k", metadata: %{user_id: user_id})
 
-    assert OutputParsers.extract_tool_calls(content) == [
-             %ToolCall{
-               id: "toolu_1",
-               provider_id: "toolu_1",
-               call_id: "toolu_1",
-               name: "lookup",
-               args: %{"q" => "beam"}
-             }
-           ]
-  end
-
-  defp with_config(group, values, fun) do
-    BeamWeaver.TestSupport.ConfigHelper.put_config(group, values)
-    fun.()
+      assert {:ok, %{"metadata" => %{"user_id" => ^user_id}}} = ChatModel.request_body(model, [Message.user("ping")])
+    end
   end
 end

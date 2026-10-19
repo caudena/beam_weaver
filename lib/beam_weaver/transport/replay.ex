@@ -18,26 +18,21 @@ defmodule BeamWeaver.Transport.Replay do
   end
 
   @impl true
-  def stream(%Request{} = request, opts, on_chunk) when is_function(on_chunk, 1) do
-    case stream_reduce(request, opts, :ok, fn acc, chunk ->
-           on_chunk.(chunk)
-           acc
-         end) do
-      {:ok, response, _acc} -> {:ok, response}
-      {:error, error, _acc} -> {:error, error}
-    end
-  end
+  def stream(%Request{} = request, opts, on_chunk) when is_function(on_chunk, 1),
+    do: BeamWeaver.Transport.stream(__MODULE__, request, opts, on_chunk)
 
   @impl true
   def stream_reduce(%Request{} = request, opts, acc, reducer) when is_function(reducer, 2) do
     case request(request, opts) do
       {:ok, %Response{status: status, body: body} = response}
       when status in 200..299 and is_binary(body) and body != "" ->
+        delay = Keyword.get(opts, :stream_delay, 0)
+
         acc =
           body
           |> chunks(Keyword.get(opts, :stream_chunk_size, byte_size(body)))
           |> Enum.reduce(acc, fn chunk, acc ->
-            maybe_delay(Keyword.get(opts, :stream_delay, 0))
+            if is_integer(delay) and delay > 0, do: Process.sleep(delay)
             reducer.(acc, chunk)
           end)
 
@@ -64,21 +59,10 @@ defmodule BeamWeaver.Transport.Replay do
     end
   end
 
-  defp chunks(body, size) when is_integer(size) and size > 0 do
-    do_chunks(body, size, [])
+  defp chunks(body, size) when is_integer(size) and size > 0 and byte_size(body) > size do
+    <<chunk::binary-size(^size), rest::binary>> = body
+    [chunk | chunks(rest, size)]
   end
 
   defp chunks(body, _size), do: [body]
-
-  defp do_chunks("", _size, acc), do: Enum.reverse(acc)
-
-  defp do_chunks(body, size, acc) do
-    case body do
-      <<chunk::binary-size(^size), rest::binary>> -> do_chunks(rest, size, [chunk | acc])
-      chunk -> Enum.reverse([chunk | acc])
-    end
-  end
-
-  defp maybe_delay(delay) when is_integer(delay) and delay > 0, do: Process.sleep(delay)
-  defp maybe_delay(_delay), do: :ok
 end

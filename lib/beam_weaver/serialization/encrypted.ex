@@ -4,7 +4,22 @@ defmodule BeamWeaver.Serialization.Encrypted do
 
   This codec keeps the default safe JSON wire format as the plaintext payload
   and encrypts it only when callers opt in with an explicit 32-byte key. It is a
-  checkpoint/store adapter concern, not a global serialization side effect.
+  checkpoint/cache adapter concern, not a global serialization side effect.
+
+  Select it in a serialization config, with the key as `:encryption_key` (raw)
+  or `:encryption_key_base64`:
+
+  ```elixir
+  key = :crypto.strong_rand_bytes(32)
+  opts = [encryption_key: key]
+  {:ok, encrypted} = BeamWeaver.Serialization.Encrypted.dump(%{order_id: "A-1001"}, opts)
+  BeamWeaver.Serialization.Encrypted.load(encrypted, opts)
+  #=> {:ok, %{order_id: "A-1001"}}
+  ```
+
+  Persist the key securely for as long as you need to read the records.
+  Pass the codec and key in an adapter's `serialization:` option; see
+  [Storage](storage.md#encryption).
   """
 
   @behaviour BeamWeaver.Serialization.Codec
@@ -18,7 +33,7 @@ defmodule BeamWeaver.Serialization.Encrypted do
 
   @impl true
   def dump(value, opts \\ []) do
-    inner_codec = option(opts, :inner_codec, JSON)
+    inner_codec = Keyword.get(opts, :inner_codec, JSON)
 
     with {:ok, key} <- encryption_key(opts),
          {:ok, plaintext} <- inner_codec.dump(value, opts) do
@@ -39,7 +54,7 @@ defmodule BeamWeaver.Serialization.Encrypted do
 
   @impl true
   def load(binary, opts \\ []) when is_binary(binary) do
-    inner_codec = option(opts, :inner_codec, JSON)
+    inner_codec = Keyword.get(opts, :inner_codec, JSON)
 
     with {:ok, key} <- encryption_key(opts),
          {:ok, envelope} <- BeamWeaver.JSON.decode(binary) do
@@ -71,10 +86,10 @@ defmodule BeamWeaver.Serialization.Encrypted do
 
   defp encryption_key(opts) do
     cond do
-      key = option(opts, :encryption_key) ->
+      key = Keyword.get(opts, :encryption_key) ->
         validate_key(key)
 
-      key = option(opts, :encryption_key_base64) ->
+      key = Keyword.get(opts, :encryption_key_base64) ->
         case Base.decode64(key) do
           {:ok, decoded} -> validate_key(decoded)
           :error -> invalid_key("base64 encryption key is invalid")
@@ -114,13 +129,8 @@ defmodule BeamWeaver.Serialization.Encrypted do
   defp encrypted_envelope?(_value), do: false
 
   defp decode64(value, field) do
-    case Base.decode64(value) do
-      {:ok, decoded} ->
-        {:ok, decoded}
-
-      :error ->
-        {:error, Error.new(:serialization_error, "encrypted #{field} is not valid base64")}
-    end
+    with :error <- Base.decode64(value),
+         do: {:error, Error.new(:serialization_error, "encrypted #{field} is not valid base64")}
   end
 
   defp decrypt(key, nonce, ciphertext, tag) do
@@ -130,24 +140,6 @@ defmodule BeamWeaver.Serialization.Encrypted do
 
       :error ->
         {:error, Error.new(:serialization_error, "encrypted payload authentication failed")}
-    end
-  end
-
-  defp option(opts, key, default \\ nil) do
-    opts_value = Keyword.get(opts, key, :missing)
-    serialization = Keyword.get(opts, :serialization, [])
-
-    serialization_value =
-      if is_list(serialization) do
-        Keyword.get(serialization, key, :missing)
-      else
-        :missing
-      end
-
-    cond do
-      opts_value != :missing -> opts_value
-      serialization_value != :missing -> serialization_value
-      true -> default
     end
   end
 end

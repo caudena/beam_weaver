@@ -1,13 +1,21 @@
+defmodule BeamWeaver.PolicyToolsTest.TrustingExecutor do
+  @moduledoc false
+  # Runs whatever it is handed without consulting the policy, so a test can
+  # prove the tool itself enforces `ShellPolicy.allowed?/2`.
+  @behaviour BeamWeaver.Tools.Shell.Executor
+
+  @impl true
+  def run(command, _policy, _opts), do: {:ok, %{status: 0, output: command}}
+end
+
 defmodule BeamWeaver.Tools.PolicyToolsTest do
   use ExUnit.Case, async: true
 
-  # Upstream reference:
-
   alias BeamWeaver.Agent.Middleware.ShellTool
+  alias BeamWeaver.Agent.ToolNode
   alias BeamWeaver.Core.Document
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
-  alias BeamWeaver.Graph.Nodes.ToolNode
   alias BeamWeaver.Models.FakeEmbeddingModel
   alias BeamWeaver.ShellPolicy
   alias BeamWeaver.Tools.FileSearch
@@ -16,8 +24,24 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
   alias BeamWeaver.VectorStore
   alias BeamWeaver.VectorStore.ETS, as: ETSVectorStore
 
+  test "an agent can list the shell tool middleware" do
+    model =
+      BeamWeaver.Models.init_chat_model!("fake:chat",
+        responses: [BeamWeaver.Models.FakeChatModel.tool_call("shell", %{"command" => "printf hi"}), "done"]
+      )
+
+    {:ok, agent} =
+      BeamWeaver.Agent.build(
+        model: model,
+        middleware: [ShellTool.new(policy: ShellPolicy.new!(allow: ["printf "]))]
+      )
+
+    assert {:ok, %{messages: messages}} = BeamWeaver.Agent.invoke(agent, %{messages: ["say hi"]})
+    assert %Message{role: :tool, content: output} = Enum.find(messages, &(&1.role == :tool))
+    assert output =~ "hi"
+  end
+
   test "shell policy validates execution controls" do
-    # Upstream reference:
     assert {:error,
             %{
               type: :invalid_shell_policy,
@@ -81,11 +105,104 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
     assert ShellPolicy.allowed?(policy, "printf safe")
   end
 
-  test "shell tool rejects unsafe commands before execution" do
-    shell = Shell.new(policy: ShellPolicy.new!(allow: ["echo "]))
+  test "shell policy regex allow rules reject chained commands unless allow_compound is set" do
+    assert {:ok, policy} = ShellPolicy.new(allow: [~r/^printf /, ~r/.*/])
 
-    assert {:error, error} = Tool.invoke(shell, %{"command" => "rm -rf /"})
-    assert error.type == :shell_command_rejected
+    assert ShellPolicy.allowed?(policy, "printf safe")
+    assert ShellPolicy.allowed?(policy, "printf 'safe; literal'")
+    assert ShellPolicy.allowed?(policy, "printf err >&2")
+
+    refute ShellPolicy.allowed?(policy, "printf safe; rm -rf ~")
+    refute ShellPolicy.allowed?(policy, "printf safe && rm -rf ~")
+    refute ShellPolicy.allowed?(policy, "printf safe | sh")
+    refute ShellPolicy.allowed?(policy, "printf safe\nrm -rf ~")
+    refute ShellPolicy.allowed?(policy, "printf $(rm -rf ~)")
+    refute ShellPolicy.allowed?(policy, "printf `rm -rf ~`")
+    refute ShellPolicy.allowed?(policy, "(rm -rf ~)")
+
+    assert {:ok, compound} = ShellPolicy.new(allow: [~r/^printf out; printf err >&2$/], allow_compound: true)
+    assert ShellPolicy.allowed?(compound, "printf out; printf err >&2")
+    refute ShellPolicy.allowed?(compound, "printf out; printf err >&2; rm -rf ~")
+
+    assert {:error, %{type: :invalid_shell_policy, message: "allow_compound must be a boolean"}} =
+             ShellPolicy.new(allow: [~r/.*/], allow_compound: "yes")
+  end
+
+  test "shell policy deny rules see every command in a compound line" do
+    assert {:ok, policy} = ShellPolicy.new(allow: [~r/.*/], allow_compound: true, deny: ["rm ", ~r/^curl /])
+
+    assert ShellPolicy.allowed?(policy, "printf safe; printf done")
+    assert ShellPolicy.allowed?(policy, "printf 'safe; rm -rf ~'")
+
+    refute ShellPolicy.allowed?(policy, "printf safe; rm -rf ~")
+    refute ShellPolicy.allowed?(policy, "printf safe && rm -rf ~")
+    refute ShellPolicy.allowed?(policy, "printf safe | curl https://example.com")
+    refute ShellPolicy.allowed?(policy, "printf $(rm -rf ~)")
+    refute ShellPolicy.allowed?(policy, "if true; then rm -rf ~; fi")
+    refute ShellPolicy.allowed?(policy, "{ rm -rf ~; }")
+    refute ShellPolicy.allowed?(policy, "  rm -rf ~")
+  end
+
+  test "shell policy deny rules see a command through leading env assignments and odd whitespace" do
+    assert {:ok, policy} = ShellPolicy.new(allow: [~r/.*/], allow_compound: true, deny: ["rm ", ~r/^curl /])
+
+    # A leading environment assignment (quoted value included) can't hide the
+    # command word from a prefix deny rule.
+    refute ShellPolicy.allowed?(policy, "FOO=1 rm x")
+    refute ShellPolicy.allowed?(policy, "A=1 B=2 rm x")
+    refute ShellPolicy.allowed?(policy, "FOO='a b' rm x")
+    refute ShellPolicy.allowed?(policy, "HTTP_PROXY=x curl https://evil.test")
+
+    # A tab (any whitespace) between the command and its arguments still trips
+    # a `"rm "` rule, but `rmdir` is left alone.
+    refute ShellPolicy.allowed?(policy, "rm\tx")
+    assert ShellPolicy.allowed?(policy, "rmdir x")
+
+    assert ShellPolicy.allowed?(policy, "printf ok")
+  end
+
+  test "shell policy refuses a command line that smuggles a second command past a NUL byte" do
+    assert {:ok, prefix} = ShellPolicy.new(allow: ["printf"], deny: ["rm "])
+    refute ShellPolicy.allowed?(prefix, <<"printf hi", 0, "rm x">>)
+
+    assert {:ok, compound} = ShellPolicy.new(allow: [~r/.*/], allow_compound: true, deny: ["rm "])
+    refute ShellPolicy.allowed?(compound, <<"printf hi", 0, "rm x">>)
+  end
+
+  test "shell policy rejects unknown options and names removed ones" do
+    assert {:error, %{type: :invalid_shell_policy, message: message}} =
+             ShellPolicy.new(allow: ["ls"], env_allowlist: ["A"])
+
+    assert message =~ "env_allowlist"
+    assert message =~ "env:"
+
+    assert {:error, %{type: :invalid_shell_policy, message: unknown}} =
+             ShellPolicy.new(allow: ["ls"], not_an_option: true)
+
+    assert unknown =~ "not_an_option"
+  end
+
+  test "the one-shot shell tool enforces the policy before any executor" do
+    tool = Shell.new(policy: [allow: ["echo"], executor: BeamWeaver.PolicyToolsTest.TrustingExecutor])
+
+    assert {:ok, %{output: "echo ok"}} = Tool.invoke(tool, %{"command" => "echo ok"})
+
+    assert {:error, %{type: :shell_command_rejected}} =
+             Tool.invoke(tool, %{"command" => "rm -rf /"})
+  end
+
+  test "shell tool refuses a chained command that an anchored-start regex matches" do
+    marker =
+      Path.join(System.tmp_dir!(), "beam_weaver_shell_regex_#{System.unique_integer([:positive])}")
+
+    on_exit(fn -> File.rm(marker) end)
+
+    shell = Shell.new(policy: [allow: [~r/^printf /]])
+
+    assert {:error, %{type: :shell_command_rejected}} =
+             Tool.invoke(shell, %{"command" => "printf safe; touch #{marker}"})
+
+    refute File.exists?(marker)
   end
 
   test "shell tool rejects chained commands that share an allowed prefix" do
@@ -139,11 +256,8 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
     assert msg.content =~ "ok"
   end
 
-  test "shell host executor applies cwd env allowlist timeout and output truncation" do
-    tmp = Path.join(System.tmp_dir!(), "beam_weaver_shell_#{System.unique_integer([:positive])}")
-    File.mkdir_p!(tmp)
-    on_exit(fn -> File.rm_rf(tmp) end)
-
+  @tag :tmp_dir
+  test "shell host executor applies cwd env timeout and output truncation", %{tmp_dir: tmp} do
     File.write!(Path.join(tmp, "marker.txt"), "from-cwd")
 
     shell =
@@ -152,9 +266,8 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
           ShellPolicy.new!(
             allow: ["pwd", "cat ", "printf ", "sleep "],
             cwd: tmp,
-            env: %{"VISIBLE" => "yes", "HIDDEN" => "no"},
-            env_allowlist: ["VISIBLE"],
-            timeout: 200,
+            env: %{"VISIBLE" => "yes"},
+            timeout: 1_000,
             max_output_bytes: 4
           )
       )
@@ -167,53 +280,30 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
     assert {:ok, %{output: "yes\n"}} =
              Tool.invoke(shell, %{"command" => "printf \"$VISIBLE\\n\""})
 
-    assert {:ok, %{output: "\n"}} = Tool.invoke(shell, %{"command" => "printf \"$HIDDEN\\n\""})
-
-    assert {:error, %{type: :shell_timeout}} = Tool.invoke(shell, %{"command" => "sleep 1"})
+    assert {:error, %{type: :shell_timeout}} = Tool.invoke(shell, %{"command" => "sleep 3"})
   end
 
   test "shell host executor applies stderr policies" do
-    separate =
+    command = %{"command" => "printf out; printf err >&2"}
+
+    shell = fn stderr ->
       Shell.new(
         policy:
           ShellPolicy.new!(
             allow: [~r/^printf out; printf err >&2$/],
-            stderr: :separate,
+            allow_compound: true,
+            stderr: stderr,
             max_output_bytes: 20
           )
       )
+    end
 
-    assert {:ok, %{output: "out", stderr: "err"}} =
-             Tool.invoke(separate, %{"command" => "printf out; printf err >&2"})
+    assert {:ok, %{output: "out", stderr: "err"}} = Tool.invoke(shell.(:separate), command)
 
-    discard =
-      Shell.new(
-        policy:
-          ShellPolicy.new!(
-            allow: [~r/^printf out; printf err >&2$/],
-            stderr: :discard,
-            max_output_bytes: 20
-          )
-      )
-
-    assert {:ok, %{output: "out"} = result} =
-             Tool.invoke(discard, %{"command" => "printf out; printf err >&2"})
-
+    assert {:ok, %{output: "out"} = result} = Tool.invoke(shell.(:discard), command)
     refute Map.has_key?(result, :stderr)
 
-    merge =
-      Shell.new(
-        policy:
-          ShellPolicy.new!(
-            allow: [~r/^printf out; printf err >&2$/],
-            stderr: :merge,
-            max_output_bytes: 20
-          )
-      )
-
-    assert {:ok, %{output: merged}} =
-             Tool.invoke(merge, %{"command" => "printf out; printf err >&2"})
-
+    assert {:ok, %{output: merged}} = Tool.invoke(shell.(:merge), command)
     assert merged =~ "out"
     assert merged =~ "err"
   end
@@ -247,12 +337,8 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
     assert output == "abcdefghijklmnopqrstuvwxyzabcdefghijklmn\n[truncated]"
   end
 
-  test "shell middleware owns a persistent session with startup restart and shutdown" do
-    tmp =
-      Path.join(System.tmp_dir!(), "beam_weaver_shell_mw_#{System.unique_integer([:positive])}")
-
-    File.mkdir_p!(tmp)
-    on_exit(fn -> File.rm_rf(tmp) end)
+  @tag :tmp_dir
+  test "shell middleware owns a persistent session with startup restart and shutdown", %{tmp_dir: tmp} do
     expected_suffix = Path.join(Path.basename(tmp), "nested")
 
     middleware =
@@ -263,50 +349,66 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
         policy:
           ShellPolicy.new!(
             allow: [~r/.*/],
+            allow_compound: true,
             max_output_bytes: 1_000,
             stderr: :separate
           )
       )
 
     assert %{shell_session: pid} =
-             middleware
-             |> ShellTool.async_before_agent(%{}, nil)
-             |> Task.await()
+             ShellTool.before_agent(middleware, %{}, nil)
 
     [tool] = ShellTool.tools(middleware)
-    state_arg = %{shell_session: pid}
+
+    assert Tool.injected(tool) == %{
+             __beam_weaver_shell_session: {:state, :shell_session},
+             __beam_weaver_shell_config: :config
+           }
 
     assert {:ok, %{output: cwd}} =
-             Tool.invoke(tool, %{"command" => "pwd", __beam_weaver_shell_state: state_arg})
+             Tool.invoke(tool, %{"command" => "pwd", __beam_weaver_shell_session: pid})
 
     assert String.ends_with?(String.trim(cwd), expected_suffix)
 
     assert {:ok, %{output: "ready"}} =
              Tool.invoke(tool, %{
                "command" => "printf \"$BW_MARKER\"",
-               __beam_weaver_shell_state: state_arg
+               __beam_weaver_shell_session: pid
              })
 
     assert {:ok, %{output: "err", stderr: "warn"}} =
              Tool.invoke(tool, %{
                "command" => "printf err; printf warn >&2",
-               __beam_weaver_shell_state: state_arg
+               __beam_weaver_shell_session: pid
              })
 
     assert {:ok, %{output: "Shell session restarted."}} =
-             Tool.invoke(tool, %{"restart" => true, __beam_weaver_shell_state: state_arg})
+             Tool.invoke(tool, %{"restart" => true, __beam_weaver_shell_session: pid})
 
     assert {:ok, %{output: cwd_after_restart}} =
-             Tool.invoke(tool, %{"command" => "pwd", __beam_weaver_shell_state: state_arg})
+             Tool.invoke(tool, %{"command" => "pwd", __beam_weaver_shell_session: pid})
 
     assert String.ends_with?(String.trim(cwd_after_restart), expected_suffix)
 
     assert %{shell_session: nil} =
-             middleware
-             |> ShellTool.async_after_agent(%{shell_session: pid}, nil)
-             |> Task.await()
+             ShellTool.after_agent(middleware, %{shell_session: pid}, nil)
 
     assert File.read!(Path.join(tmp, "shutdown.txt")) == "done"
+  end
+
+  test "shell middleware and shell tool require a policy" do
+    assert_raise ArgumentError, ~r/ShellTool requires a :policy/, fn -> ShellTool.new() end
+
+    assert_raise ArgumentError, ~r/ShellTool requires a :policy/, fn ->
+      ShellTool.new(workspace_root: System.tmp_dir!(), policy: nil)
+    end
+
+    assert {:error, %BeamWeaver.Core.Error{type: :invalid_middleware, message: message}} =
+             BeamWeaver.Agent.build(model: "fake:chat", middleware: [ShellTool])
+
+    assert message =~ "ShellTool requires a :policy"
+
+    assert_raise ArgumentError, ~r/Shell requires a :policy/, fn -> Shell.new(name: "shell") end
   end
 
   test "TODO tool updates explicit state through a graph command" do
@@ -395,16 +497,10 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
     assert result.metadata == %{path: "a.md"}
   end
 
-  test "filesystem file search applies path policy include exclude hidden and snippets" do
-    root =
-      Path.join(
-        System.tmp_dir!(),
-        "beam_weaver_file_search_#{System.unique_integer([:positive])}"
-      )
-
+  @tag :tmp_dir
+  test "filesystem file search applies path policy include exclude hidden and snippets", %{tmp_dir: root} do
     File.mkdir_p!(Path.join(root, "docs"))
     File.mkdir_p!(Path.join(root, ".hidden"))
-    on_exit(fn -> File.rm_rf(root) end)
 
     File.write!(
       Path.join(root, "docs/a.md"),
@@ -430,15 +526,9 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
     assert result.metadata.source == "filesystem"
   end
 
-  test "filesystem file search supports hidden files and per-call result limits" do
-    root =
-      Path.join(
-        System.tmp_dir!(),
-        "beam_weaver_hidden_search_#{System.unique_integer([:positive])}"
-      )
-
+  @tag :tmp_dir
+  test "filesystem file search supports hidden files and per-call result limits", %{tmp_dir: root} do
     File.mkdir_p!(Path.join(root, ".notes"))
-    on_exit(fn -> File.rm_rf(root) end)
 
     File.write!(Path.join(root, "a.md"), "needle one")
     File.write!(Path.join(root, "b.md"), "needle two")
@@ -455,16 +545,8 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
     assert one.metadata.relative_path == ".notes/c.md"
   end
 
-  test "filesystem file search returns tagged errors for invalid policy and input" do
-    root =
-      Path.join(
-        System.tmp_dir!(),
-        "beam_weaver_invalid_search_#{System.unique_integer([:positive])}"
-      )
-
-    File.mkdir_p!(root)
-    on_exit(fn -> File.rm_rf(root) end)
-
+  @tag :tmp_dir
+  test "filesystem file search returns tagged errors for invalid policy and input", %{tmp_dir: root} do
     tool = FileSearch.new(roots: [root], include: ["../*.md"])
 
     assert {:error, %{type: :invalid_file_search_pattern}} =
@@ -484,23 +566,12 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
              Tool.invoke(missing, %{"query" => "needle"})
   end
 
-  test "filesystem file search is literal case-insensitive and does not follow symlinks" do
-    root =
-      Path.join(
-        System.tmp_dir!(),
-        "beam_weaver_literal_search_#{System.unique_integer([:positive])}"
-      )
-
-    outside =
-      Path.join(
-        System.tmp_dir!(),
-        "beam_weaver_literal_outside_#{System.unique_integer([:positive])}"
-      )
-
+  @tag :tmp_dir
+  test "filesystem file search is literal case-insensitive and does not follow symlinks", %{tmp_dir: tmp_dir} do
+    root = Path.join(tmp_dir, "root")
+    outside = Path.join(tmp_dir, "outside")
     File.mkdir_p!(root)
     File.mkdir_p!(outside)
-    on_exit(fn -> File.rm_rf(root) end)
-    on_exit(fn -> File.rm_rf(outside) end)
 
     File.write!(Path.join(root, "notes.md"), "Needle .* [literal] content")
     File.write!(Path.join(outside, "secret.md"), "Needle outside")
@@ -519,16 +590,8 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
              Tool.invoke(tilde, %{"query" => "needle"})
   end
 
-  test "filesystem file search expands brace include patterns" do
-    root =
-      Path.join(
-        System.tmp_dir!(),
-        "beam_weaver_brace_search_#{System.unique_integer([:positive])}"
-      )
-
-    File.mkdir_p!(root)
-    on_exit(fn -> File.rm_rf(root) end)
-
+  @tag :tmp_dir
+  test "filesystem file search expands brace include patterns", %{tmp_dir: root} do
     File.write!(Path.join(root, "test.py"), "needle")
     File.write!(Path.join(root, "test.txt"), "needle")
     File.write!(Path.join(root, "test.md"), "needle")
@@ -548,16 +611,8 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
              Tool.invoke(invalid, %{"query" => "needle"})
   end
 
-  test "filesystem file search can order results by mtime descending" do
-    root =
-      Path.join(
-        System.tmp_dir!(),
-        "beam_weaver_mtime_search_#{System.unique_integer([:positive])}"
-      )
-
-    File.mkdir_p!(root)
-    on_exit(fn -> File.rm_rf(root) end)
-
+  @tag :tmp_dir
+  test "filesystem file search can order results by mtime descending", %{tmp_dir: root} do
     oldest = Path.join(root, "a_oldest.txt")
     middle = Path.join(root, "b_middle.txt")
     newest = Path.join(root, "c_newest.txt")
@@ -578,16 +633,8 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
            ]
   end
 
-  test "filesystem file search supports regex count mode and invalid regex errors" do
-    root =
-      Path.join(
-        System.tmp_dir!(),
-        "beam_weaver_regex_search_#{System.unique_integer([:positive])}"
-      )
-
-    File.mkdir_p!(root)
-    on_exit(fn -> File.rm_rf(root) end)
-
+  @tag :tmp_dir
+  test "filesystem file search supports regex count mode and invalid regex errors", %{tmp_dir: root} do
     File.write!(Path.join(root, "test.py"), "hello\nhello\nworld\n")
 
     tool = FileSearch.new(roots: [root], include: ["*.py"], query_mode: :regex)
@@ -605,16 +652,8 @@ defmodule BeamWeaver.Tools.PolicyToolsTest do
              Tool.invoke(tool, %{"query" => "[invalid"})
   end
 
-  test "filesystem file search skips files larger than the configured limit" do
-    root =
-      Path.join(
-        System.tmp_dir!(),
-        "beam_weaver_large_search_#{System.unique_integer([:positive])}"
-      )
-
-    File.mkdir_p!(root)
-    on_exit(fn -> File.rm_rf(root) end)
-
+  @tag :tmp_dir
+  test "filesystem file search skips files larger than the configured limit", %{tmp_dir: root} do
     File.write!(Path.join(root, "large.txt"), String.duplicate("x", 2 * 1024 * 1024))
     File.write!(Path.join(root, "small.txt"), "x")
 

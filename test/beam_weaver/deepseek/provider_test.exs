@@ -12,50 +12,32 @@ defmodule BeamWeaver.DeepSeek.ProviderTest do
     assert %ResponsesModel{} = BeamWeaver.DeepSeek.responses_model()
   end
 
-  test "initializer defaults to Chat and accepts supported V4 models on Responses" do
-    assert {:ok, %ChatModel{model: "deepseek-v4-flash"}} =
-             Models.init_chat_model("deepseek:deepseek-v4-flash")
+  test "initializer selects APIs independently of catalog entries" do
+    opts = [profile: %{provider: :deepseek, id: "fixture"}]
+    id = "deepseek:fixture"
+    assert {:ok, %ChatModel{model: "fixture"}} = Models.init_chat_model(id, opts)
 
-    for model <- ["deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "deepseek-v4-pro"],
-        api <- [:responses, "responses"] do
-      assert {:ok, %ResponsesModel{model: ^model}} =
-               Models.init_chat_model("deepseek:" <> model, api: api)
+    for api <- [:responses, "responses"] do
+      assert {:ok, %ResponsesModel{model: "fixture"}} = Models.init_chat_model(id, Keyword.put(opts, :api, api))
     end
 
     for api <- [:chat, :chat_completions, "chat", "chat_completions"] do
-      assert {:ok, %ChatModel{}} =
-               Models.init_chat_model("deepseek:deepseek-v4-pro", api: api)
+      assert {:ok, %ChatModel{}} = Models.init_chat_model(id, Keyword.put(opts, :api, api))
     end
 
-    assert {:error, error} =
-             Models.init_chat_model("deepseek:deepseek-v4-flash", api: :unknown)
-
-    assert error.type == :invalid_provider_option
+    assert {:error, %{type: :invalid_provider_option}} = Models.init_chat_model(id, api: :unknown)
   end
 
-  test "bare and retired model identifiers fail without ambiguous aliases" do
-    assert {:error, error} = Models.init_chat_model("deepseek-v4-flash")
-    assert error.type == :invalid_model
-    assert error.details.expected == "deepseek:deepseek-v4-flash"
+  test "DeepAgents resolver identifies both DeepSeek API adapters" do
+    for api <- [:chat_completions, :responses] do
+      assert {:ok, model} =
+               ModelResolver.resolve_model("deepseek:fixture",
+                 api: api,
+                 profile: %{provider: :deepseek, id: "fixture"}
+               )
 
-    for retired <- ["deepseek-chat", "deepseek-reasoner"] do
-      assert {:error, error} = Models.init_chat_model("deepseek:" <> retired)
-      assert error.type == :deprecated_model
-      refute Map.has_key?(error.details, :replacement)
-    end
-  end
-
-  test "DeepAgents resolver identifies both DeepSeek API models" do
-    assert {:ok, chat} = ModelResolver.resolve_model("deepseek:deepseek-v4-flash")
-    assert ModelResolver.get_model_provider(chat) == "deepseek"
-    assert ModelResolver.get_model_identifier(chat) == "deepseek-v4-flash"
-
-    for model <- ["deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "deepseek-v4-pro"] do
-      assert {:ok, responses} =
-               ModelResolver.resolve_model("deepseek:" <> model, api: :responses)
-
-      assert ModelResolver.get_model_provider(responses) == "deepseek"
-      assert ModelResolver.get_model_identifier(responses) == model
+      assert BeamWeaver.Models.Identity.provider(model) == "deepseek"
+      assert BeamWeaver.Models.Identity.identifier(model) == "fixture"
     end
   end
 

@@ -25,16 +25,8 @@ defmodule BeamWeaver.Graph.Channels.UntrackedValue do
   def update(channel, values), do: {:ok, %{channel | value: List.last(values)}, true}
 
   @impl true
-  def get(%__MODULE__{value: value, key: key}) do
-    if value == Channel.missing(), do: {:error, Channel.empty_error(key)}, else: {:ok, value}
-  end
-
-  @impl true
   def checkpoint(_channel), do: Channel.missing()
 
   @impl true
   def from_checkpoint(channel, _checkpoint), do: %{channel | value: Channel.missing()}
-
-  @impl true
-  def available?(%__MODULE__{value: value}), do: value != Channel.missing()
 end

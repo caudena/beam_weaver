@@ -1,10 +1,5 @@
 defmodule BeamWeaver.Graph.Compiler do
-  @moduledoc """
-  Compiles immutable state graphs into executable graph structs.
-
-  `StateGraph` owns graph construction. This module owns compile-time option
-  normalization and `%BeamWeaver.Graph.Compiled{}` assembly.
-  """
+  @moduledoc false
 
   alias BeamWeaver.Cache
   alias BeamWeaver.Core.Error
@@ -15,7 +10,7 @@ defmodule BeamWeaver.Graph.Compiler do
   alias BeamWeaver.Graph.Validation
 
   @spec compile(StateGraph.t(), keyword()) :: {:ok, Compiled.t()} | {:error, Error.t()}
-  def compile(%StateGraph{} = graph, opts \\ []) do
+  def compile(%StateGraph{} = graph, opts) do
     with :ok <-
            Validation.validate(graph, validate_static: Keyword.get(opts, :validate_static, false)),
          {:ok, cache} <- normalize_cache(Keyword.get(opts, :cache), graph),
@@ -31,7 +26,6 @@ defmodule BeamWeaver.Graph.Compiler do
          store: Keyword.get(opts, :store),
          interrupt_before: normalize_interrupts(Keyword.get(opts, :interrupt_before, [])),
          interrupt_after: normalize_interrupts(Keyword.get(opts, :interrupt_after, [])),
-         failure_policy: Options.normalize_failure_policy(Keyword.get(opts, :failure_policy, :panic)),
          step_timeout: Options.normalize_timeout(Keyword.get(opts, :step_timeout, :infinity)),
          run_timeout: Options.normalize_timeout(Keyword.get(opts, :run_timeout, :infinity)),
          debug: Keyword.get(opts, :debug, false),
@@ -49,10 +43,9 @@ defmodule BeamWeaver.Graph.Compiler do
     do: {:error, Cache.explicit_required_error(%{graph: graph.name})}
 
   defp normalize_cache(cache, graph) when cache in [nil, false, %{}] do
-    if graph_requires_cache?(graph) do
-      {:error, Cache.explicit_required_error(%{graph: graph.name, nodes: cached_nodes(graph)})}
-    else
-      {:ok, nil}
+    case cached_nodes(graph) do
+      [] -> {:ok, nil}
+      nodes -> {:error, Cache.explicit_required_error(%{graph: graph.name, nodes: nodes})}
     end
   end
 
@@ -74,15 +67,8 @@ defmodule BeamWeaver.Graph.Compiler do
   defp normalize_checkpointer(false), do: {:ok, nil, :disabled}
   defp normalize_checkpointer(:disabled), do: {:ok, nil, :disabled}
 
-  defp normalize_checkpointer(%{__struct__: module} = checkpointer) do
-    required? =
-      Code.ensure_loaded?(module) and
-        function_exported?(module, :get_tuple, 2) and
-        function_exported?(module, :list, 3) and
-        function_exported?(module, :put, 5) and
-        function_exported?(module, :put_writes, 5)
-
-    if required? do
+  defp normalize_checkpointer(checkpointer) do
+    if is_struct(checkpointer) and saver?(checkpointer.__struct__) do
       {:ok, checkpointer, :local}
     else
       {:error,
@@ -94,25 +80,13 @@ defmodule BeamWeaver.Graph.Compiler do
     end
   end
 
-  defp normalize_checkpointer(checkpointer) do
-    {:error,
-     Error.new(
-       :invalid_checkpointer,
-       "graph checkpointer must implement BeamWeaver.Checkpoint.Saver",
-       %{checkpointer: inspect(checkpointer)}
-     )}
+  defp saver?(module) do
+    Code.ensure_loaded?(module) and function_exported?(module, :get_tuple, 2) and
+      function_exported?(module, :list, 3) and function_exported?(module, :put, 5) and
+      function_exported?(module, :put_writes, 5)
   end
 
-  defp graph_requires_cache?(graph) do
-    Enum.any?(graph.nodes, fn {_name, spec} -> spec.cache not in [false, nil] end)
-  end
-
-  defp cached_nodes(graph) do
-    graph.nodes
-    |> Enum.filter(fn {_name, spec} -> spec.cache not in [false, nil] end)
-    |> Enum.map(fn {name, _spec} -> name end)
-    |> Enum.sort()
-  end
+  defp cached_nodes(graph), do: Enum.sort(for {name, spec} <- graph.nodes, spec.cache not in [false, nil], do: name)
 
   defp normalize_node(:__start__), do: "__start__"
   defp normalize_node(:start), do: "__start__"

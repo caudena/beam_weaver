@@ -7,6 +7,8 @@ defmodule BeamWeaver.Provider.Outcome do
   needed by callers before any tool is dispatched.
   """
 
+  import BeamWeaver.Provider.ChatCompletionsWire, only: [metadata_value: 2]
+
   alias BeamWeaver.Core.Message
 
   @remote_statuses ~w(not_applicable queued in_progress requires_action paused completed incomplete failed cancelled expired unknown)a
@@ -31,8 +33,19 @@ defmodule BeamWeaver.Provider.Outcome do
       refusal?(message) ->
         outcome(:completed, :refusal, :complete)
 
+      # Anthropic's safety classifiers end a reply they decline with the
+      # `refusal` stop reason, in a normal response.
+      status == "refusal" ->
+        outcome(:completed, :refusal, completeness(message))
+
       filtered?(status, message) ->
         outcome(:completed, :filtered, completeness(message))
+
+      # The Responses API ends a reply that its content filter cut off as
+      # incomplete, where Chat Completions has the `content_filter` finish
+      # reason.
+      status == "incomplete" and incomplete_reason == "content_filter" ->
+        outcome(:incomplete, :filtered, completeness(message))
 
       invalid_tool_calls?(message) ->
         outcome(remote_status(status), :awaiting_client_tools, :partial)
@@ -40,13 +53,24 @@ defmodule BeamWeaver.Provider.Outcome do
       status in ["max_tokens", "max_output_tokens", "length"] ->
         outcome(:incomplete, :output_limit, :partial)
 
+      # Anthropic and Z.ai end a reply that filled the model's context window
+      # with the `model_context_window_exceeded` stop reason.
+      status == "model_context_window_exceeded" ->
+        outcome(:incomplete, :context_limit, :partial)
+
       status == "incomplete" and context_limit?(incomplete_reason) ->
         outcome(:incomplete, :context_limit, :partial)
+
+      # xAI ends a reply that ran out of the time it may take as incomplete,
+      # with the `max_time_limit` reason.
+      status == "incomplete" and incomplete_reason == "max_time_limit" ->
+        outcome(:incomplete, :budget_exhausted, :partial)
 
       status == "incomplete" ->
         outcome(:incomplete, :output_limit, :partial)
 
-      status in ["pause_turn", "paused"] ->
+      # Gemini long decode pauses at a checkpoint; partial text is not a final answer.
+      status in ["pause_turn", "paused", "continuation"] ->
         outcome(:paused, :provider_pause, completeness(message))
 
       status in ["requires_action", "tool_use", "tool_calls"] ->
@@ -118,13 +142,17 @@ defmodule BeamWeaver.Provider.Outcome do
   defp remote_status("expired"), do: :expired
   defp remote_status(_status), do: :unknown
 
-  defp refusal?(%Message{} = message) do
-    blocks(message)
-    |> Enum.any?(fn block -> block_type(block) in [:refusal, "refusal"] end)
-  end
+  defp refusal?(%Message{} = message),
+    do: message |> blocks() |> Enum.any?(&(metadata_value(&1, :type) in [:refusal, "refusal"]))
+
+  # The finish reasons of a reply a content filter stopped: Chat Completions'
+  # `content_filter`, and Gemini's safety, recitation, blocklist,
+  # prohibited-content and personal-data stops, for text and for images.
+  @filtered_statuses ~w(content_filter safety blocked recitation blocklist prohibited_content spii
+                        image_safety image_prohibited_content image_recitation)
 
   defp filtered?(status, %Message{} = message) do
-    status in ["content_filter", "safety", "blocked"] or
+    status in @filtered_statuses or
       blocked_prompt_feedback?(metadata_value(message.response_metadata, :prompt_feedback))
   end
 
@@ -149,8 +177,10 @@ defmodule BeamWeaver.Provider.Outcome do
     end
   end
 
+  # xAI's reason for a prompt longer than the model takes is
+  # `max_prompt_tokens`.
   defp context_limit?(reason) do
-    reason in ["context_length_exceeded", "context_limit", "max_input_tokens"]
+    reason in ["context_length_exceeded", "context_limit", "max_input_tokens", "max_prompt_tokens"]
   end
 
   defp incomplete_reason(metadata) when is_map(metadata) do
@@ -163,14 +193,6 @@ defmodule BeamWeaver.Provider.Outcome do
   defp blocks(%Message{content: content}) when is_list(content), do: content
   defp blocks(_message), do: []
 
-  defp block_type(block) when is_map(block), do: Map.get(block, :type) || Map.get(block, "type")
-  defp block_type(_block), do: nil
-
-  defp metadata_value(map, key) when is_map(map), do: Map.get(map, key) || Map.get(map, to_string(key))
-  defp metadata_value(_map, _key), do: nil
-
   defp normalize_status(nil), do: nil
-  defp normalize_status(value) when is_atom(value), do: value |> Atom.to_string() |> String.downcase()
-  defp normalize_status(value) when is_binary(value), do: String.downcase(value)
   defp normalize_status(value), do: value |> to_string() |> String.downcase()
 end

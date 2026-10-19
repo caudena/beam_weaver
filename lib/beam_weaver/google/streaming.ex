@@ -18,8 +18,12 @@ defmodule BeamWeaver.Google.Streaming do
     end)
   end
 
-  @spec typed_events([map()]) :: [Stream.Envelope.t()]
-  def typed_events(events) when is_list(events) do
+  def typed_events(events, state) do
+    responses = for %{"data" => %{} = response} <- events, do: response
+    {typed_parts(events), Enum.reverse(responses, state || [])}
+  end
+
+  defp typed_parts(events) do
     events
     |> Enum.flat_map(&event_parts/1)
     |> Enum.flat_map(fn
@@ -62,21 +66,16 @@ defmodule BeamWeaver.Google.Streaming do
     end)
   end
 
-  @doc false
-  def typed_events(events, state) do
-    responses = for %{"data" => %{} = response} <- events, do: response
-    {typed_events(events), Enum.reverse(responses, state || [])}
-  end
-
-  @doc false
-  def finish_typed_events(state, decode_response \\ &{:ok, &1}) do
+  def finish_typed_events(state, decode_response) do
     with {:ok, response} <- decode_response.(merge_responses(Enum.reverse(state || []))),
          {:ok, message} <- Messages.response_to_message(response),
          :ok <- validate_complete_response(response) do
       {:ok,
        [
          Stream.envelope(%Events.Message{message: message}, metadata: %{provider: :google}),
-         Stream.envelope(%Events.Done{result: response}, metadata: %{provider: :google})
+         Stream.envelope(%Events.Done{result: response, usage: response["usageMetadata"]},
+           metadata: %{provider: :google}
+         )
        ]}
     end
   end
@@ -93,7 +92,7 @@ defmodule BeamWeaver.Google.Streaming do
     end
   end
 
-  @spec response_from_sse_body(binary() | map()) :: map()
+  @spec response_from_sse_body(binary()) :: map()
   def response_from_sse_body(body) when is_binary(body) do
     body
     |> SSE.events()
@@ -101,11 +100,10 @@ defmodule BeamWeaver.Google.Streaming do
     |> merge_responses()
   end
 
-  def response_from_sse_body(%{} = body), do: body
+  @doc false
+  def merge_responses([]), do: %{}
 
-  defp merge_responses([]), do: %{}
-
-  defp merge_responses(responses) do
+  def merge_responses(responses) do
     parts =
       responses
       |> Enum.flat_map(fn response ->
@@ -143,9 +141,6 @@ defmodule BeamWeaver.Google.Streaming do
       %{"text" => ""} = part, acc when map_size(part) == 1 ->
         acc
 
-      %{"text" => text} = part, acc when is_binary(text) ->
-        append_response_part(acc, part)
-
       part, acc when is_map(part) ->
         append_response_part(acc, part)
 
@@ -155,30 +150,22 @@ defmodule BeamWeaver.Google.Streaming do
     |> finish_response_parts()
   end
 
-  defp append_response_part({parts, nil}, %{"text" => text} = part),
-    do: {parts, {:text, Map.delete(part, "text"), [text]}}
-
-  defp append_response_part({parts, nil}, part), do: {parts, {:part, part}}
-
-  defp append_response_part({parts, previous_part}, %{"text" => text} = part) do
-    case previous_part do
-      {:text, previous_part, chunks} = pending ->
-        if text_part_mergeable?(previous_part, part) do
-          {parts, {:text, previous_part, [text | chunks]}}
-        else
-          {[materialize_response_part(pending) | parts], {:text, Map.delete(part, "text"), [text]}}
-        end
-
-      _other ->
-        {[materialize_response_part(previous_part) | parts], {:text, Map.delete(part, "text"), [text]}}
-    end
+  # The state holds the parts so far and the part still open, if any.
+  defp append_response_part({parts, {:text, previous_part, chunks} = pending}, %{"text" => text} = part) do
+    if text_part_mergeable?(previous_part, part),
+      do: {parts, {:text, previous_part, [text | chunks]}},
+      else: {close_response_part(parts, pending), {:text, Map.delete(part, "text"), [text]}}
   end
 
-  defp append_response_part({parts, previous_part}, part),
-    do: {[materialize_response_part(previous_part) | parts], {:part, part}}
+  defp append_response_part({parts, pending}, %{"text" => text} = part),
+    do: {close_response_part(parts, pending), {:text, Map.delete(part, "text"), [text]}}
 
-  defp finish_response_parts({parts, nil}), do: Enum.reverse(parts)
-  defp finish_response_parts({parts, part}), do: Enum.reverse([materialize_response_part(part) | parts])
+  defp append_response_part({parts, pending}, part), do: {close_response_part(parts, pending), {:part, part}}
+
+  defp finish_response_parts({parts, pending}), do: parts |> close_response_part(pending) |> Enum.reverse()
+
+  defp close_response_part(parts, nil), do: parts
+  defp close_response_part(parts, pending), do: [materialize_response_part(pending) | parts]
 
   defp materialize_response_part({:text, part, chunks}) do
     Map.put(part, "text", chunks |> Enum.reverse() |> IO.iodata_to_binary())
@@ -199,10 +186,4 @@ defmodule BeamWeaver.Google.Streaming do
   end
 
   defp event_parts(_event), do: []
-
-  def final_message_from_sse(body, opts \\ []) do
-    body
-    |> response_from_sse_body()
-    |> Messages.response_to_message(opts)
-  end
 end

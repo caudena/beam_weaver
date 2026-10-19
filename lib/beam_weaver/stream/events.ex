@@ -36,6 +36,7 @@ defmodule BeamWeaver.Stream.Events do
   stored in each envelope:
 
       alias BeamWeaver.Stream.Events
+      envelope = %BeamWeaver.Stream.Envelope{event: %Events.Token{text: "Hello"}}
 
       case envelope.event do
         %Events.Token{text: delta} -> IO.write(delta)
@@ -169,6 +170,12 @@ end
 defmodule BeamWeaver.Stream.Events.Debug do
   @moduledoc """
   Runtime debug event for heartbeats, backpressure, interrupts, or diagnostics.
+
+  An agent's model call that fails sends one whose payload is
+  `%{type: :model_call_failed, error: error}`: the text the call streamed is
+  not part of the answer. Middleware such as
+  `BeamWeaver.Agent.Middleware.ModelRetry` may call the model again; only a
+  run that fails ends with an `Error` event.
   """
 
   defstruct [:payload, metadata: %{}]
@@ -191,8 +198,12 @@ defmodule BeamWeaver.Stream.Events.Error do
 end
 
 defmodule BeamWeaver.Stream.Events.Done do
-  @moduledoc """
-  Terminal event carrying final result or usage metadata when available.
+  @moduledoc ~S"""
+  A model stream's completed result/usage event.
+
+  An agent can make more model calls after this event, for example after tools.
+  Do not interpret Done alone as completion of the entire agent or graph run.
+  Check the run's terminal error/interrupt state and end of enumeration.
   """
 
   defstruct [:result, :usage, metadata: %{}]

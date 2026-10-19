@@ -9,6 +9,34 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
   alias BeamWeaver.Stream.Envelope
   alias BeamWeaver.Stream.Events
 
+  # After built-in tool calls the API can report a later `output_index` on an
+  # item's later events than on its `added` event; the item stays one item.
+  test "an item whose output_index drifts stays one item and one block" do
+    body = ~S"""
+    event: response.output_item.added
+    data: {"type":"response.output_item.added","output_index":2,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"lookup_order","arguments":"","status":"in_progress"}}
+
+    event: response.function_call_arguments.delta
+    data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":2,"delta":"{\"order_id\":"}
+
+    event: response.function_call_arguments.delta
+    data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":4,"delta":"\"A-1\"}"}
+
+    event: response.output_item.done
+    data: {"type":"response.output_item.done","output_index":4,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"lookup_order","arguments":"{\"order_id\":\"A-1\"}","status":"completed"}}
+
+    """
+
+    assert [%{"id" => "fc_1", "status" => "completed", "arguments" => ~s({"order_id":"A-1"})}] =
+             Streaming.output_items(body)
+
+    blocks =
+      for %{"event" => "content-block-" <> kind, "index" => index} <- Streaming.lifecycle_events(body),
+          do: {kind, index}
+
+    assert blocks == [{"start", 0}, {"delta", 0}, {"delta", 0}, {"finish", 0}]
+  end
+
   test "parses SSE events and keeps reasoning summaries separate from text deltas" do
     body = """
     event: response.output_item.added
@@ -328,7 +356,6 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
   end
 
   test "typed events tolerate in-memory prompt cache retention literal drift" do
-    # Upstream reference:
     body = """
     event: response.created
     data: {"type":"response.created","response":{"id":"resp_123","prompt_cache_retention":"in_memory","output":[]}}
@@ -377,8 +404,6 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
   end
 
   test "typed events preserve Responses reasoning deltas as message chunks" do
-    # Upstream reference:
-    # - reasoning deltas are streamed as typed content, not dropped.
     body = """
     event: response.reasoning_summary_text.delta
     data: {"type":"response.reasoning_summary_text.delta","item_id":"rs_1","delta":"thinking"}
@@ -450,8 +475,6 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
   end
 
   test "chat-completions usage chunks emit typed done usage metadata" do
-    # Upstream reference:
-    # - streamed usage chunks are emitted separately from token deltas.
     body =
       [
         %{"choices" => [%{"delta" => %{"content" => "hi"}}]},
@@ -487,9 +510,24 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
            )
   end
 
+  test "typed events of a chat-completions body end with one Done that carries the usage sent after the finish reason" do
+    usage = %{"prompt_tokens" => 3, "completion_tokens" => 2, "total_tokens" => 5}
+
+    body =
+      [
+        %{"choices" => [%{"index" => 0, "delta" => %{"content" => "hi"}}]},
+        %{"choices" => [%{"index" => 0, "delta" => %{}, "finish_reason" => "stop"}]},
+        %{"choices" => [], "usage" => usage}
+      ]
+      |> Enum.map_join("\n\n", &("data: " <> BeamWeaver.JSON.encode!(&1)))
+
+    events = Streaming.typed_events(body)
+
+    assert [%Events.Done{usage: ^usage}] = for(%Envelope{event: %Events.Done{} = done} <- events, do: done)
+    assert %Envelope{event: %Events.Done{}} = List.last(events)
+  end
+
   test "Responses usage-only completion preserves nested and unknown usage metadata" do
-    # Upstream reference:
-    # - usage-only terminal events and provider-specific token details are preserved.
     body = """
     event: response.completed
     data: {"type":"response.completed","response":{"id":"resp_usage","usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10,"input_tokens_details":{"cached_tokens":2},"output_tokens_details":{"reasoning_tokens":1},"provider_new_usage":{"kept":true}}}}
@@ -512,8 +550,6 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
   end
 
   test "chat-completions usage-only chunks preserve unknown usage fields for tracing" do
-    # Upstream reference:
-    # - usage chunks can arrive without choices and should not be dropped.
     body =
       [
         %{
@@ -542,8 +578,6 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
   end
 
   test "chat-completions unknown streamed delta fields are preserved on message chunks" do
-    # Upstream reference:
-    # - provider-specific streamed blocks are preserved instead of dropped.
     body =
       [
         %{
@@ -846,8 +880,6 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
   end
 
   test "malformed streamed function-call arguments finish as raw args instead of crashing" do
-    # Upstream reference:
-    # - malformed streamed tool args become invalid/raw records at the boundary.
     body = """
     event: response.created
     data: {"type":"response.created","response":{"id":"resp_bad_tool","model":"gpt-5.4-mini","output":[]}}
@@ -975,8 +1007,6 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
   end
 
   test "keeps separate streamed text blocks isolated and reconciles authoritative finishes" do
-    # Upstream reference:
-    # - TestPerBlockAccumulation text cases.
     body = """
     event: response.created
     data: {"type":"response.created","response":{"id":"resp_blocks","model":"gpt-5.4","output":[]}}
@@ -1026,8 +1056,6 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
   end
 
   test "keeps separate streamed reasoning blocks isolated" do
-    # Upstream reference:
-    # - TestPerBlockAccumulation reasoning cases.
     body = """
     event: response.created
     data: {"type":"response.created","response":{"id":"resp_reasoning","model":"gpt-5.4","output":[]}}
@@ -1080,8 +1108,6 @@ defmodule BeamWeaver.OpenAI.StreamingTest do
   end
 
   test "preserves interleaved text function-call text lifecycle order" do
-    # Upstream reference:
-    # - interleaved text blocks around a tool call.
     body = """
     event: response.created
     data: {"type":"response.created","response":{"id":"resp_interleaved","model":"gpt-5.4","output":[]}}

@@ -2,7 +2,7 @@ defmodule BeamWeaver.DeepSeek.ClientTest do
   use ExUnit.Case, async: true
 
   alias BeamWeaver.DeepSeek.Client
-  alias BeamWeaver.DeepSeek.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Transport.Request
   alias BeamWeaver.Transport.Response
 
@@ -77,6 +77,8 @@ defmodule BeamWeaver.DeepSeek.ClientTest do
 
     assert Client.endpoint("https://deepseek.test/beta/", "/completions") ==
              "https://deepseek.test/beta/completions"
+
+    assert Client.new(base_url: "https://düüp.test/v1").beta_base_url == "https://düüp.test/beta"
   end
 
   test "a configured chat endpoint remains authoritative for beta-capable bodies" do
@@ -84,6 +86,43 @@ defmodule BeamWeaver.DeepSeek.ClientTest do
 
     assert client.chat_completions_endpoint == "https://gateway.test/deepseek/chat"
     assert client.beta_chat_completions_endpoint == "https://gateway.test/deepseek/chat"
+  end
+
+  test "standalone Search and Fetch use versioned endpoints and preserve their native results" do
+    for suffix <- ["", "/v1", "/beta", "/anthropic"] do
+      client = Client.new(base_url: "https://deepseek.test" <> suffix)
+      assert client.search_endpoint == "https://deepseek.test/v1/tools/search"
+      assert client.fetch_endpoint == "https://deepseek.test/v1/tools/fetch"
+    end
+
+    body = %{"query" => "Elixir site:elixir-lang.org", "count" => 50, "need_content" => true}
+    result = %{"results" => [%{"title" => "Elixir", "url" => "https://elixir-lang.org", "content" => "# Elixir"}]}
+    client = test_client(response_body: Jason.encode!(result))
+    assert {:ok, ^result} = Client.search(client, body)
+    assert_received {:request, request, _opts}
+    assert request.method == :post
+    assert request.url == "https://deepseek.test/v1/tools/search"
+    assert request.json == body
+    assert {"authorization", "Bearer ds-secret"} in request.headers
+
+    page = %{"title" => "Elixir", "content" => "# Elixir\n\nOfficial site."}
+    client = test_client(response_body: Jason.encode!(page))
+    assert {:ok, ^page} = Client.fetch(client, %{"url" => "https://elixir-lang.org"})
+    assert_received {:request, request, _opts}
+    assert request.url == "https://deepseek.test/v1/tools/fetch"
+    assert request.json == %{"url" => "https://elixir-lang.org"}
+  end
+
+  test "standalone tools preserve empty results, endpoint overrides, and provider failures" do
+    client = %{test_client(response_body: ~s({"results":[]})) | search_endpoint: "https://gateway.test/search"}
+    assert {:ok, %{"results" => []}} = Client.search(client, %{query: "no matches"})
+    assert_received {:request, request, _opts}
+    assert request.url == "https://gateway.test/search"
+
+    client =
+      test_client(status: 404, response_body: ~s({"error":{"message":"No usable page content","type":"not_found"}}))
+
+    assert {:error, %Error{}} = Client.fetch(client, %{url: "https://example.test/missing"})
   end
 
   test "stable chat uses bearer auth, a 15 second default timeout, and response headers" do
@@ -237,7 +276,7 @@ defmodule BeamWeaver.DeepSeek.ClientTest do
 
     data: {"id":"chat-stream","model":"deepseek-v4-pro","choices":[{"index":1,"delta":{"reasoning_content":"thought","content":"second"},"finish_reason":null}]}
 
-    data: {"id":"chat-stream","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{},"finish_reason":"insufficient_system_resource"},{"index":1,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}
+    data: {"id":"chat-stream","model":"deepseek-v4-pro","choices":[{"index":0,"delta":{},"finish_reason":"length"},{"index":1,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}
 
     data: [DONE]
 
@@ -278,8 +317,7 @@ defmodule BeamWeaver.DeepSeek.ClientTest do
 
     assert get_in(response, ["choices", Access.at(1), "finish_reason"]) == "stop"
 
-    assert get_in(response, ["choices", Access.at(0), "finish_reason"]) ==
-             "insufficient_system_resource"
+    assert get_in(response, ["choices", Access.at(0), "finish_reason"]) == "length"
 
     assert response["usage"] == %{
              "prompt_tokens" => 3,
@@ -290,6 +328,37 @@ defmodule BeamWeaver.DeepSeek.ClientTest do
     assert response["_beamweaver_response_header_metadata"].request_id == "trace-stream"
     assert response["_beamweaver_response_headers"] == %{"x-ds-trace-id" => "trace-stream"}
     assert response["_beamweaver_response_header_list"] == [["x-ds-trace-id", "trace-stream"]]
+  end
+
+  test "typed chat streams end with one reply and one Done that carry the usage sent after the finish reason" do
+    sse = """
+    data: {"id":"chat-usage","model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"}}]}
+
+    data: {"id":"chat-usage","model":"deepseek-v4-flash","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+    data: {"id":"chat-usage","model":"deepseek-v4-flash","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}
+
+    data: [DONE]
+
+    """
+
+    client = test_client(response_body: sse, chunks: chunk_every(sse, 23))
+    body = %{"model" => "deepseek-v4-flash", "messages" => [], "stream" => true}
+
+    assert {:ok, stream} = Client.chat_completions_stream_typed_events(client, body)
+    events = Enum.map(stream, & &1.event)
+
+    assert [%BeamWeaver.Stream.Events.Message{message: message}] =
+             Enum.filter(events, &match?(%BeamWeaver.Stream.Events.Message{}, &1))
+
+    assert BeamWeaver.Core.Message.text(message) == "Hi"
+    assert message.usage_metadata.input_tokens == 3
+    assert message.usage_metadata.output_tokens == 1
+
+    assert [%BeamWeaver.Stream.Events.Message{}, %BeamWeaver.Stream.Events.Done{usage: usage}] =
+             Enum.drop_while(events, &(not match?(%BeamWeaver.Stream.Events.Message{}, &1)))
+
+    assert usage == %{"prompt_tokens" => 3, "completion_tokens" => 1, "total_tokens" => 4}
   end
 
   test "Responses, FIM, and Anthropic collected streams reuse their wire reconstructors" do
@@ -375,11 +444,11 @@ defmodule BeamWeaver.DeepSeek.ClientTest do
 
   test "normalizes DeepSeek error status, JSON octet-stream bodies, trace IDs, and retryability" do
     cases = [
-      {401, "authentication_error", :authentication_error, false},
-      {402, "insufficient balance", :quota_error, false},
-      {429, "rate limit reached", :rate_limit_error, true},
-      {503, "server overloaded", :overloaded_error, true},
-      {422, "invalid parameters", :invalid_request_error, false},
+      {401, "authentication_error", :authentication, false},
+      {402, "insufficient balance", :billing_exhausted, false},
+      {429, "rate limit reached", :rate_limit, true},
+      {503, "server overloaded", :server_error, true},
+      {422, "invalid parameters", :invalid_request, false},
       {500, "internal server error", :server_error, true}
     ]
 
@@ -425,8 +494,41 @@ defmodule BeamWeaver.DeepSeek.ClientTest do
 
     assert {:ok, stream} = Client.responses_stream(client, %{"stream" => true})
 
-    assert [%BeamWeaver.Stream.Events.Error{error: %Error{type: :rate_limit_error}}] =
+    assert [%BeamWeaver.Stream.Events.Error{error: %Error{type: :rate_limit}}] =
              Enum.to_list(stream)
+  end
+
+  test "an Anthropic-compatible stream cut off by an error event fails like the same HTTP error" do
+    sse = """
+    event: message_start
+    data: {"type":"message_start","message":{"id":"msg-1","type":"message","role":"assistant","model":"deepseek-v4-flash","content":[],"usage":{"input_tokens":2,"output_tokens":0}}}
+
+    event: content_block_start
+    data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+    event: content_block_delta
+    data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}
+
+    event: error
+    data: {"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}
+
+    """
+
+    client =
+      test_client(
+        response_body: sse,
+        chunks: chunk_every(sse, 11),
+        response_headers: [{"x-ds-trace-id", "trace-stream"}]
+      )
+
+    body = %{"model" => "deepseek-v4-flash", "messages" => [], "stream" => true}
+
+    assert {:ok, stream} = Client.anthropic_messages_stream(client, body)
+    assert ["hi", %BeamWeaver.Stream.Events.Error{error: %Error{} = error}] = Enum.to_list(stream)
+    assert {error.type, error.details.status, error.details.request_id} == {:rate_limit, 429, "trace-stream"}
+
+    assert {:error, %Error{type: :rate_limit, message: "slow down", details: %{retryable: true}}} =
+             Client.anthropic_messages_stream_response(client, body)
   end
 
   test "client Inspect redacts eager and lazy API keys without resolving lazy secrets" do
@@ -461,13 +563,6 @@ defmodule BeamWeaver.DeepSeek.ClientTest do
     )
   end
 
-  defp chunk_every(body, size), do: do_chunk_every(body, size, [])
-  defp do_chunk_every("", _size, acc), do: Enum.reverse(acc)
-
-  defp do_chunk_every(body, size, acc) do
-    case body do
-      <<chunk::binary-size(^size), rest::binary>> -> do_chunk_every(rest, size, [chunk | acc])
-      chunk -> Enum.reverse([chunk | acc])
-    end
-  end
+  defp chunk_every(body, size),
+    do: body |> :binary.bin_to_list() |> Enum.chunk_every(size) |> Enum.map(&:binary.list_to_bin/1)
 end

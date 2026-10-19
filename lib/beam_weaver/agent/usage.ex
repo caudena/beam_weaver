@@ -37,17 +37,11 @@ defmodule BeamWeaver.Agent.Usage do
     messages
     |> List.wrap()
     |> Enum.reduce(new(), fn
-      %Message{role: :assistant, usage_metadata: usage} = message, acc when is_map(usage) ->
+      %Message{role: role, usage_metadata: usage}, acc when role in [:assistant, :tool] and is_map(usage) ->
         acc
         |> add_usage(usage)
-        |> increment(:model_calls)
-        |> add_detail(message.role, usage)
-
-      %Message{role: :tool, usage_metadata: usage} = message, acc when is_map(usage) ->
-        acc
-        |> add_usage(usage)
-        |> increment(:tool_calls)
-        |> add_detail(message.role, usage)
+        |> increment(if role == :assistant, do: :model_calls, else: :tool_calls)
+        |> add_detail(role, usage)
 
       %Message{role: :tool}, acc ->
         increment(acc, :tool_calls)

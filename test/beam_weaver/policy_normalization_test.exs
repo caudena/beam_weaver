@@ -24,11 +24,12 @@ defmodule BeamWeaver.PolicyNormalizationTest do
     assert {:ok, %RetrievalPolicy{k: 2}} = RetrievalPolicy.new(%{"k" => 2, unknown => true})
 
     assert {:ok, %ShellPolicy{max_output_bytes: 50}} =
-             ShellPolicy.new(%{
-               "allow" => ["echo "],
-               "max_output_bytes" => 50,
-               unknown => true
-             })
+             ShellPolicy.new(%{"allow" => ["echo "], "max_output_bytes" => 50})
+
+    # A shell policy rejects an unknown option rather than dropping it
+    # silently, but still without creating an atom for the unknown name.
+    assert {:error, %{type: :invalid_shell_policy}} =
+             ShellPolicy.new(%{"allow" => ["echo "], unknown => true})
 
     refute existing_atom?(unknown)
   end

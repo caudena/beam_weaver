@@ -1,8 +1,8 @@
 defmodule BeamWeaver.Models.ProfileRegistry.Anthropic do
   @moduledoc false
 
-  alias BeamWeaver.Core.Error
   alias BeamWeaver.Models.Profile
+  alias BeamWeaver.Models.ProfileRegistry
   alias BeamWeaver.Models.ProfileRegistry.Params
 
   @anthropic_deprecated_models %{
@@ -103,13 +103,8 @@ defmodule BeamWeaver.Models.ProfileRegistry.Anthropic do
     }
   }
 
-  @claude_5_1_profile %{
+  @claude_profile %{
     provider: :anthropic,
-    status: :active,
-    release_date: "2026-09-01",
-    last_updated: "2026-09-01",
-    max_input_tokens: 1_000_000,
-    max_output_tokens: 128_000,
     text_inputs: true,
     image_inputs: true,
     image_url_inputs: true,
@@ -120,43 +115,57 @@ defmodule BeamWeaver.Models.ProfileRegistry.Anthropic do
     tool_choice: true,
     parallel_tool_calls: true,
     structured_output: true,
-    structured_output_with_tools: true,
     streaming: true,
     usage_metadata: true,
     image_tool_message: true,
     pdf_tool_message: true,
     attachment: true,
-    supported_params: Params.anthropic(),
-    extra: %{
-      batch_input_price_per_mtok: 5.00,
-      batch_cached_input_price_per_mtok: 0.125,
-      batch_output_price_per_mtok: 25.00,
-      cache_read_price_per_mtok: 0.25,
-      cached_input_price_per_mtok: 0.25,
-      cache_write_5m_price_per_mtok: 12.50,
-      cache_write_1h_price_per_mtok: 20.00,
-      content_provenance: true,
-      default_effort: :high,
-      effort_levels: [:low, :medium, :high, :xhigh, :max],
-      inference_geo_us_multiplier: 1.1,
-      input_price_per_mtok: 10.00,
-      knowledge_cutoff: "2026-06",
-      mid_conversation_system_messages: true,
-      mid_conversation_tool_changes: true,
-      output_price_per_mtok: 50.00,
-      prefilled_model_turns: false,
-      prompt_cache_min_tokens: 512,
-      retirement_not_before: "2027-09-01",
-      sampling_controls: :restricted,
-      thinking_always_on: true,
-      thinking_mode: :adaptive_only,
-      training_data_cutoff: "2026-06",
-      tool_choice_modes: [:auto, :none]
-    }
+    supported_params: Params.anthropic()
   }
 
+  @claude_1m_profile Map.merge(@claude_profile, %{
+                       status: :active,
+                       max_input_tokens: 1_000_000,
+                       max_output_tokens: 128_000,
+                       reasoning_effort_levels: [:low, :medium, :high, :xhigh, :max],
+                       reasoning_effort_default: :high
+                     })
+
+  @claude_200k_profile Map.merge(@claude_profile, %{max_input_tokens: 200_000, max_output_tokens: 64_000})
+
+  @claude_5_1_profile Map.merge(@claude_1m_profile, %{
+                        release_date: "2026-09-01",
+                        last_updated: "2026-09-01",
+                        structured_output_with_tools: true,
+                        extra: %{
+                          batch_input_price_per_mtok: 5.00,
+                          batch_cached_input_price_per_mtok: 0.125,
+                          batch_output_price_per_mtok: 25.00,
+                          cache_read_price_per_mtok: 0.25,
+                          cached_input_price_per_mtok: 0.25,
+                          cache_write_5m_price_per_mtok: 12.50,
+                          cache_write_1h_price_per_mtok: 20.00,
+                          content_provenance: true,
+                          inference_geo_us_multiplier: 1.1,
+                          input_price_per_mtok: 10.00,
+                          knowledge_cutoff: "2026-06",
+                          mid_conversation_system_messages: true,
+                          mid_conversation_tool_changes: true,
+                          output_price_per_mtok: 50.00,
+                          prefilled_model_turns: false,
+                          prompt_cache_min_tokens: 512,
+                          retirement_not_before: "2027-09-01",
+                          sampling_controls: :restricted,
+                          thinking_always_on: true,
+                          thinking_mode: :adaptive_only,
+                          training_data_cutoff: "2026-06",
+                          tool_choice_modes: [:auto, :none]
+                        }
+                      })
+
+  # The request and the output it asks for share one 1M-token window.
   @claude_5_5_profile Map.merge(@claude_5_1_profile, %{
-                        context_limit_kind: :shared_context,
+                        context_limit_kind: :shared_input_output,
                         max_context_tokens: 1_000_000,
                         last_updated: "2026-10-08",
                         temperature: false,
@@ -165,7 +174,6 @@ defmodule BeamWeaver.Models.ProfileRegistry.Anthropic do
                           batch_max_output_tokens: 300_000,
                           batch_output_beta: "output-300k-2026-03-24",
                           cost_currency: "USD",
-                          effort_levels: [:low, :medium, :high, :xhigh, :max],
                           inference_geo_us_multiplier: 1.1,
                           knowledge_cutoff: "2026-06",
                           mid_conversation_system_messages: true,
@@ -190,6 +198,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Anthropic do
         Map.merge(@claude_5_5_profile, %{
           id: "claude-haiku-5-5",
           name: "Claude Haiku 5.5",
+          reasoning_effort_default: :medium,
           release_date: "2026-10-07",
           extra:
             Map.merge(@claude_5_5_profile.extra, %{
@@ -200,7 +209,6 @@ defmodule BeamWeaver.Models.ProfileRegistry.Anthropic do
               cached_input_price_per_mtok: 0.01,
               cache_write_5m_price_per_mtok: 0.125,
               cache_write_1h_price_per_mtok: 0.20,
-              default_effort: :medium,
               forced_tool_choice_with_thinking: true,
               input_price_per_mtok: 0.10,
               long_context_pricing: %{
@@ -242,7 +250,6 @@ defmodule BeamWeaver.Models.ProfileRegistry.Anthropic do
               cache_write_5m_price_per_mtok: 2.50,
               cache_write_1h_price_per_mtok: 4.00,
               compaction_on_demand: true,
-              default_effort: :high,
               input_price_per_mtok: 2.00,
               output_price_per_mtok: 10.00,
               pricing_source_url: "https://platform.claude.com/docs/en/models/sonnet-5-5/overview",
@@ -264,6 +271,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Anthropic do
         Map.merge(@claude_5_1_profile, %{
           id: "claude-opus-5-5",
           name: "Claude Opus 5.5",
+          reasoning_effort_default: :medium,
           release_date: "2026-09-22",
           last_updated: "2026-09-23",
           extra:
@@ -277,7 +285,6 @@ defmodule BeamWeaver.Models.ProfileRegistry.Anthropic do
               cache_write_5m_price_per_mtok: 5.00,
               cache_write_1h_price_per_mtok: 8.00,
               compaction_on_demand: true,
-              default_effort: :medium,
               fast_mode_price_multiplier: 2.0,
               input_price_per_mtok: 4.00,
               output_price_per_mtok: 20.00,
@@ -305,607 +312,369 @@ defmodule BeamWeaver.Models.ProfileRegistry.Anthropic do
         })
       ),
     {:anthropic, "claude-opus-5"} =>
-      Profile.new(%{
-        provider: :anthropic,
-        id: "claude-opus-5",
-        name: "Claude Opus 5",
-        status: :active,
-        release_date: "2026-07-24",
-        last_updated: "2026-07-24",
-        max_input_tokens: 1_000_000,
-        max_output_tokens: 128_000,
-        text_inputs: true,
-        image_inputs: true,
-        image_url_inputs: true,
-        pdf_inputs: true,
-        text_outputs: true,
-        reasoning_output: true,
-        tool_calling: true,
-        tool_choice: true,
-        parallel_tool_calls: true,
-        structured_output: true,
-        streaming: true,
-        usage_metadata: true,
-        image_tool_message: true,
-        pdf_tool_message: true,
-        attachment: true,
-        supported_params: Params.anthropic(),
-        extra: %{
-          batch_input_price_per_mtok: 2.50,
-          batch_output_price_per_mtok: 12.50,
-          cache_read_price_per_mtok: 0.50,
-          cache_write_5m_price_per_mtok: 6.25,
-          cache_write_1h_price_per_mtok: 10.00,
-          default_effort: :high,
-          effort_levels: [:low, :medium, :high, :xhigh, :max],
-          fast_mode_price_multiplier: 2,
-          inference_geo_us_multiplier: 1.1,
-          input_price_per_mtok: 5.00,
-          mid_conversation_system_messages: true,
-          mid_conversation_tool_changes: :beta,
-          output_price_per_mtok: 25.00,
-          priority_tier: false,
-          prompt_cache_min_tokens: 512,
-          retirement_not_before: "2027-07-24",
-          sampling_controls: :restricted,
-          server_side_fallbacks: :beta,
-          thinking_default: :adaptive,
-          thinking_disabled_max_effort: :high,
-          thinking_mode: :adaptive_only,
-          unsupported_server_tools: [:web_fetch]
-        }
-      }),
+      Profile.new(
+        Map.merge(@claude_1m_profile, %{
+          id: "claude-opus-5",
+          name: "Claude Opus 5",
+          release_date: "2026-07-24",
+          last_updated: "2026-07-24",
+          extra: %{
+            batch_input_price_per_mtok: 2.50,
+            batch_output_price_per_mtok: 12.50,
+            cache_read_price_per_mtok: 0.50,
+            cache_write_5m_price_per_mtok: 6.25,
+            cache_write_1h_price_per_mtok: 10.00,
+            fast_mode_price_multiplier: 2,
+            inference_geo_us_multiplier: 1.1,
+            input_price_per_mtok: 5.00,
+            mid_conversation_system_messages: true,
+            mid_conversation_tool_changes: :beta,
+            output_price_per_mtok: 25.00,
+            priority_tier: false,
+            prompt_cache_min_tokens: 512,
+            retirement_not_before: "2027-07-24",
+            sampling_controls: :restricted,
+            server_side_fallbacks: :beta,
+            thinking_default: :adaptive,
+            thinking_disabled_max_effort: :high,
+            thinking_mode: :adaptive_only,
+            unsupported_server_tools: [:web_fetch]
+          }
+        })
+      ),
     {:anthropic, "claude-sonnet-5"} =>
-      Profile.new(%{
-        provider: :anthropic,
-        id: "claude-sonnet-5",
-        name: "Claude Sonnet 5",
-        status: :active,
-        release_date: "2026-06-29",
-        last_updated: "2026-06-30",
-        max_input_tokens: 1_000_000,
-        max_output_tokens: 128_000,
-        text_inputs: true,
-        image_inputs: true,
-        image_url_inputs: true,
-        pdf_inputs: true,
-        text_outputs: true,
-        reasoning_output: true,
-        tool_calling: true,
-        tool_choice: true,
-        parallel_tool_calls: true,
-        structured_output: true,
-        streaming: true,
-        usage_metadata: true,
-        image_tool_message: true,
-        pdf_tool_message: true,
-        attachment: true,
-        supported_params: Params.anthropic(),
-        extra: %{
-          cache_read_price_per_mtok: 0.20,
-          cache_write_5m_price_per_mtok: 2.50,
-          cache_write_1h_price_per_mtok: 4.00,
-          input_price_per_mtok: 2.00,
-          output_price_per_mtok: 10.00,
-          batch_input_price_per_mtok: 1.00,
-          batch_output_price_per_mtok: 5.00,
-          default_effort: :high,
-          inference_geo_us_multiplier: 1.1,
-          prompt_cache_min_tokens: 1024,
-          retirement_not_before: "2027-06-29",
-          sampling_controls: :restricted,
-          thinking_mode: :adaptive_only
-        }
-      }),
+      Profile.new(
+        Map.merge(@claude_1m_profile, %{
+          id: "claude-sonnet-5",
+          name: "Claude Sonnet 5",
+          release_date: "2026-06-29",
+          last_updated: "2026-06-30",
+          extra: %{
+            cache_read_price_per_mtok: 0.20,
+            cache_write_5m_price_per_mtok: 2.50,
+            cache_write_1h_price_per_mtok: 4.00,
+            input_price_per_mtok: 2.00,
+            output_price_per_mtok: 10.00,
+            batch_input_price_per_mtok: 1.00,
+            batch_output_price_per_mtok: 5.00,
+            inference_geo_us_multiplier: 1.1,
+            prompt_cache_min_tokens: 1024,
+            retirement_not_before: "2027-06-29",
+            sampling_controls: :restricted,
+            thinking_mode: :adaptive_only
+          }
+        })
+      ),
     {:anthropic, "claude-fable-5"} =>
-      Profile.new(%{
-        provider: :anthropic,
-        id: "claude-fable-5",
-        name: "Claude Fable 5",
-        status: :active,
-        release_date: "2026-06-09",
-        last_updated: "2026-06-09",
-        max_input_tokens: 1_000_000,
-        max_output_tokens: 128_000,
-        text_inputs: true,
-        image_inputs: true,
-        image_url_inputs: true,
-        pdf_inputs: true,
-        text_outputs: true,
-        reasoning_output: true,
-        tool_calling: true,
-        tool_choice: true,
-        parallel_tool_calls: true,
-        structured_output: true,
-        streaming: true,
-        usage_metadata: true,
-        image_tool_message: true,
-        pdf_tool_message: true,
-        attachment: true,
-        supported_params: Params.anthropic(),
-        extra: %{
-          cache_read_price_per_mtok: 1.00,
-          cache_write_5m_price_per_mtok: 12.50,
-          cache_write_1h_price_per_mtok: 20.00,
-          input_price_per_mtok: 10.00,
-          output_price_per_mtok: 50.00,
-          batch_input_price_per_mtok: 5.00,
-          batch_output_price_per_mtok: 25.00,
-          inference_geo_us_multiplier: 1.1,
-          prompt_cache_min_tokens: 1024,
-          retirement_not_before: "2027-06-09",
-          sampling_controls: :restricted,
-          thinking_mode: :adaptive_only
-        }
-      }),
+      Profile.new(
+        Map.merge(@claude_1m_profile, %{
+          id: "claude-fable-5",
+          name: "Claude Fable 5",
+          release_date: "2026-06-09",
+          last_updated: "2026-06-09",
+          extra: %{
+            mid_conversation_system_messages: true,
+            cache_read_price_per_mtok: 1.00,
+            cache_write_5m_price_per_mtok: 12.50,
+            cache_write_1h_price_per_mtok: 20.00,
+            input_price_per_mtok: 10.00,
+            output_price_per_mtok: 50.00,
+            batch_input_price_per_mtok: 5.00,
+            batch_output_price_per_mtok: 25.00,
+            inference_geo_us_multiplier: 1.1,
+            prompt_cache_min_tokens: 1024,
+            retirement_not_before: "2027-06-09",
+            sampling_controls: :restricted,
+            thinking_mode: :adaptive_only
+          }
+        })
+      ),
     {:anthropic, "claude-mythos-5"} =>
-      Profile.new(%{
-        provider: :anthropic,
-        id: "claude-mythos-5",
-        name: "Claude Mythos 5",
-        status: :active,
-        release_date: "2026-06-09",
-        last_updated: "2026-06-09",
-        max_input_tokens: 1_000_000,
-        max_output_tokens: 128_000,
-        text_inputs: true,
-        image_inputs: true,
-        image_url_inputs: true,
-        pdf_inputs: true,
-        text_outputs: true,
-        reasoning_output: true,
-        tool_calling: true,
-        tool_choice: true,
-        parallel_tool_calls: true,
-        structured_output: true,
-        streaming: true,
-        usage_metadata: true,
-        image_tool_message: true,
-        pdf_tool_message: true,
-        attachment: true,
-        supported_params: Params.anthropic(),
-        extra: %{
-          cache_read_price_per_mtok: 1.00,
-          cache_write_5m_price_per_mtok: 12.50,
-          cache_write_1h_price_per_mtok: 20.00,
-          input_price_per_mtok: 10.00,
-          output_price_per_mtok: 50.00,
-          batch_input_price_per_mtok: 5.00,
-          batch_output_price_per_mtok: 25.00,
-          inference_geo_us_multiplier: 1.1,
-          prompt_cache_min_tokens: 1024,
-          retirement_not_before: "2027-06-09",
-          sampling_controls: :restricted,
-          thinking_mode: :adaptive_only
-        }
-      }),
+      Profile.new(
+        Map.merge(@claude_1m_profile, %{
+          id: "claude-mythos-5",
+          name: "Claude Mythos 5",
+          release_date: "2026-06-09",
+          last_updated: "2026-06-09",
+          extra: %{
+            mid_conversation_system_messages: true,
+            cache_read_price_per_mtok: 1.00,
+            cache_write_5m_price_per_mtok: 12.50,
+            cache_write_1h_price_per_mtok: 20.00,
+            input_price_per_mtok: 10.00,
+            output_price_per_mtok: 50.00,
+            batch_input_price_per_mtok: 5.00,
+            batch_output_price_per_mtok: 25.00,
+            inference_geo_us_multiplier: 1.1,
+            prompt_cache_min_tokens: 1024,
+            retirement_not_before: "2027-06-09",
+            sampling_controls: :restricted,
+            thinking_mode: :adaptive_only
+          }
+        })
+      ),
     {:anthropic, "claude-opus-4-8"} =>
-      Profile.new(%{
-        provider: :anthropic,
-        id: "claude-opus-4-8",
-        name: "Claude Opus 4.8",
-        status: :active,
-        release_date: "2026-05-28",
-        last_updated: "2026-05-28",
-        max_input_tokens: 1_000_000,
-        max_output_tokens: 128_000,
-        text_inputs: true,
-        image_inputs: true,
-        image_url_inputs: true,
-        pdf_inputs: true,
-        text_outputs: true,
-        reasoning_output: true,
-        tool_calling: true,
-        tool_choice: true,
-        parallel_tool_calls: true,
-        structured_output: true,
-        streaming: true,
-        usage_metadata: true,
-        image_tool_message: true,
-        pdf_tool_message: true,
-        attachment: true,
-        supported_params: Params.anthropic(),
-        extra: %{
-          cache_read_price_per_mtok: 0.50,
-          cache_write_5m_price_per_mtok: 6.25,
-          cache_write_1h_price_per_mtok: 10.00,
-          input_price_per_mtok: 5.00,
-          output_price_per_mtok: 25.00,
-          batch_input_price_per_mtok: 2.50,
-          batch_output_price_per_mtok: 12.50,
-          default_effort: :high,
-          fast_mode_price_multiplier: 6,
-          inference_geo_us_multiplier: 1.1,
-          prompt_cache_min_tokens: 1024,
-          retirement_not_before: "2027-05-28",
-          sampling_controls: :restricted,
-          thinking_mode: :adaptive_only
-        }
-      }),
+      Profile.new(
+        Map.merge(@claude_1m_profile, %{
+          id: "claude-opus-4-8",
+          name: "Claude Opus 4.8",
+          release_date: "2026-05-28",
+          last_updated: "2026-05-28",
+          extra: %{
+            mid_conversation_system_messages: true,
+            cache_read_price_per_mtok: 0.50,
+            cache_write_5m_price_per_mtok: 6.25,
+            cache_write_1h_price_per_mtok: 10.00,
+            input_price_per_mtok: 5.00,
+            output_price_per_mtok: 25.00,
+            batch_input_price_per_mtok: 2.50,
+            batch_output_price_per_mtok: 12.50,
+            fast_mode_price_multiplier: 6,
+            inference_geo_us_multiplier: 1.1,
+            prompt_cache_min_tokens: 1024,
+            retirement_not_before: "2027-05-28",
+            sampling_controls: :restricted,
+            thinking_mode: :adaptive_only
+          }
+        })
+      ),
     {:anthropic, "claude-opus-4-7"} =>
-      Profile.new(%{
-        provider: :anthropic,
-        id: "claude-opus-4-7",
-        name: "Claude Opus 4.7",
-        status: :active,
-        release_date: "2026-04-16",
-        last_updated: "2026-04-16",
-        max_input_tokens: 1_000_000,
-        max_output_tokens: 128_000,
-        text_inputs: true,
-        image_inputs: true,
-        image_url_inputs: true,
-        pdf_inputs: true,
-        text_outputs: true,
-        reasoning_output: true,
-        tool_calling: true,
-        tool_choice: true,
-        parallel_tool_calls: true,
-        structured_output: true,
-        streaming: true,
-        usage_metadata: true,
-        image_tool_message: true,
-        pdf_tool_message: true,
-        attachment: true,
-        supported_params: Params.anthropic(),
-        extra: %{
-          cache_read_price_per_mtok: 0.50,
-          cache_write_5m_price_per_mtok: 6.25,
-          cache_write_1h_price_per_mtok: 10.00,
-          input_price_per_mtok: 5.00,
-          output_price_per_mtok: 25.00,
-          batch_input_price_per_mtok: 2.50,
-          batch_output_price_per_mtok: 12.50,
-          fast_mode_price_multiplier: 6,
-          retirement_not_before: "2027-04-16",
-          sampling_controls: :restricted,
-          thinking_mode: :adaptive_only
-        }
-      }),
+      Profile.new(
+        Map.merge(@claude_1m_profile, %{
+          id: "claude-opus-4-7",
+          name: "Claude Opus 4.7",
+          release_date: "2026-04-16",
+          last_updated: "2026-04-16",
+          extra: %{
+            cache_read_price_per_mtok: 0.50,
+            cache_write_5m_price_per_mtok: 6.25,
+            cache_write_1h_price_per_mtok: 10.00,
+            input_price_per_mtok: 5.00,
+            output_price_per_mtok: 25.00,
+            batch_input_price_per_mtok: 2.50,
+            batch_output_price_per_mtok: 12.50,
+            fast_mode_price_multiplier: 6,
+            retirement_not_before: "2027-04-16",
+            sampling_controls: :restricted,
+            thinking_mode: :adaptive_only
+          }
+        })
+      ),
     {:anthropic, "claude-opus-4-6"} =>
-      Profile.new(%{
-        provider: :anthropic,
-        id: "claude-opus-4-6",
-        name: "Claude Opus 4.6",
-        status: :active,
-        release_date: "2026-02-05",
-        last_updated: "2026-02-05",
-        max_input_tokens: 1_000_000,
-        max_output_tokens: 128_000,
-        text_inputs: true,
-        image_inputs: true,
-        image_url_inputs: true,
-        pdf_inputs: true,
-        text_outputs: true,
-        reasoning_output: true,
-        tool_calling: true,
-        tool_choice: true,
-        parallel_tool_calls: true,
-        structured_output: true,
-        streaming: true,
-        usage_metadata: true,
-        image_tool_message: true,
-        pdf_tool_message: true,
-        attachment: true,
-        supported_params: Params.anthropic(),
-        extra: %{
-          cache_read_price_per_mtok: 0.50,
-          cache_write_5m_price_per_mtok: 6.25,
-          cache_write_1h_price_per_mtok: 10.00,
-          input_price_per_mtok: 5.00,
-          output_price_per_mtok: 25.00,
-          batch_input_price_per_mtok: 2.50,
-          batch_output_price_per_mtok: 12.50,
-          fast_mode_price_multiplier: 6,
-          inference_geo_us_multiplier: 1.1,
-          retirement_not_before: "2027-02-05"
-        }
-      }),
+      Profile.new(
+        Map.merge(@claude_1m_profile, %{
+          id: "claude-opus-4-6",
+          name: "Claude Opus 4.6",
+          release_date: "2026-02-05",
+          last_updated: "2026-02-05",
+          reasoning_effort_levels: [:low, :medium, :high, :max],
+          extra: %{
+            cache_read_price_per_mtok: 0.50,
+            cache_write_5m_price_per_mtok: 6.25,
+            cache_write_1h_price_per_mtok: 10.00,
+            input_price_per_mtok: 5.00,
+            output_price_per_mtok: 25.00,
+            batch_input_price_per_mtok: 2.50,
+            batch_output_price_per_mtok: 12.50,
+            fast_mode_price_multiplier: 6,
+            inference_geo_us_multiplier: 1.1,
+            retirement_not_before: "2027-02-05"
+          }
+        })
+      ),
     {:anthropic, "claude-opus-4-5-20251101"} =>
-      Profile.new(%{
-        provider: :anthropic,
-        id: "claude-opus-4-5-20251101",
-        name: "Claude Opus 4.5",
-        status: :active,
-        release_date: "2025-11-24",
-        last_updated: "2025-11-24",
-        max_input_tokens: 200_000,
-        max_output_tokens: 64_000,
-        text_inputs: true,
-        image_inputs: true,
-        image_url_inputs: true,
-        pdf_inputs: true,
-        text_outputs: true,
-        reasoning_output: true,
-        tool_calling: true,
-        tool_choice: true,
-        parallel_tool_calls: true,
-        structured_output: false,
-        streaming: true,
-        usage_metadata: true,
-        image_tool_message: true,
-        pdf_tool_message: true,
-        attachment: true,
-        supported_params: Params.anthropic(),
-        extra: %{
-          cache_read_price_per_mtok: 0.50,
-          cache_write_5m_price_per_mtok: 6.25,
-          cache_write_1h_price_per_mtok: 10.00,
-          input_price_per_mtok: 5.00,
-          output_price_per_mtok: 25.00,
-          batch_input_price_per_mtok: 2.50,
-          batch_output_price_per_mtok: 12.50,
-          retirement_not_before: "2026-11-24"
-        }
-      }),
+      Profile.new(
+        Map.merge(@claude_200k_profile, %{
+          id: "claude-opus-4-5-20251101",
+          name: "Claude Opus 4.5",
+          status: :active,
+          release_date: "2025-11-24",
+          last_updated: "2025-11-24",
+          reasoning_effort_levels: [:low, :medium, :high],
+          reasoning_effort_default: :high,
+          structured_output: false,
+          extra: %{
+            cache_read_price_per_mtok: 0.50,
+            cache_write_5m_price_per_mtok: 6.25,
+            cache_write_1h_price_per_mtok: 10.00,
+            input_price_per_mtok: 5.00,
+            output_price_per_mtok: 25.00,
+            batch_input_price_per_mtok: 2.50,
+            batch_output_price_per_mtok: 12.50,
+            retirement_not_before: "2026-11-24"
+          }
+        })
+      ),
     {:anthropic, "claude-sonnet-4-6"} =>
-      Profile.new(%{
-        provider: :anthropic,
-        id: "claude-sonnet-4-6",
-        name: "Claude Sonnet 4.6",
-        status: :active,
-        release_date: "2026-02-17",
-        last_updated: "2026-02-17",
-        max_input_tokens: 1_000_000,
-        max_output_tokens: 64_000,
-        text_inputs: true,
-        image_inputs: true,
-        image_url_inputs: true,
-        pdf_inputs: true,
-        text_outputs: true,
-        reasoning_output: true,
-        tool_calling: true,
-        tool_choice: true,
-        parallel_tool_calls: true,
-        structured_output: true,
-        streaming: true,
-        usage_metadata: true,
-        image_tool_message: true,
-        pdf_tool_message: true,
-        attachment: true,
-        supported_params: Params.anthropic(),
-        extra: %{
-          cache_read_price_per_mtok: 0.30,
-          cache_write_5m_price_per_mtok: 3.75,
-          cache_write_1h_price_per_mtok: 6.00,
-          input_price_per_mtok: 3.00,
-          output_price_per_mtok: 15.00,
-          batch_input_price_per_mtok: 1.50,
-          batch_output_price_per_mtok: 7.50,
-          inference_geo_us_multiplier: 1.1,
-          retirement_not_before: "2027-02-17"
-        }
-      }),
+      Profile.new(
+        Map.merge(@claude_1m_profile, %{
+          id: "claude-sonnet-4-6",
+          name: "Claude Sonnet 4.6",
+          release_date: "2026-02-17",
+          last_updated: "2026-02-17",
+          reasoning_effort_levels: [:low, :medium, :high, :max],
+          extra: %{
+            cache_read_price_per_mtok: 0.30,
+            cache_write_5m_price_per_mtok: 3.75,
+            cache_write_1h_price_per_mtok: 6.00,
+            input_price_per_mtok: 3.00,
+            output_price_per_mtok: 15.00,
+            batch_input_price_per_mtok: 1.50,
+            batch_output_price_per_mtok: 7.50,
+            inference_geo_us_multiplier: 1.1,
+            retirement_not_before: "2027-02-17"
+          }
+        })
+      ),
     {:anthropic, "claude-haiku-4-5-20251001"} =>
-      Profile.new(%{
-        provider: :anthropic,
-        id: "claude-haiku-4-5-20251001",
-        name: "Claude Haiku 4.5",
-        release_date: "2025-10-15",
-        last_updated: "2025-10-15",
-        max_input_tokens: 200_000,
-        max_output_tokens: 64_000,
-        text_inputs: true,
-        image_inputs: true,
-        image_url_inputs: true,
-        pdf_inputs: true,
-        text_outputs: true,
-        reasoning_output: true,
-        tool_calling: true,
-        tool_choice: true,
-        parallel_tool_calls: true,
-        structured_output: false,
-        streaming: true,
-        usage_metadata: true,
-        image_tool_message: true,
-        pdf_tool_message: true,
-        attachment: true,
-        supported_params: Params.anthropic(),
-        extra: %{
-          cache_read_price_per_mtok: 0.10,
-          cache_write_5m_price_per_mtok: 1.25,
-          cache_write_1h_price_per_mtok: 2.00,
-          input_price_per_mtok: 1.00,
-          output_price_per_mtok: 5.00,
-          batch_input_price_per_mtok: 0.50,
-          batch_output_price_per_mtok: 2.50,
-          retirement_not_before: "2026-10-15"
-        }
-      }),
+      Profile.new(
+        Map.merge(@claude_200k_profile, %{
+          id: "claude-haiku-4-5-20251001",
+          name: "Claude Haiku 4.5",
+          release_date: "2025-10-15",
+          last_updated: "2025-10-15",
+          structured_output: false,
+          supported_params: Params.anthropic() -- [:effort, :reasoning_effort],
+          extra: %{
+            cache_read_price_per_mtok: 0.10,
+            cache_write_5m_price_per_mtok: 1.25,
+            cache_write_1h_price_per_mtok: 2.00,
+            input_price_per_mtok: 1.00,
+            output_price_per_mtok: 5.00,
+            batch_input_price_per_mtok: 0.50,
+            batch_output_price_per_mtok: 2.50,
+            retirement_not_before: "2026-10-15"
+          }
+        })
+      ),
     {:anthropic, "claude-haiku-4-5"} =>
-      Profile.new(%{
-        provider: :anthropic,
-        id: "claude-haiku-4-5",
-        name: "Claude Haiku 4.5 (latest)",
-        release_date: "2025-10-15",
-        last_updated: "2025-10-15",
-        max_input_tokens: 200_000,
-        max_output_tokens: 64_000,
-        text_inputs: true,
-        image_inputs: true,
-        image_url_inputs: true,
-        pdf_inputs: true,
-        text_outputs: true,
-        reasoning_output: true,
-        tool_calling: true,
-        tool_choice: true,
-        parallel_tool_calls: true,
-        structured_output: true,
-        streaming: true,
-        usage_metadata: true,
-        image_tool_message: true,
-        pdf_tool_message: true,
-        attachment: true,
-        supported_params: Params.anthropic(),
-        extra: %{
-          cache_read_price_per_mtok: 0.10,
-          cache_write_5m_price_per_mtok: 1.25,
-          cache_write_1h_price_per_mtok: 2.00,
-          input_price_per_mtok: 1.00,
-          output_price_per_mtok: 5.00,
-          batch_input_price_per_mtok: 0.50,
-          batch_output_price_per_mtok: 2.50,
-          retirement_not_before: "2026-10-15"
-        }
-      }),
+      Profile.new(
+        Map.merge(@claude_200k_profile, %{
+          id: "claude-haiku-4-5",
+          name: "Claude Haiku 4.5 (latest)",
+          release_date: "2025-10-15",
+          last_updated: "2025-10-15",
+          supported_params: Params.anthropic() -- [:effort, :reasoning_effort],
+          extra: %{
+            cache_read_price_per_mtok: 0.10,
+            cache_write_5m_price_per_mtok: 1.25,
+            cache_write_1h_price_per_mtok: 2.00,
+            input_price_per_mtok: 1.00,
+            output_price_per_mtok: 5.00,
+            batch_input_price_per_mtok: 0.50,
+            batch_output_price_per_mtok: 2.50,
+            retirement_not_before: "2026-10-15"
+          }
+        })
+      ),
     {:anthropic, "claude-sonnet-4-5-20250929"} =>
-      Profile.new(%{
-        provider: :anthropic,
-        id: "claude-sonnet-4-5-20250929",
-        name: "Claude Sonnet 4.5",
-        release_date: "2025-09-29",
-        last_updated: "2025-09-29",
-        max_input_tokens: 200_000,
-        max_output_tokens: 64_000,
-        text_inputs: true,
-        image_inputs: true,
-        image_url_inputs: true,
-        pdf_inputs: true,
-        text_outputs: true,
-        reasoning_output: true,
-        tool_calling: true,
-        tool_choice: true,
-        parallel_tool_calls: true,
-        structured_output: false,
-        streaming: true,
-        usage_metadata: true,
-        image_tool_message: true,
-        pdf_tool_message: true,
-        attachment: true,
-        supported_params: Params.anthropic(),
-        extra: %{
-          cache_read_price_per_mtok: 0.30,
-          cache_write_5m_price_per_mtok: 3.75,
-          cache_write_1h_price_per_mtok: 6.00,
-          input_price_per_mtok: 3.00,
-          output_price_per_mtok: 15.00,
-          batch_input_price_per_mtok: 1.50,
-          batch_output_price_per_mtok: 7.50,
-          retirement_not_before: "2026-09-29"
-        }
-      }),
+      Profile.new(
+        Map.merge(@claude_200k_profile, %{
+          id: "claude-sonnet-4-5-20250929",
+          name: "Claude Sonnet 4.5",
+          release_date: "2025-09-29",
+          last_updated: "2025-09-29",
+          structured_output: false,
+          supported_params: Params.anthropic() -- [:effort, :reasoning_effort],
+          extra: %{
+            cache_read_price_per_mtok: 0.30,
+            cache_write_5m_price_per_mtok: 3.75,
+            cache_write_1h_price_per_mtok: 6.00,
+            input_price_per_mtok: 3.00,
+            output_price_per_mtok: 15.00,
+            batch_input_price_per_mtok: 1.50,
+            batch_output_price_per_mtok: 7.50,
+            retirement_not_before: "2026-09-29"
+          }
+        })
+      ),
     {:anthropic, "claude-sonnet-4-5"} =>
-      Profile.new(%{
-        provider: :anthropic,
-        id: "claude-sonnet-4-5",
-        name: "Claude Sonnet 4.5 (latest)",
-        release_date: "2025-09-29",
-        last_updated: "2025-09-29",
-        max_input_tokens: 200_000,
-        max_output_tokens: 64_000,
-        text_inputs: true,
-        image_inputs: true,
-        image_url_inputs: true,
-        pdf_inputs: true,
-        text_outputs: true,
-        reasoning_output: true,
-        tool_calling: true,
-        tool_choice: true,
-        parallel_tool_calls: true,
-        structured_output: true,
-        streaming: true,
-        usage_metadata: true,
-        image_tool_message: true,
-        pdf_tool_message: true,
-        attachment: true,
-        supported_params: Params.anthropic(),
-        extra: %{
-          cache_read_price_per_mtok: 0.30,
-          cache_write_5m_price_per_mtok: 3.75,
-          cache_write_1h_price_per_mtok: 6.00,
-          input_price_per_mtok: 3.00,
-          output_price_per_mtok: 15.00,
-          batch_input_price_per_mtok: 1.50,
-          batch_output_price_per_mtok: 7.50,
-          retirement_not_before: "2026-09-29"
-        }
-      }),
+      Profile.new(
+        Map.merge(@claude_200k_profile, %{
+          id: "claude-sonnet-4-5",
+          name: "Claude Sonnet 4.5 (latest)",
+          release_date: "2025-09-29",
+          last_updated: "2025-09-29",
+          supported_params: Params.anthropic() -- [:effort, :reasoning_effort],
+          extra: %{
+            cache_read_price_per_mtok: 0.30,
+            cache_write_5m_price_per_mtok: 3.75,
+            cache_write_1h_price_per_mtok: 6.00,
+            input_price_per_mtok: 3.00,
+            output_price_per_mtok: 15.00,
+            batch_input_price_per_mtok: 1.50,
+            batch_output_price_per_mtok: 7.50,
+            retirement_not_before: "2026-09-29"
+          }
+        })
+      ),
     {:anthropic, "claude-opus-4-5"} =>
-      Profile.new(%{
-        provider: :anthropic,
-        id: "claude-opus-4-5",
-        name: "Claude Opus 4.5 (latest)",
-        release_date: "2025-11-24",
-        last_updated: "2025-11-24",
-        max_input_tokens: 200_000,
-        max_output_tokens: 64_000,
-        text_inputs: true,
-        image_inputs: true,
-        image_url_inputs: true,
-        pdf_inputs: true,
-        text_outputs: true,
-        reasoning_output: true,
-        tool_calling: true,
-        tool_choice: true,
-        parallel_tool_calls: true,
-        structured_output: true,
-        streaming: true,
-        usage_metadata: true,
-        image_tool_message: true,
-        pdf_tool_message: true,
-        attachment: true,
-        supported_params: Params.anthropic(),
-        extra: %{
-          cache_read_price_per_mtok: 0.50,
-          cache_write_5m_price_per_mtok: 6.25,
-          cache_write_1h_price_per_mtok: 10.00,
-          input_price_per_mtok: 5.00,
-          output_price_per_mtok: 25.00,
-          batch_input_price_per_mtok: 2.50,
-          batch_output_price_per_mtok: 12.50,
-          retirement_not_before: "2026-11-24"
-        }
-      })
+      Profile.new(
+        Map.merge(@claude_200k_profile, %{
+          id: "claude-opus-4-5",
+          name: "Claude Opus 4.5 (latest)",
+          release_date: "2025-11-24",
+          last_updated: "2025-11-24",
+          reasoning_effort_levels: [:low, :medium, :high],
+          reasoning_effort_default: :high,
+          extra: %{
+            cache_read_price_per_mtok: 0.50,
+            cache_write_5m_price_per_mtok: 6.25,
+            cache_write_1h_price_per_mtok: 10.00,
+            input_price_per_mtok: 5.00,
+            output_price_per_mtok: 25.00,
+            batch_input_price_per_mtok: 2.50,
+            batch_output_price_per_mtok: 12.50,
+            retirement_not_before: "2026-11-24"
+          }
+        })
+      )
   }
-  def profiles_map, do: @profiles
+  @profiles Map.new(@profiles, fn {key, profile} ->
+              extra =
+                profile.extra
+                |> Map.put(:pricing_last_checked, "2026-10-19")
+                |> Map.put(:pricing_source_url, "https://platform.claude.com/docs/en/about-claude/pricing")
+
+              extra =
+                if price = extra[:cache_read_price_per_mtok],
+                  do: Map.put_new(extra, :cached_input_price_per_mtok, price),
+                  else: extra
+
+              profile = %{profile | extra: extra}
+
+              profile =
+                if profile.id in ["claude-sonnet-4-5", "claude-sonnet-4-5-20250929"] do
+                  %{
+                    profile
+                    | status: :deprecated,
+                      last_updated: "2026-10-19",
+                      extra:
+                        Map.merge(extra, %{
+                          deprecated_at: "2026-09-30",
+                          scheduled_shutdown_date: "2026-11-30",
+                          recommended_replacement: "claude-sonnet-5-5",
+                          lifecycle_source_url: "https://platform.claude.com/docs/en/about-claude/model-deprecations"
+                        })
+                  }
+                else
+                  profile
+                end
+
+              {key, profile}
+            end)
   def profiles, do: Map.values(@profiles)
 
   def resolve(model) do
     cond do
-      Map.has_key?(@anthropic_deprecated_models, model) ->
-        deprecated_model_error(model)
+      metadata = @anthropic_deprecated_models[model] ->
+        ProfileRegistry.deprecated_error(:anthropic, model, "Anthropic model is deprecated", metadata)
 
-      Map.has_key?(@anthropic_retired_models, model) ->
-        retired_model_error(model)
+      metadata = @anthropic_retired_models[model] ->
+        ProfileRegistry.deprecated_error(:anthropic, model, "Anthropic model is retired", metadata)
 
       true ->
-        fetch_or_fallback(@profiles, :anthropic, model)
-    end
-  end
-
-  defp deprecated_model_error(model) do
-    metadata = Map.fetch!(@anthropic_deprecated_models, model)
-    replacement = metadata.replacement
-
-    {:error,
-     Error.new(:deprecated_model, "Anthropic model is deprecated", %{
-       provider: :anthropic,
-       model: model,
-       replacement: replacement,
-       expected: "anthropic:#{replacement}",
-       deprecated_at: metadata.deprecated_at,
-       retirement_date: metadata.retirement_date
-     })}
-  end
-
-  defp retired_model_error(model) do
-    metadata = Map.fetch!(@anthropic_retired_models, model)
-    replacement = metadata.replacement
-
-    {:error,
-     Error.new(:deprecated_model, "Anthropic model is retired", %{
-       provider: :anthropic,
-       model: model,
-       replacement: replacement,
-       expected: "anthropic:#{replacement}",
-       retirement_date: metadata.retirement_date
-     })}
-  end
-
-  defp fetch_or_fallback(profiles, provider, model) do
-    case Map.fetch(profiles, {provider, model}) do
-      {:ok, profile} -> {:ok, profile}
-      :error -> {:fallback, provider, model}
+        ProfileRegistry.fetch_or_fallback(@profiles, :anthropic, model)
     end
   end
 end

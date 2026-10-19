@@ -1,21 +1,30 @@
 defmodule BeamWeaver.Graph.Compiled do
-  @moduledoc """
-  Executable graph produced by `BeamWeaver.Graph.StateGraph.compile/2`.
+  @moduledoc ~S"""
+  Execute and inspect a validated graph with explicit storage and limits.
 
-  This module is the public facade. Graph execution runtime internals live under
-  `BeamWeaver.Graph.Execution`.
+  `invoke/3` returns completed state, an interrupt or an error. `stream_events/3`
+  provides collected or lazy live events. `resume/3` continues saved work;
+  state/history/update functions operate through the configured checkpointer.
+
+  On a stopped thread, empty input means no new turn and continues pending work.
+  On a completed thread, invocation can start another run; inspect the snapshot
+  before using this as a recovery loop. `resume/3` with no pending work instead
+  returns current state.
+
+  Compiled definitions contain reusable configuration, not an executing process.
+  The caller or stream consumer owns execution. Use distinct thread identities
+  for independent batch work. See [Graphs](graphs.md), [Checkpoints](checkpoints.md)
+  and [Streaming](streaming.md).
   """
 
-  alias BeamWeaver.Core.Async
+  alias BeamWeaver.Cache
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Graph.Command
-  alias BeamWeaver.Graph.Compiled.Batch
-  alias BeamWeaver.Graph.Compiled.CacheControl
   alias BeamWeaver.Graph.Compiled.Runtime
-  alias BeamWeaver.Graph.Compiled.View
   alias BeamWeaver.Graph.Execution.StateUpdate
   alias BeamWeaver.Graph.Introspection
-  alias BeamWeaver.Graph.StateGraph
+  alias BeamWeaver.Graph.Renderer
+  alias BeamWeaver.Schema
 
   defstruct [
     :name,
@@ -25,7 +34,6 @@ defmodule BeamWeaver.Graph.Compiled do
     :store,
     interrupt_before: MapSet.new(),
     interrupt_after: MapSet.new(),
-    failure_policy: :panic,
     step_timeout: :infinity,
     run_timeout: :infinity,
     debug: false,
@@ -35,13 +43,17 @@ defmodule BeamWeaver.Graph.Compiled do
 
   @type t :: %__MODULE__{
           name: String.t(),
-          graph: StateGraph.t(),
+          graph: BeamWeaver.Graph.t(),
           plan: map(),
           checkpointer: struct() | nil,
           checkpoint_scope: :inherit | :shared | :disabled | :local,
           store: struct() | nil
         }
 
+  @doc """
+  Runs the compiled graph with state or a Command. Returns {:ok, state},
+  {:interrupted, interrupt}, or {:error, error}; opts include context, config and limits.
+  """
   def invoke(compiled, input, opts \\ [])
 
   @spec invoke(t(), map() | Command.t(), keyword()) ::
@@ -51,39 +63,72 @@ defmodule BeamWeaver.Graph.Compiled do
   def invoke(_compiled, _input, _opts),
     do: {:error, Error.new(:invalid_input, "graph input must be a map")}
 
+  @doc """
+  Runs inputs sequentially and returns one tagged outcome per input in input order.
+  """
   @spec batch(t(), [map()], keyword()) :: [term()]
   def batch(%__MODULE__{} = compiled, inputs, opts \\ []) when is_list(inputs) do
-    Batch.batch(compiled, inputs, opts)
-  end
-
-  @spec batch_as_completed(t(), [map()], keyword()) ::
-          {:ok, Enumerable.t()} | {:error, Error.t()}
-  def batch_as_completed(%__MODULE__{} = compiled, inputs, opts \\ []) when is_list(inputs) do
-    Batch.batch_as_completed(compiled, inputs, opts)
-  end
-
-  @spec async_invoke(t(), map(), keyword()) :: Async.handle()
-  def async_invoke(%__MODULE__{} = compiled, input, opts \\ []) do
-    Async.run_call(opts, &invoke(compiled, input, &1))
-  end
-
-  @spec async_batch(t(), [map()], keyword()) :: [Async.handle()]
-  def async_batch(%__MODULE__{} = compiled, inputs, opts \\ []) when is_list(inputs) do
-    Async.batch_call(inputs, opts, &invoke(compiled, &1, &2))
-  end
-
-  @spec async_batch_as_completed(t(), [map()], keyword()) :: Async.handle()
-  def async_batch_as_completed(%__MODULE__{} = compiled, inputs, opts \\ [])
-      when is_list(inputs) do
-    Async.run_call(opts, &batch_as_completed(compiled, inputs, &1))
+    Enum.map(inputs, &Runtime.invoke(compiled, &1, opts))
   end
 
   @doc """
-  Streams typed graph events with lifecycle envelopes.
+  Returns a lazy concurrent result stream of {input_index, outcome} pairs.
+  Options include max_concurrency and task timeout; task exits use an unknown index.
+  Do not run concurrent inputs against the same mutable thread without coordination.
+  """
+  @spec batch_as_completed(t(), [map()], keyword()) ::
+          {:ok, Enumerable.t()} | {:error, Error.t()}
+  def batch_as_completed(%__MODULE__{} = compiled, inputs, opts \\ []) when is_list(inputs) do
+    max_concurrency =
+      case Keyword.get(opts, :max_concurrency, System.schedulers_online()) do
+        value when is_integer(value) and value > 0 -> value
+        _value -> System.schedulers_online()
+      end
 
-  This is the BeamWeaver-native graph event facade. It returns typed envelopes
-  with a stable start/done boundary without exposing graph execution runner
-  internals.
+    stream =
+      inputs
+      |> Enum.with_index()
+      |> Task.async_stream(
+        fn {input, index} -> {index, Runtime.invoke(compiled, input, opts)} end,
+        ordered: false,
+        max_concurrency: max_concurrency,
+        timeout: Keyword.get(opts, :timeout, :infinity),
+        on_timeout: :kill_task
+      )
+      |> Elixir.Stream.map(fn
+        {:ok, {index, result}} ->
+          {index, result}
+
+        {:exit, reason} ->
+          {:unknown, {:error, Error.new(:graph_batch_exit, "graph batch task exited", %{reason: inspect(reason)})}}
+      end)
+
+    {:ok, stream}
+  rescue
+    exception ->
+      {:error,
+       Error.new(:graph_batch_exception, Exception.message(exception), %{
+         exception: inspect(exception.__struct__)
+       })}
+  end
+
+  @doc """
+  Runs the graph and returns its events as `BeamWeaver.Stream.Envelope` structs.
+
+  With `live: true` it returns `{:ok, stream}` at once, and the graph runs while
+  you read the stream; a failed run ends the stream with an `Error` event.
+  Without it the graph runs to the end first and the same events, in the same
+  order, come back as `{:ok, events}`, as `interrupt.events` in
+  `{:interrupted, interrupt}`, or not at all in `{:error, error}`.
+
+  Takes the options of `invoke/3`, and:
+
+    * `:live` - stream the events while the graph runs.
+    * `:stream_mode` - keep only events of these channels (see
+      `BeamWeaver.Stream.event_mode/1`), such as `[:messages, :tools]`.
+      Defaults to `:events`, every event; `Error` events always arrive.
+
+  See [Streaming](streaming.md).
   """
   @spec stream_events(t(), map() | Command.t(), keyword()) ::
           {:ok, Enumerable.t()} | {:interrupted, map()} | {:error, Error.t()}
@@ -91,13 +136,14 @@ defmodule BeamWeaver.Graph.Compiled do
     Runtime.stream_events(compiled, input, opts)
   end
 
-  @spec async_stream_events(t(), map() | Command.t(), keyword()) :: Async.handle()
-  def async_stream_events(%__MODULE__{} = compiled, input, opts \\ []) do
-    Async.run_call(opts, &stream_events(compiled, input, &1))
-  end
-
   @doc """
-  Resumes the latest interrupted checkpoint with a value or interrupt-id map.
+  Continues the thread from its latest checkpoint.
+
+  `resume` answers the pending interrupts: a value for a single one, or a map
+  from interrupt id to value. The run then goes on with the nodes the thread
+  had left, past a breakpoint it stopped at. Pass `nil` when nothing waits
+  for an answer, such as after a breakpoint or a crash. A thread with nothing
+  left to run returns its state.
   """
   @spec resume(t(), term(), keyword()) ::
           {:ok, map()} | {:interrupted, map()} | {:error, Error.t()}
@@ -105,19 +151,9 @@ defmodule BeamWeaver.Graph.Compiled do
     Runtime.resume(compiled, resume, opts)
   end
 
-  @spec async_resume(t(), term(), keyword()) :: Async.handle()
-  def async_resume(%__MODULE__{} = compiled, resume, opts \\ []) do
-    Async.run_call(opts, &resume(compiled, resume, &1))
-  end
-
   @doc "Returns the latest checkpointed state for a graph configuration."
   @spec get_state(t(), map()) :: {:ok, map()} | :error | {:error, Error.t()}
   defdelegate get_state(compiled, config), to: StateUpdate
-
-  @spec async_get_state(t(), map(), keyword()) :: Async.handle()
-  def async_get_state(%__MODULE__{} = compiled, config, opts \\ []) do
-    Async.run_call(opts, fn _call_opts -> get_state(compiled, config) end)
-  end
 
   def get_state_history(compiled, config, opts \\ [])
 
@@ -125,32 +161,26 @@ defmodule BeamWeaver.Graph.Compiled do
   @spec get_state_history(t(), map(), keyword()) :: [map()] | {:error, Error.t()}
   defdelegate get_state_history(compiled, config, opts), to: StateUpdate
 
-  @spec async_get_state_history(t(), map(), keyword()) :: Async.handle()
-  def async_get_state_history(%__MODULE__{} = compiled, config, opts \\ []) do
-    Async.run_call(opts, &get_state_history(compiled, config, &1))
-  end
-
   def update_state(compiled, config, values, opts \\ [])
 
   @doc "Applies a state update to a checkpointed graph configuration."
   @spec update_state(t(), map(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   defdelegate update_state(compiled, config, values, opts), to: StateUpdate
 
-  @spec async_update_state(t(), map(), map(), keyword()) :: Async.handle()
-  def async_update_state(%__MODULE__{} = compiled, config, values, opts \\ []) do
-    Async.run_call(opts, &update_state(compiled, config, values, &1))
-  end
-
   def bulk_update_state(compiled, config, supersteps, opts \\ [])
 
-  @doc "Applies a bulk state update to a checkpointed graph configuration."
+  @doc """
+  Applies supersteps of updates to a checkpointed graph configuration.
+
+  Each superstep's updates merge as the writes of one step do, and each
+  superstep is saved the way `update_state/4` saves an update: it counts as
+  the result of `as_node:`, or of the node that ran last, so the nodes after
+  that node run next, and the tasks the thread still had to run, such as one
+  waiting at a breakpoint, stay. Returns the config of the last superstep's
+  checkpoint.
+  """
   @spec bulk_update_state(t(), map(), [[map()]], keyword()) :: {:ok, map()} | {:error, Error.t()}
   defdelegate bulk_update_state(compiled, config, supersteps, opts), to: StateUpdate
-
-  @spec async_bulk_update_state(t(), map(), [[map()]], keyword()) :: Async.handle()
-  def async_bulk_update_state(%__MODULE__{} = compiled, config, supersteps, opts \\ []) do
-    Async.run_call(opts, &bulk_update_state(compiled, config, supersteps, &1))
-  end
 
   @doc """
   Clears the explicit graph cache adapter.
@@ -160,46 +190,77 @@ defmodule BeamWeaver.Graph.Compiled do
   """
   @spec clear_cache(t(), keyword()) :: :ok | {:error, Error.t()}
   def clear_cache(%__MODULE__{} = compiled, opts \\ []) do
-    CacheControl.clear_cache(compiled, opts)
+    cache = Keyword.get(opts, :cache, compiled.cache)
+
+    cond do
+      Cache.adapter?(cache) ->
+        Cache.clear(cache, Keyword.get(opts, :namespace))
+
+      cache in [nil, false, %{}] ->
+        :ok
+
+      true ->
+        {:error,
+         Error.new(:invalid_cache, "graph cache must be a BeamWeaver.Cache adapter", %{
+           cache: inspect(cache)
+         })}
+    end
   end
 
-  @spec async_clear_cache(t(), keyword()) :: Async.handle()
-  def async_clear_cache(%__MODULE__{} = compiled, opts \\ []) do
-    Async.run_call(opts, &clear_cache(compiled, &1))
-  end
-
+  @doc """
+  Returns graph introspection data for nodes, edges, entry and finish points,
+  and rendering. See `BeamWeaver.Graph.Introspection`.
+  """
   @spec get_graph(t(), keyword()) :: Introspection.t()
   def get_graph(%__MODULE__{} = compiled, opts \\ []) do
-    View.get_graph(compiled, opts)
+    Introspection.from_compiled(compiled, opts)
   end
 
+  @doc """
+  Returns JSON Schema describing declared runtime context.
+  """
   @spec get_context_json_schema(t()) :: map()
   def get_context_json_schema(%__MODULE__{graph: %{context_schema: context_schema}}) do
-    View.get_context_json_schema(%{graph: %{context_schema: context_schema}})
+    Schema.to_json_schema(context_schema)
   end
 
+  @doc """
+  Returns JSON Schema describing declared graph input keys.
+  """
   @spec get_input_json_schema(t()) :: map()
   def get_input_json_schema(%__MODULE__{graph: %{input_schema: input_schema}}) do
-    View.get_input_json_schema(%{graph: %{input_schema: input_schema}})
+    Schema.to_json_schema(input_schema)
   end
 
+  @doc """
+  Returns JSON Schema describing declared graph output keys.
+  """
   @spec get_output_json_schema(t()) :: map()
   def get_output_json_schema(%__MODULE__{graph: %{output_schema: output_schema}}) do
-    View.get_output_json_schema(%{graph: %{output_schema: output_schema}})
+    Schema.to_json_schema(output_schema)
   end
 
+  @doc """
+  Renders graph introspection as Mermaid text; it does not execute nodes.
+  """
   @spec draw_mermaid(t(), keyword()) :: String.t()
   def draw_mermaid(%__MODULE__{} = compiled, opts \\ []) do
-    View.draw_mermaid(compiled, opts)
+    compiled |> get_graph(opts) |> Renderer.to_mermaid(opts)
   end
 
+  @doc """
+  Renders graph topology as text without executing it.
+  """
   @spec draw_ascii(t(), keyword()) :: String.t()
   def draw_ascii(%__MODULE__{} = compiled, opts \\ []) do
-    View.draw_ascii(compiled, opts)
+    compiled |> get_graph(opts) |> Renderer.to_ascii(opts)
   end
 
+  @doc """
+  Renders a PNG through the configured renderer; returns bytes or a renderer error.
+  """
   @spec draw_png(t(), keyword()) :: {:ok, binary()} | {:error, Error.t()}
   def draw_png(%__MODULE__{} = compiled, opts \\ []) do
-    View.draw_png(compiled, opts)
+    compiled |> get_graph(opts) |> Renderer.to_png(opts)
   end
 end

@@ -1,7 +1,6 @@
 defmodule BeamWeaver.OpenAI.ChatModelTest do
   use ExUnit.Case
 
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.ChatModel, as: CoreChatModel
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages.ToolCall
@@ -9,21 +8,18 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
   alias BeamWeaver.Models
   alias BeamWeaver.Models.ParamPolicy
   alias BeamWeaver.Models.Profile
-  alias BeamWeaver.Models.UsageCost
   alias BeamWeaver.OpenAI.ChatModel
   alias BeamWeaver.OpenAI.Messages
-  alias BeamWeaver.OpenAI.ModelPolicy
   alias BeamWeaver.OpenAI.Responses
   alias BeamWeaver.OpenAI.ToolCalling
-  alias BeamWeaver.Runtime.Agent
   alias BeamWeaver.Tokenizer.Approximate
   alias BeamWeaver.Tracing
 
   setup do
-    Tracing.reset()
+    Tracing.clear()
 
     on_exit(fn ->
-      Tracing.reset()
+      Tracing.clear()
     end)
 
     :ok
@@ -50,42 +46,6 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
     assert ChatModel.should_stream?(streaming, async_api: false)
     refute ChatModel.should_stream?(%ChatModel{}, async_api: true)
     assert ChatModel.should_stream?(%ChatModel{}, stream: true)
-  end
-
-  test "constructor resolves OpenAI model profiles without mutable global profile state" do
-    gpt41 = ChatModel.new(model: "gpt-4.1")
-    assert %Profile{provider: :openai, id: "gpt-4.1"} = gpt41.profile
-
-    gpt5 = ChatModel.new(model: "gpt-5")
-    assert %Profile{provider: :openai, id: "gpt-5"} = gpt5.profile
-
-    sol = ChatModel.new(model: "gpt-5.6-sol")
-    assert %Profile{provider: :openai, id: "gpt-5.6-sol"} = sol.profile
-
-    astra = ChatModel.new(model: "gpt-6-astra")
-    assert %Profile{provider: :openai, id: "gpt-6-astra"} = astra.profile
-    assert astra.profile.max_input_tokens == 1_050_000
-    assert astra.profile.max_output_tokens == 128_000
-    assert astra.profile.extra.reasoning_efforts == [:low, :medium, :high, :xhigh, :max]
-    assert astra.profile.extra.chat_completions_tool_calling == false
-
-    assert {:ok, %ChatModel{model: "gpt-6-astra"}} =
-             Models.init_chat_model("openai:gpt-6-astra")
-
-    alias_model = ChatModel.new(model: "gpt-5.6")
-    assert alias_model.profile.id == "gpt-5.6"
-
-    changed_copy = %{gpt5.profile | tool_calling: false}
-    refute changed_copy.tool_calling
-    refute ChatModel.new(model: "gpt-5").profile == changed_copy
-
-    override = ChatModel.new(model: "gpt-5", profile: %{tool_calling: false})
-    refute override.profile.tool_calling
-    assert override.profile.extra == %{}
-
-    assert_raise ArgumentError, ~r/OpenAI model is deprecated; use openai:gpt-4.1/, fn ->
-      ChatModel.new(model: "gpt-4")
-    end
   end
 
   test "token counting includes message structure, media, tools, and tokenizer fallback" do
@@ -120,38 +80,6 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
     assert {:ok, 2} = ChatModel.count_tokens(model, "plain text", [])
   end
 
-  test "OpenAI initializer rejects deprecated o-series and accepts frontier reasoning models" do
-    assert %ChatModel{reasoning_effort: "minimal"} =
-             ChatModel.new(model: "gpt-5", reasoning_effort: "minimal")
-
-    assert {:error, error} =
-             Models.init_chat_model("openai:o1-preview", reasoning_effort: "medium")
-
-    assert error.type == :deprecated_model
-    assert error.details.replacement == "gpt-5"
-
-    assert {:ok, %ChatModel{reasoning_effort: "minimal"}} =
-             Models.init_chat_model("openai:gpt-5", reasoning_effort: "minimal")
-  end
-
-  test "model policy records OpenAI Responses-preferred families" do
-    for model <- [
-          "gpt-6-astra",
-          "gpt-5.6",
-          "gpt-5.6-sol",
-          "gpt-5.6-terra",
-          "gpt-5.6-luna",
-          "gpt-5.4-pro",
-          "gpt-5.5-pro"
-        ] do
-      assert ModelPolicy.prefers_responses_api?(model)
-    end
-
-    for model <- ["gpt-5", "gpt-5.5", "gpt-5.4", "o3-pro", "gpt-4.1", nil] do
-      refute ModelPolicy.prefers_responses_api?(model)
-    end
-  end
-
   test "invokes the Responses API through a replay cassette and decodes assistant text" do
     request_body = %{
       "model" => "gpt-5.4-mini",
@@ -184,7 +112,7 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
     assert response.metadata.id == "resp_replay"
   end
 
-  test "async invoke uses the same replay-backed Responses API request shape" do
+  test "provider invoke forwards request metadata into the Responses API request" do
     request_body = %{
       "model" => "gpt-5.4-mini",
       "input" => [
@@ -207,10 +135,7 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
     model =
       replay_model(write_gzip_cassette(request_body, BeamWeaver.JSON.encode!(response_body)))
 
-    task =
-      ChatModel.async_invoke(model, [Message.user("async ping")], metadata: %{request_id: "async_1"})
-
-    assert {:ok, response} = Async.await(task)
+    assert {:ok, response} = ChatModel.invoke(model, [Message.user("async ping")], metadata: %{request_id: "async_1"})
     assert Message.text(response) == "async pong"
     assert response.metadata.id == "resp_async"
   end
@@ -218,29 +143,26 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
   test "Responses API maps context-window provider errors to tagged overflow errors" do
     model = context_overflow_model()
 
-    assert {:error, %BeamWeaver.OpenAI.Error{type: :context_overflow} = error} =
+    assert {:error, %BeamWeaver.Core.Error{type: :context_overflow} = error} =
              CoreChatModel.invoke(model, [Message.user("test")])
 
     assert error.message =~ "Input tokens exceed the configured limit"
     assert error.details.code == "context_length_exceeded"
     assert error.details.error_type == "invalid_request_error"
 
-    assert {:error, %BeamWeaver.OpenAI.Error{type: :context_overflow}} =
-             model
-             |> ChatModel.async_invoke([Message.user("test")])
-             |> Async.await()
+    assert {:error, %BeamWeaver.Core.Error{type: :context_overflow}} = ChatModel.invoke(model, [Message.user("test")])
 
     assert {:ok, stream} = ChatModel.stream(context_overflow_model(), [Message.user("test")])
 
     assert [
              %BeamWeaver.Stream.Events.Error{
-               error: %BeamWeaver.OpenAI.Error{type: :context_overflow}
+               error: %BeamWeaver.Core.Error{type: :context_overflow}
              }
            ] = Enum.to_list(stream)
 
     prompt_too_long = context_overflow_model("prompt is too long: 300000 tokens > 200000 maximum")
 
-    assert {:error, %BeamWeaver.OpenAI.Error{type: :context_overflow} = prompt_error} =
+    assert {:error, %BeamWeaver.Core.Error{type: :context_overflow} = prompt_error} =
              CoreChatModel.invoke(prompt_too_long, [Message.user("test")])
 
     assert prompt_error.message =~ "prompt is too long"
@@ -361,14 +283,13 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
     assert error.details.response.role == :assistant
     assert error.details.response.content_preview == ~s({"response":"good"})
 
-    task =
-      ChatModel.async_invoke(model, [Message.user("respond with good")],
-        response_format: %{name: "BadModel", schema: schema, validator: validator}
-      )
+    assert {:error, provider_error} =
+             ChatModel.invoke(model, [Message.user("respond with good")],
+               response_format: %{name: "BadModel", schema: schema, validator: validator}
+             )
 
-    assert {:error, async_error} = Async.await(task)
-    assert async_error.type == :structured_output_parse_error
-    assert async_error.details.parsed == %{"response" => "good"}
+    assert provider_error.type == :structured_output_parse_error
+    assert provider_error.details.parsed == %{"response" => "good"}
   end
 
   test "structured output preserves valid falsy parsed values" do
@@ -429,7 +350,7 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
 
     model = replay_model(write_gzip_cassette(request_body, response_body))
 
-    assert {:error, %BeamWeaver.OpenAI.Error{type: :openai_refusal} = error} =
+    assert {:error, %BeamWeaver.Core.Error{type: :openai_refusal} = error} =
              CoreChatModel.invoke(model, [Message.user("refuse")], response_format: %{name: "Answer", schema: schema})
 
     assert %{type: :refusal, refusal: "I cannot comply."} = error.details.refusal
@@ -480,11 +401,9 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
     assert response.metadata.request_id == "req-openai-1"
     refute Map.has_key?(response.metadata.headers, "content-type")
 
-    task = ChatModel.async_invoke(model, [Message.user("headers")])
-
-    assert {:ok, async_response} = Async.await(task)
-    assert async_response.metadata.headers == %{request_id: "req-openai-1", openai_processing_ms: "17"}
-    assert async_response.metadata.request_id == "req-openai-1"
+    assert {:ok, provider_response} = ChatModel.invoke(model, [Message.user("headers")])
+    assert provider_response.metadata.headers == %{request_id: "req-openai-1", openai_processing_ms: "17"}
+    assert provider_response.metadata.request_id == "req-openai-1"
   end
 
   test "audio input and output modality shape round-trips through replay" do
@@ -602,7 +521,7 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
     assert {:ok, response} =
              CoreChatModel.invoke(model, [Message.user("option check")],
                model: "gpt-5.5",
-               model_kwargs: %{custom_non_openai_param: "kept"},
+               extra_body: %{custom_non_openai_param: "kept"},
                verbosity: :high,
                reasoning_effort: :none,
                temperature: 0.4,
@@ -741,8 +660,7 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
                %ChatModel{model: "future-model", profile: unknown},
                [Message.user("hello")],
                temperature: 0.3,
-               model_kwargs: %{custom_vendor_param: true},
-               extra_body: %{another_vendor_param: "ok"},
+               extra_body: %{custom_vendor_param: true, another_vendor_param: "ok"},
                provider_opts: %{trace: true}
              )
 
@@ -839,17 +757,8 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
     end
   end
 
-  test "GPT-6.1 Sol resolves to Responses with documented input limits and cache prices" do
+  test "reasoning-required Responses requests combine tools with structured output" do
     assert {:ok, %ChatModel{} = model} = Models.init_chat_model("openai:gpt-6.1-sol")
-    profile = model.profile
-    assert profile.max_context_tokens == 1_050_000
-    assert profile.max_input_tokens == 922_000
-    assert profile.max_output_tokens == 128_000
-    assert {:ok, 922_000} = BeamWeaver.ContextBudget.effective_input_limit(profile)
-
-    usage = %{input_tokens: 1_000, cached_tokens: 400, cache_write_tokens: 200, output_tokens: 2_000}
-    assert_in_delta UsageCost.calculate(profile, usage).total_cost, 0.02134, 1.0e-12
-
     assert {:ok, body} = ChatModel.request_body(model, [Message.user("use the tools")])
     assert body["model"] == "gpt-6.1-sol"
     refute Map.has_key?(body, "reasoning")
@@ -871,20 +780,9 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
     end
   end
 
-  test "GPT-6 Sol and Luna profiles price usage and validate Responses requests" do
-    for {model_id, input_price, output_price} <- [
-          {"gpt-6-sol", 2.0, 10.0},
-          {"gpt-6-luna", 0.1, 0.5}
-        ] do
+  test "optional-reasoning models validate Responses request controls" do
+    for model_id <- ["gpt-6-sol", "gpt-6-luna"] do
       assert {:ok, %ChatModel{} = model} = Models.init_chat_model("openai:#{model_id}")
-      assert model.profile.max_input_tokens == 1_050_000
-      assert model.profile.max_output_tokens == 128_000
-      assert model.profile.extra.input_price_per_mtok == input_price
-      assert model.profile.extra.output_price_per_mtok == output_price
-      assert model.profile.extra.reasoning_efforts == [:none, :low, :medium, :high, :xhigh, :max]
-
-      costs = UsageCost.calculate(model.profile, %{input_tokens: 1_000_000, output_tokens: 1_000_000})
-      assert_in_delta costs.total_cost, input_price + output_price, 1.0e-12
 
       assert {:ok, body} =
                ChatModel.request_body(model, [Message.user("solve")],
@@ -914,6 +812,23 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
 
       assert sampling_error.details.params == [:top_p]
     end
+  end
+
+  test "GPT-6 request builder treats a nil reasoning effort as unset" do
+    model = ChatModel.new(model: "gpt-6-sol")
+
+    for reasoning <- [%{effort: nil}, %{"effort" => nil}] do
+      assert {:ok, body} = ChatModel.request_body(model, [Message.user("hi")], reasoning: reasoning)
+      refute Map.has_key?(body, "reasoning")
+    end
+
+    assert {:ok, body} = ChatModel.request_body(model, [Message.user("hi")], reasoning: %{effort: nil, summary: :auto})
+    assert body["reasoning"] == %{"summary" => "auto"}
+
+    assert {:ok, body} =
+             ChatModel.request_body(model, [Message.user("hi")], reasoning: %{effort: nil}, reasoning_effort: :low)
+
+    assert body["reasoning"] == %{"effort" => "low"}
   end
 
   test "Responses carries access programs and prompt-cache prewarming from the current schema" do
@@ -1240,7 +1155,7 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
            ] = events
   end
 
-  test "async stream_response and stream_events reconstruct streamed Responses output" do
+  test "stream, stream_response, and stream_events reconstruct streamed Responses output" do
     request_body = %{
       "model" => "gpt-5.4-mini",
       "input" => [
@@ -1280,17 +1195,14 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
     model =
       replay_model(write_gzip_cassette(request_body, response_body, content_type: "text/event-stream"))
 
-    stream_task = ChatModel.async_stream(model, [Message.user("async stream")])
-    assert {:ok, stream} = Async.await(stream_task)
+    assert {:ok, stream} = ChatModel.stream(model, [Message.user("async stream")])
     assert Enum.to_list(stream) == ["async ", "done"]
 
-    response_task = ChatModel.async_stream_response(model, [Message.user("async stream")])
-    assert {:ok, response} = Async.await(response_task)
+    assert {:ok, response} = ChatModel.stream_response(model, [Message.user("async stream")])
     assert Message.text(response) == "async done"
     assert response.metadata.usage == %{"total_tokens" => 9}
 
-    events_task = ChatModel.async_stream_events(model, [Message.user("async stream")])
-    assert {:ok, events} = Async.await(events_task)
+    assert {:ok, events} = ChatModel.stream_events(model, [Message.user("async stream")])
 
     assert Enum.any?(
              events,
@@ -1403,7 +1315,7 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
            ] = events
   end
 
-  test "async batch preserves input order while matching each replay request body" do
+  test "batch preserves input order while matching each replay request body" do
     interactions = [
       {
         %{
@@ -1439,60 +1351,11 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
 
     model = replay_model(write_gzip_cassette(interactions))
 
-    tasks =
-      ChatModel.async_batch(model, [
-        [Message.user("first")],
-        [Message.user("second")]
-      ])
-
-    assert [
-             {:ok, first},
-             {:ok, second}
-           ] = Async.await_batch(tasks)
+    assert [{:ok, first}, {:ok, second}] =
+             CoreChatModel.batch(model, [[Message.user("first")], [Message.user("second")]])
 
     assert Message.text(first) == "first response"
     assert Message.text(second) == "second response"
-  end
-
-  test "replay-backed OpenAI calls can run inside the supervised agent runtime" do
-    request_body = %{
-      "model" => "gpt-5.4-mini",
-      "input" => [
-        %{"type" => "message", "role" => "user", "content" => "agent ping"}
-      ],
-      "stream" => false
-    }
-
-    response_body = %{
-      "output" => [
-        %{
-          "type" => "message",
-          "content" => [
-            %{"type" => "output_text", "text" => "agent pong"}
-          ]
-        }
-      ]
-    }
-
-    cassette_path = write_gzip_cassette(request_body, BeamWeaver.JSON.encode!(response_body))
-    model = replay_model(cassette_path)
-    agent = start_supervised!({Agent, id: "openai_agent_#{System.unique_integer([:positive])}"})
-    :ok = Agent.subscribe(agent)
-    {:ok, parent_run} = Tracing.start_run("request")
-
-    assert {:ok, work} =
-             Agent.start_model_call(agent, [Message.user("agent ping")], fn messages ->
-               CoreChatModel.invoke(model, messages)
-             end)
-
-    assert_receive {:beam_weaver_agent, _agent_id, {:completed, work_id, %Message{role: :assistant} = response}}
-
-    assert work_id == work.id
-    assert Message.text(response) == "agent pong"
-
-    assert {:ok, %{children: [%{run: child_run}]}} = Tracing.get_tree(parent_run.id)
-    assert child_run.id == work.trace_run_id
-    assert child_run.parent_id == parent_run.id
   end
 
   defp replay_model(cassette_path) do

@@ -1,17 +1,31 @@
 defmodule BeamWeaver.OpenAI.ChatModel do
-  @moduledoc """
-  Responses API chat model implementation for the first non-Azure OpenAI slice.
+  @moduledoc ~S"""
+  OpenAI chat model implementing the BeamWeaver chat contract.
+
+  Prefer `BeamWeaver.Models.init_chat_model/2` for provider-prefixed identifiers,
+  then call `BeamWeaver.Core.ChatModel` or declare the model in an agent.
+  Construction does not contact the provider. Model/profile options describe
+  local compatibility; account access is established only by a real request.
+
+  See [OpenAI](providers/openai.md) for endpoint-specific parameters, reasoning,
+  media and tools. Preserve complete messages for multi-turn replay. Streaming
+  consumers must enumerate once and handle terminal errors; display text is not
+  a lossless representation of a native provider turn.
   """
 
+  use BeamWeaver.Provider.RedactedInspect
+
   alias BeamWeaver.OpenAI.ChatModel.RequestBuilder
-  alias BeamWeaver.OpenAI.ChatModel.StructuredOutput
   alias BeamWeaver.OpenAI.ChatModel.TokenCounter
   alias BeamWeaver.OpenAI.Client
-  alias BeamWeaver.OpenAI.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.OpenAI.Messages
   alias BeamWeaver.OpenAI.ModelPolicy
+  alias BeamWeaver.OpenAI.RequestMetadata
   alias BeamWeaver.Models.InvocationMetadata
   alias BeamWeaver.Provider.ChatModel.Options, as: ChatOptions
+  alias BeamWeaver.Provider.OpenAICompatibleClient, as: Compat
+  alias BeamWeaver.Provider.StructuredOutput
 
   @default_model "gpt-5.5"
   @default_endpoint "https://api.openai.com/v1/responses"
@@ -23,7 +37,7 @@ defmodule BeamWeaver.OpenAI.ChatModel do
             organization: nil,
             project: nil,
             default_headers: [],
-            model_kwargs: %{},
+            extra_body: %{},
             access_programs: nil,
             reasoning: nil,
             reasoning_effort: nil,
@@ -64,7 +78,7 @@ defmodule BeamWeaver.OpenAI.ChatModel do
           organization: String.t() | nil,
           project: String.t() | nil,
           default_headers: [{String.t(), String.t()}],
-          model_kwargs: map(),
+          extra_body: map(),
           access_programs: map() | nil,
           reasoning: map() | nil,
           reasoning_effort: atom() | String.t() | nil,
@@ -97,18 +111,19 @@ defmodule BeamWeaver.OpenAI.ChatModel do
           timeout: non_neg_integer()
         }
 
-  use BeamWeaver.Provider.ChatModel
+  use BeamWeaver.Provider.ChatModel, stream_source: :openai_responses, exact_stream_events: true
 
   @doc """
   Builds a chat model from keyword options.
 
-  The public struct is the idiomatic Elixir representation. Use `:model` and
-  `:endpoint` explicitly; Python-style constructor aliases are intentionally not
-  accepted.
+  Options are the struct's fields; set the model with `:model`, and the API
+  with `:base_url` (the API root, such as `"https://api.openai.com/v1"`) or the
+  full `:endpoint` URL. Unknown options, such as `:model_name`, raise a
+  `KeyError`.
   """
   @spec new(keyword() | map()) :: t()
   def new(opts \\ []) do
-    opts = ChatOptions.keyword_options(opts)
+    opts = opts |> ChatOptions.keyword_options() |> Compat.expand_base_url(endpoint: "responses")
 
     model = Keyword.get(opts, :model, @default_model)
     max_completion_tokens = Keyword.get(opts, :max_completion_tokens)
@@ -121,10 +136,7 @@ defmodule BeamWeaver.OpenAI.ChatModel do
       |> Keyword.put(:model, model)
       |> Keyword.put(:profile, profile)
       |> Keyword.put(:temperature, temperature)
-      |> ChatOptions.put_present(
-        :max_tokens,
-        Keyword.get(opts, :max_tokens, max_completion_tokens)
-      )
+      |> BeamWeaver.MapShape.put_present(:max_tokens, Keyword.get(opts, :max_tokens, max_completion_tokens))
     )
   end
 
@@ -143,60 +155,42 @@ defmodule BeamWeaver.OpenAI.ChatModel do
   end
 
   @doc """
-  Streams through the Responses API and returns typed BeamWeaver stream envelopes.
-  """
-  @spec stream_typed_events(t(), [BeamWeaver.Core.Message.t()], keyword()) ::
-          {:ok, Enumerable.t()} | {:error, Error.t()}
-  @impl true
-  def stream_typed_events(%__MODULE__{} = model, messages, opts \\ []) do
-    ChatRuntime.stream_events(model, messages, opts, runtime_adapter())
-  end
-
-  @doc """
   Builds the OpenAI Responses API request body for a chat invocation.
   """
   @spec request_body(t(), [BeamWeaver.Core.Message.t()], keyword()) ::
           {:ok, map()} | {:error, Error.t()}
-  def request_body(%__MODULE__{} = model, messages, opts \\ []),
-    do: RequestBuilder.request_body(model, messages, opts)
+  @impl true
+  def request_body(%__MODULE__{} = model, messages, opts \\ []) do
+    metadata = Keyword.get(opts, :metadata, model.metadata)
+
+    with :ok <- RequestMetadata.validate(metadata, Keyword.get(opts, :model, model.model)),
+         do: RequestBuilder.request_body(model, messages, opts)
+  end
 
   defp client(%__MODULE__{} = model) do
-    %Client{
-      endpoint: model.endpoint,
-      api_key: model.api_key,
-      organization: model.organization,
-      project: model.project,
-      default_headers: model.default_headers,
-      transport: model.transport,
-      transport_opts: model.transport_opts,
-      timeout: model.timeout
-    }
+    fields = ~w(endpoint api_key organization project default_headers transport transport_opts timeout)a
+    struct(Client, Map.take(model, fields))
   end
 
-  defp model_stream_metadata(%__MODULE__{} = model, body, opts, api) do
-    model
-    |> InvocationMetadata.openai(body, opts, api)
-    |> InvocationMetadata.to_metadata_map()
-  end
+  @impl true
+  def stream_metadata(%__MODULE__{} = model, body, opts),
+    do: model |> InvocationMetadata.openai(body, opts, :responses) |> InvocationMetadata.to_metadata_map()
 
-  defp runtime_adapter do
-    %ChatRuntime.Adapter{
-      request: &request_body/3,
-      invoke: fn model, body, opts -> Client.responses(client(model), body, opts) end,
-      stream: fn model, body, opts -> Client.responses_stream(client(model), body, opts) end,
-      stream_response: fn model, body, opts ->
-        Client.responses_stream_response(client(model), body, opts)
-      end,
-      stream_events: fn model, body, opts ->
-        Client.responses_stream_typed_events(client(model), body, opts)
-      end,
-      exact_stream_events: fn model, body, opts ->
-        Client.responses_stream_typed_events(client(model), body, opts)
-      end,
-      decode: fn response, _opts -> Messages.response_to_message(response) end,
-      parse: &StructuredOutput.maybe_parse/2,
-      metadata: fn model, body, opts -> model_stream_metadata(model, body, opts, :responses) end,
-      source: :openai_responses
-    }
-  end
+  @impl true
+  def send_request(:invoke, model, body, opts), do: Client.responses(client(model), body, opts)
+  def send_request(:stream, model, body, opts), do: Client.responses_stream(client(model), body, opts)
+  def send_request(:stream_response, model, body, opts), do: Client.responses_stream_response(client(model), body, opts)
+
+  def send_request(:stream_events, model, body, opts),
+    do: Client.responses_stream_typed_events(client(model), body, opts)
+
+  def send_request(:exact_stream_events, model, body, opts),
+    do: Client.responses_stream_typed_events(client(model), body, opts)
+
+  @impl true
+  def decode_response(response, _opts), do: Messages.response_to_message(response)
+
+  @impl true
+  def parse_response(_model, message, opts),
+    do: StructuredOutput.maybe_parse(message, opts, provider_name: "OpenAI", refusal?: true)
 end

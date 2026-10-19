@@ -1,56 +1,83 @@
 defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
   @moduledoc """
-  Read-side clipping for DeepAgents context-overflow recovery.
+  Recovers from context overflow errors by clipping large tool results.
 
-  The helper targets the preserved message suffix that ends with a consecutive
-  batch of tool messages. Large generic tool results are offloaded to the
-  filesystem backend; `read_file` results are head-sliced and point back to the
-  original file path because the full data is already available there.
+  When a model call fails because the request is too long for the model, the
+  middleware clips the trailing batch of tool results and retries once. A
+  generic result is saved to a file under `/large_tool_results/` and replaced
+  with a preview of its first and last lines; a `read_file` result is cut to
+  its first 4,000 characters and points back to the file it came from. The
+  previews tell the model to read the rest with `read_file` only when the
+  call offers that tool. When the retry succeeds, the clipped results replace
+  the full ones in the saved thread, and with `BeamWeaver.Filesystem.State`
+  the saved files are added to the thread's files, so later calls don't send
+  the full results again.
+
+  With `:summarization`, a call that still overflows once its results are
+  clipped, or that has nothing to clip, is sent once more with the thread
+  summarized, and keeps the results clipped. An agent with automatic
+  summarization (`BeamWeaver.Agent.Middleware.Summarization`) as well gives
+  it here, so the two can be listed in any order. A call that overflows is
+  sent at most twice more.
+
+  Options:
+
+    * `:keep` - how large the trailing batch may be before it is clipped:
+      `{:tokens, n}` (the default is `{:tokens, 5_000}`) or `{:fraction, f}` of
+      `:max_input_tokens` (5,000 tokens when that is unknown).
+    * `:max_input_tokens` - the model's context window; `overflow_recovery`
+      sets it from the agent's model.
+    * `:backend` - the filesystem the results are saved to.
+    * `:token_counter` - `:approximate` or a function of a message list.
+    * `:large_tool_results_prefix` - the directory for the saved results.
+    * `:summarization` - a `BeamWeaver.Agent.Middleware.Summarization` that
+      summarizes the thread when clipping isn't enough.
   """
 
-  @behaviour BeamWeaver.Agent.Middleware
+  use BeamWeaver.Agent.Middleware
 
+  alias BeamWeaver.Agent.ExtendedModelResponse
   alias BeamWeaver.Agent.Middleware.Helpers
   alias BeamWeaver.Agent.Middleware.Offload
+  alias BeamWeaver.Agent.Middleware.Summarization
   alias BeamWeaver.Agent.ModelRequest
+  alias BeamWeaver.Agent.ModelResponse
+  alias BeamWeaver.Agent.State, as: AgentState
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.ID
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Messages.Utils, as: MessageUtils
   alias BeamWeaver.Filesystem
   alias BeamWeaver.Filesystem.State
+  alias BeamWeaver.Graph.Command
+  alias BeamWeaver.MapAccess
+  alias BeamWeaver.MapShape
   alias BeamWeaver.Options
+  alias BeamWeaver.Provider.ResponseDecoder
 
   @chars_per_token 4
-
-  @too_large_tool_msg """
-  Tool result too large, the result of this tool call %{tool_call_id} was saved in the filesystem at this path: %{file_path}
-
-  You can read the result from the filesystem by using the read_file tool, but make sure to only read part of the result at a time.
-
-  You can do this by specifying an offset and limit in the read_file tool call. For example, to read the first 100 lines, you can use the read_file tool with offset=0 and limit=100.
-
-  Here is a preview showing the head and tail of the result (lines of the form `... [N lines truncated] ...` indicate omitted lines in the middle of the content):
-
-  %{content_sample}
-  """
+  @default_keep {:tokens, 5_000}
+  @default_threshold_tokens 5_000
 
   @read_file_truncation_notice """
 
-  [Output was truncated due to context window size limits. The full content is at %{file_path}. Use read_file with offset and limit parameters to retrieve specific portions. For example, to read the first 100 lines, call read_file with file_path='%{file_path}', offset=0, limit=100.]
+  [Output was truncated due to context window size limits. The full content is at %{file_path}.%{how_to_read}]
   """
+
+  @read_file_how_to_read " Use read_file with offset and limit parameters to retrieve specific portions. For example, to read the first 100 lines, call read_file with file_path='%{file_path}', offset=0, limit=100."
 
   defstruct messages: [],
             replacements: [],
             files_update: nil,
             clipped?: false,
             backend: nil,
-            keep: {:messages, 8},
+            keep: @default_keep,
             max_input_tokens: nil,
             token_counter: :approximate,
             large_tool_results_prefix: nil,
             state_key: :files,
-            retry?: true
+            retry?: true,
+            summarization: nil
 
   @type t :: %__MODULE__{
           messages: [Message.t()],
@@ -63,192 +90,214 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
           token_counter: term(),
           large_tool_results_prefix: String.t() | nil,
           state_key: atom(),
-          retry?: boolean()
+          retry?: boolean(),
+          summarization: struct() | nil
         }
 
   def new(opts \\ []) do
+    keep = Keyword.get(opts, :keep, @default_keep)
+    max_input_tokens = Keyword.get(opts, :max_input_tokens)
+    # Raises for a setting other than `{:tokens, n}` or `{:fraction, f}`.
+    derive_threshold_tokens(keep, max_input_tokens)
+
     %__MODULE__{
       backend: Keyword.get(opts, :backend, State.new()),
-      keep: Keyword.get(opts, :keep, {:messages, 8}),
-      max_input_tokens: Keyword.get(opts, :max_input_tokens),
+      keep: keep,
+      max_input_tokens: max_input_tokens,
       token_counter: Keyword.get(opts, :token_counter, :approximate),
       large_tool_results_prefix: Keyword.get(opts, :large_tool_results_prefix),
       state_key: Keyword.get(opts, :state_key, :files),
-      retry?: Keyword.get(opts, :retry, true)
+      retry?: Keyword.get(opts, :retry, true),
+      summarization: Keyword.get(opts, :summarization)
     }
   end
 
   @impl true
   def name(_middleware), do: :deepagents_overflow_clip
 
+  @impl true
   def wrap_model_call(%__MODULE__{retry?: false}, %ModelRequest{} = request, handler),
     do: handler.(request)
 
+  # A call that overflows is sent once more with its trailing tool results
+  # clipped, and then, with `:summarization`, once more with the thread
+  # summarized.
   def wrap_model_call(%__MODULE__{} = middleware, %ModelRequest{} = request, handler) do
-    case handler.(request) do
-      {:error, %Error{} = error} = result ->
-        if context_overflow?(error) do
-          retry_after_clip(middleware, request, handler, result)
-        else
-          result
-        end
-
-      other ->
-        other
+    with {:overflow, overflow} <- sent(handler.(request)),
+         {:overflow, overflow, request, send} <- send_clipped(middleware, request, handler, overflow) do
+      case middleware.summarization do
+        nil -> overflow
+        summarization -> Summarization.send_summarized(summarization, request, send) || overflow
+      end
+    else
+      {:sent, result} -> result
     end
   end
 
-  @doc "Derives the tail clipping threshold from a DeepAgents keep setting."
+  @doc """
+  Derives the tail clipping threshold, in tokens, from a `:keep` setting.
+
+  `{:tokens, n}` uses `n`, and `{:fraction, f}` uses `f` times
+  `max_input_tokens`, or 5,000 tokens when that is unknown. Any other setting
+  raises `ArgumentError`.
+  """
   def derive_threshold_tokens({:tokens, value}, _max_input_tokens)
-      when is_integer(value),
+      when is_integer(value) and value > 0,
       do: value
 
   def derive_threshold_tokens({:fraction, value}, max_input_tokens)
-      when is_number(value) do
+      when is_number(value) and value > 0 and value <= 1 do
     case max_input_tokens do
       limit when is_integer(limit) and limit > 0 -> trunc(limit * value)
-      _missing -> 5_000
+      _missing -> @default_threshold_tokens
     end
   end
 
   def derive_threshold_tokens({kind, _value}, _max_input_tokens) when is_binary(kind) do
-    {:error, message} = Options.atom_enum_error("keep kind", kind, [:tokens, :fraction, :messages])
+    {:error, message} = Options.atom_enum_error("keep kind", kind, [:tokens, :fraction])
     raise ArgumentError, message
   end
 
-  def derive_threshold_tokens(_keep, _max_input_tokens), do: 5_000
+  def derive_threshold_tokens(keep, _max_input_tokens) do
+    raise ArgumentError,
+          "overflow_recovery keep must be {:tokens, n} or {:fraction, f} with 0 < f <= 1, got: #{inspect(keep)}"
+  end
 
   @doc """
   Clips an oversized trailing tool-message batch.
 
   Options:
 
-  - `:keep` - context keep setting, default `{:messages, 8}`.
+  - `:keep` - `{:tokens, n}` or `{:fraction, f}`, default `{:tokens, 5_000}`.
   - `:max_input_tokens` - model input token limit for fractional keep settings.
   - `:token_counter` - `:approximate` or a one-arity function.
   - `:large_tool_results_prefix` - virtual output prefix.
+  - `:tools` - the tools the model is offered, default `[]`. The previews tell
+    the model to use `read_file` only when it is one of them.
   - `:state`, `:runtime`, `:store`, `:state_key` - backend write context.
   """
   @spec clip_tail([Message.t()], Filesystem.t(), keyword()) :: t()
   def clip_tail(messages, backend \\ State.new(), opts \\ []) when is_list(messages) do
-    case tail_tool_batch(messages) do
-      nil ->
-        %__MODULE__{messages: messages}
-
-      {start, tail} ->
-        maybe_clip_tail(messages, backend, opts, start, tail)
-    end
-  end
-
-  @doc "Task-backed async variant of `clip_tail/3`."
-  def aclip_tail(messages, backend \\ State.new(), opts \\ []),
-    do: Task.async(fn -> clip_tail(messages, backend, opts) end)
-
-  defp retry_after_clip(%__MODULE__{} = middleware, %ModelRequest{} = request, handler, original) do
-    backend = middleware.backend || State.new()
-
-    result =
-      clip_tail(request.messages, backend,
-        keep: middleware.keep,
-        max_input_tokens: middleware.max_input_tokens,
-        token_counter: middleware.token_counter,
-        large_tool_results_prefix: middleware.large_tool_results_prefix,
-        state: request.state || %{},
-        runtime: request.runtime,
-        state_key: middleware.state_key
-      )
-
-    if result.clipped? do
-      request
-      |> ModelRequest.override(%{
-        messages: result.messages,
-        state: retry_state(request.state, middleware.state_key, result.files_update)
-      })
-      |> handler.()
-    else
-      original
-    end
-  end
-
-  defp retry_state(state, _state_key, nil), do: state || %{}
-
-  defp retry_state(state, state_key, files_update) when is_map(files_update) do
-    state = state || %{}
-    Map.put(state, state_key, files_update)
-  end
-
-  defp context_overflow?(%Error{type: :context_overflow}), do: true
-
-  defp context_overflow?(%Error{message: message}) when is_binary(message) do
-    normalized = String.downcase(message)
-
-    String.contains?(normalized, "context window") or
-      String.contains?(normalized, "context length") or
-      String.contains?(normalized, "maximum context") or
-      String.contains?(normalized, "prompt is too long")
-  end
-
-  defp context_overflow?(_error), do: false
-
-  defp maybe_clip_tail(messages, backend, opts, start, tail) do
-    threshold =
-      derive_threshold_tokens(
-        Keyword.get(opts, :keep, {:messages, 8}),
-        Keyword.get(opts, :max_input_tokens)
-      )
-
-    if count_tokens(tail, Keyword.get(opts, :token_counter, :approximate)) < threshold do
-      %__MODULE__{messages: messages}
-    else
-      do_clip_tail(messages, backend, opts, start, tail)
-    end
-  end
-
-  defp do_clip_tail(messages, backend, opts, start, tail) do
-    tool_call_index = build_tool_call_index(messages)
-
-    {new_tail, replacements, files_update} =
-      Enum.reduce(tail, {[], [], nil}, fn message, {new_tail, replacements, files_acc} ->
-        case clip_one(message, tool_call_index, backend, opts, files_acc) do
-          {nil, files_acc} ->
-            {new_tail ++ [message], replacements, files_acc}
-
-          {%Message{} = clipped, files_acc} ->
-            clipped = ensure_id(clipped)
-            {new_tail ++ [clipped], replacements ++ [clipped], files_acc}
-        end
-      end)
-
-    if replacements == [] do
-      %__MODULE__{messages: messages}
-    else
+    with {start, tail} <- tail_tool_batch(messages),
+         threshold =
+           derive_threshold_tokens(Keyword.get(opts, :keep, @default_keep), Keyword.get(opts, :max_input_tokens)),
+         true <- count_tokens(tail, Keyword.get(opts, :token_counter, :approximate)) >= threshold,
+         {new_tail, [_ | _] = replacements, files_update} <- clip_batch(messages, tail, backend, opts) do
       %__MODULE__{
         messages: Enum.take(messages, start) ++ new_tail,
         replacements: replacements,
         files_update: files_update,
         clipped?: true
       }
+    else
+      _nothing_clipped -> %__MODULE__{messages: messages}
     end
   end
 
-  defp tail_tool_batch([]), do: nil
+  @doc false
+  # Whether a model call failed because the request is over the model's
+  # context window. A model that doesn't decode its errors, or a proxy that
+  # passes an overflow on as a bad request, leaves only the message to tell
+  # an overflow apart.
+  @spec context_overflow?(Error.t()) :: boolean()
+  def context_overflow?(%Error{type: :context_overflow}), do: true
+  def context_overflow?(%Error{message: message}), do: ResponseDecoder.context_overflow_message?(message)
+
+  # An overflow goes on to the next step of the recovery; any other result is
+  # the call's.
+  defp sent({:error, %Error{} = error} = result),
+    do: if(context_overflow?(error), do: {:overflow, result}, else: {:sent, result})
+
+  defp sent(result), do: {:sent, result}
+
+  # Sends `request` with its trailing tool results clipped. When that
+  # overflows too, the clipped request goes on to be summarized, sent through
+  # a handler that saves the clip with the reply; when there is nothing to
+  # clip, the request goes on as it is.
+  defp send_clipped(%__MODULE__{} = middleware, %ModelRequest{} = request, handler, overflow) do
+    result =
+      clip_tail(request.messages, middleware.backend || State.new(),
+        keep: middleware.keep,
+        max_input_tokens: middleware.max_input_tokens,
+        token_counter: middleware.token_counter,
+        large_tool_results_prefix: middleware.large_tool_results_prefix,
+        tools: request.tools || [],
+        state: request.state || %{},
+        runtime: request.runtime,
+        state_key: middleware.state_key
+      )
+
+    if result.clipped? do
+      clipped =
+        ModelRequest.override(request,
+          messages: result.messages,
+          state: clipped_state(middleware, request.state || %{}, result)
+        )
+
+      send = &(&1 |> handler.() |> save_clip(middleware, request, result))
+
+      with {:overflow, overflow} <- sent(send.(clipped)), do: {:overflow, overflow, clipped, send}
+    else
+      {:overflow, overflow, request, handler}
+    end
+  end
+
+  # The clipped call sees the thread as it is saved when the call succeeds,
+  # with the clipped results and their files, so that a summary of it keeps
+  # them clipped.
+  defp clipped_state(%__MODULE__{} = middleware, state, result) do
+    clipped = Map.new(result.replacements, &{&1.id, &1})
+
+    state
+    |> Map.put(:messages, Enum.map(AgentState.messages(state), &Map.get(clipped, &1.id, &1)))
+    |> Offload.put_files_update(middleware.state_key, result.files_update)
+  end
+
+  # A successful retry also saves the clipped results in place of the full
+  # ones, and the saved files with a state filesystem, so the next call on the
+  # thread doesn't overflow again.
+  defp save_clip({:ok, %ModelResponse{} = response}, %__MODULE__{} = middleware, request, result) do
+    saved_ids = MapSet.new(for %Message{id: id} <- AgentState.messages(request.state || %{}), do: id)
+
+    case Enum.filter(result.replacements, &MapSet.member?(saved_ids, &1.id)) do
+      [] when is_nil(result.files_update) ->
+        {:ok, response}
+
+      replacements ->
+        update = MapShape.put_present(%{messages: replacements}, middleware.state_key, result.files_update)
+        %ExtendedModelResponse{model_response: response, command: %Command{update: update}}
+    end
+  end
+
+  defp save_clip(other, _middleware, _request, _result), do: other
+
+  # The clipped batch, the clipped results, and the files they were saved to.
+  defp clip_batch(messages, tail, backend, opts) do
+    tool_call_index = build_tool_call_index(messages)
+
+    Enum.reduce(tail, {[], [], nil}, fn message, {new_tail, replacements, files_acc} ->
+      case clip_one(message, tool_call_index, backend, opts, files_acc) do
+        {nil, files_acc} ->
+          {new_tail ++ [message], replacements, files_acc}
+
+        {%Message{} = clipped, files_acc} ->
+          clipped = ensure_id(clipped)
+          {new_tail ++ [clipped], replacements ++ [clipped], files_acc}
+      end
+    end)
+  end
 
   defp tail_tool_batch(messages) do
-    if match?(%Message{role: :tool}, List.last(messages)) do
-      reversed_tail =
-        messages
-        |> Enum.reverse()
-        |> Enum.take_while(&match?(%Message{role: :tool}, &1))
-        |> Enum.reverse()
-
-      {length(messages) - length(reversed_tail), reversed_tail}
+    case messages |> Enum.reverse() |> Enum.take_while(&match?(%Message{role: :tool}, &1)) do
+      [] -> nil
+      reversed_tail -> {length(messages) - length(reversed_tail), Enum.reverse(reversed_tail)}
     end
   end
 
   defp clip_one(message, tool_call_index, backend, opts, files_acc) do
     case read_file_original_path(message, tool_call_index) do
       path when is_binary(path) and path != "" ->
-        {slice_read_file_message(message, path), files_acc}
+        {slice_read_file_message(message, path, opts), files_acc}
 
       _missing ->
         offload_tool_message(message, backend, opts, files_acc)
@@ -256,22 +305,24 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
   end
 
   defp read_file_original_path(%Message{tool_call_id: id}, tool_call_index) when is_binary(id) do
-    case Map.get(tool_call_index, id) do
-      %{} = call ->
-        if tool_name(call) == "read_file" do
-          path = call |> tool_args() |> arg_value(:file_path)
-          if is_binary(path), do: path
-        end
-
-      _missing ->
-        nil
+    with %{} = call <- Map.get(tool_call_index, id),
+         "read_file" <- to_string(Map.get(call, :name)),
+         path when is_binary(path) <- MapAccess.get(Map.get(call, :args, %{}), :file_path) do
+      path
+    else
+      _other -> nil
     end
   end
 
   defp read_file_original_path(_message, _tool_call_index), do: nil
 
-  defp slice_read_file_message(%Message{} = message, path) do
-    notice = String.replace(@read_file_truncation_notice, "%{file_path}", path)
+  defp slice_read_file_message(%Message{} = message, path, opts) do
+    how_to_read = if read_file_offered?(opts), do: @read_file_how_to_read, else: ""
+
+    notice =
+      @read_file_truncation_notice
+      |> Offload.format_notice(how_to_read: how_to_read)
+      |> Offload.format_notice(file_path: path)
 
     %{
       message
@@ -285,7 +336,7 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
 
   defp offload_tool_message(%Message{} = message, backend, opts, files_acc) do
     content = Message.text(message)
-    tool_call_id = message.tool_call_id || "unknown"
+    tool_call_id = message.tool_call_id || ID.uuidv7()
 
     prefix =
       Keyword.get(opts, :large_tool_results_prefix) ||
@@ -301,12 +352,7 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
 
     case Filesystem.write(backend, file_path, content, write_opts) do
       %Filesystem.WriteResult{error: nil, files_update: files_update} ->
-        replacement =
-          Offload.format_notice(@too_large_tool_msg,
-            tool_call_id: tool_call_id,
-            file_path: file_path,
-            content_sample: Offload.content_preview(content)
-          )
+        replacement = Offload.tool_result_notice(tool_call_id, file_path, content, read_file_offered?(opts))
 
         {%{message | content: Offload.evicted_content(message, replacement)},
          Offload.merge_files_update(files_acc, files_update)}
@@ -315,6 +361,10 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
         {nil, files_acc}
     end
   end
+
+  # Whether the model is offered `read_file`, which the previews then tell it
+  # to read the full result with.
+  defp read_file_offered?(opts), do: "read_file" in Helpers.tool_names(Keyword.get(opts, :tools) || [])
 
   defp backend_opts(opts) do
     [
@@ -346,7 +396,7 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
     Enum.reduce(messages, %{}, fn
       %Message{role: :assistant, tool_calls: calls}, acc when is_list(calls) ->
         Enum.reduce(calls, acc, fn call, acc ->
-          case call_id(call) do
+          case Map.get(call, :id) do
             id when is_binary(id) and id != "" -> Map.put(acc, id, call)
             _missing -> acc
           end
@@ -356,19 +406,6 @@ defmodule BeamWeaver.Agent.Middleware.OverflowRecovery do
         acc
     end)
   end
-
-  defp call_id(call) when is_map(call), do: Map.get(call, :id)
-  defp call_id(_call), do: nil
-
-  defp tool_name(call) when is_map(call),
-    do: to_string(Map.get(call, :name))
-
-  defp tool_args(call) when is_map(call), do: Map.get(call, :args, %{})
-
-  defp arg_value(args, key) when is_map(args),
-    do: BeamWeaver.MapAccess.get(args, key)
-
-  defp arg_value(_args, _key), do: nil
 
   defp ensure_id(%Message{id: nil} = message), do: %{message | id: ID.uuidv7()}
   defp ensure_id(message), do: message

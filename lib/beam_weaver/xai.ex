@@ -1,13 +1,22 @@
 defmodule BeamWeaver.XAI do
-  @moduledoc """
-  xAI provider namespace.
+  @moduledoc ~S"""
+  Grok Responses and Chat Completions with supported hosted-tool declarations.
+
+  Constructors return configured values; invocation makes the provider request.
+  Load credentials into `config :beam_weaver, :xai` in your application's
+  runtime configuration. Explicit connection options override configured defaults.
+  See the [XAI guide](providers/xai.md) for an executed request, endpoint
+  choices, supported options and account/resource requirements.
+
+  Native tool helpers construct declarations. Hosted tools execute at the provider;
+  client actions require an application executor. Keep full returned messages
+  for continuation and inspect outcomes rather than HTTP success alone.
   """
 
   alias BeamWeaver.Config
+  alias BeamWeaver.Provider.OpenAICompatibleClient, as: Compat
   alias BeamWeaver.XAI.ChatCompletionsModel
   alias BeamWeaver.XAI.ChatModel
-  alias BeamWeaver.XAI.Client
-  alias BeamWeaver.XAI.EmbeddingModel
   alias BeamWeaver.XAI.Tools
 
   @default_base_url "https://api.x.ai/v1"
@@ -39,16 +48,6 @@ defmodule BeamWeaver.XAI do
   end
 
   @doc """
-  Builds an xAI embeddings model.
-  """
-  @spec embedding_model(keyword()) :: EmbeddingModel.t()
-  def embedding_model(opts \\ []) do
-    opts
-    |> provider_opts("embeddings")
-    |> EmbeddingModel.new()
-  end
-
-  @doc """
   Returns xAI tool declaration helpers.
   """
   @spec tools() :: module()
@@ -56,28 +55,7 @@ defmodule BeamWeaver.XAI do
 
   defp provider_opts(opts, endpoint_path) do
     opts
-    |> Keyword.put_new(:api_key, Config.get([:xai, :api_key]))
-    |> put_endpoint_default(endpoint_path)
-  end
-
-  defp put_endpoint_default(opts, endpoint_path) do
-    cond do
-      Keyword.has_key?(opts, :endpoint) ->
-        opts
-
-      base_url = configured_base_url(opts) ->
-        Keyword.put(opts, :endpoint, Client.endpoint(base_url, endpoint_path))
-
-      true ->
-        opts
-    end
-  end
-
-  defp configured_base_url(opts) do
-    if Keyword.has_key?(opts, :base_url) do
-      Keyword.fetch!(opts, :base_url) || @default_base_url
-    else
-      Config.get([:xai, :base_url], @default_base_url)
-    end
+    |> Keyword.put_new_lazy(:api_key, fn -> Config.get([:xai, :api_key]) end)
+    |> Compat.put_endpoint(:endpoint, :xai, @default_base_url, endpoint_path)
   end
 end

@@ -1,17 +1,13 @@
 defmodule BeamWeaver.Agent.Nodes.Model do
-  @moduledoc """
-  Graph node that calls a chat model for agent loops.
-
-  The node reads `:messages` from graph state, optionally prepends a system
-  prompt for the model call, and appends the assistant response back through the
-  graph's `:messages` reducer.
-  """
+  @moduledoc false
 
   alias BeamWeaver.Agent.Middleware
   alias BeamWeaver.Agent.ModelRequest
+  alias BeamWeaver.Agent.ModelResolver
   alias BeamWeaver.Agent.ModelResponse
   alias BeamWeaver.Agent.Nodes.Model.Prompt
   alias BeamWeaver.Agent.Nodes.Model.Response
+  alias BeamWeaver.Agent.ProviderProfile
   alias BeamWeaver.Agent.StructuredOutput
   alias BeamWeaver.Agent.StructuredOutput.ProviderStrategy
   alias BeamWeaver.Agent.StructuredOutput.ToolStrategy
@@ -31,9 +27,13 @@ defmodule BeamWeaver.Agent.Nodes.Model do
     :system_prompt,
     :response_format,
     :assistant_name,
+    :final_instruction,
+    :step_costs,
     tools: [],
     model_opts: [],
-    middleware: []
+    middleware: [],
+    save_tool_set: true,
+    structured_output: false
   ]
 
   @type t :: %__MODULE__{
@@ -43,31 +43,25 @@ defmodule BeamWeaver.Agent.Nodes.Model do
           model_opts: keyword(),
           middleware: [term()],
           assistant_name: atom() | String.t() | nil,
-          response_format: term()
+          response_format: term(),
+          final_instruction: String.t() | nil,
+          step_costs: map() | nil,
+          save_tool_set: boolean(),
+          structured_output: boolean()
         }
 
   @spec new(term(), keyword()) :: t()
-  def new(model, opts \\ []) do
-    %__MODULE__{
-      model: model,
-      tools: Keyword.get(opts, :tools, []),
-      system_prompt: Keyword.get(opts, :system_prompt),
-      model_opts: Keyword.get(opts, :model_opts, []),
-      middleware: Keyword.get(opts, :middleware, []),
-      assistant_name: Keyword.get(opts, :assistant_name),
-      response_format: Keyword.get(opts, :response_format)
-    }
-  end
+  def new(model, opts), do: struct(__MODULE__, Keyword.put(opts, :model, model))
 
   @spec invoke(t(), map(), term()) :: map() | {:error, Error.t()}
   def invoke(%__MODULE__{} = node, state, runtime) when is_map(state) do
-    with {:ok, messages} <- Prompt.state_messages(state),
+    with {:ok, history} <- Prompt.state_messages(state),
+         messages = history |> Prompt.place_late_results() |> Prompt.answer_invalid_tool_calls(),
          :ok <- Prompt.validate_chat_history(messages),
-         {:ok, system_message} <- Prompt.system_message(node.system_prompt, state, runtime),
-         {:ok, model} <- resolve_model(node.model, state, runtime),
+         {:ok, system_message} <- Prompt.system_message(node.system_prompt),
          request <- %ModelRequest{
-           model: model,
-           messages: messages,
+           model: node.model,
+           messages: with_final_instruction(messages, node.final_instruction),
            system_message: system_message,
            tools: node.tools,
            tool_set: ToolSet.new(node.tools),
@@ -76,31 +70,55 @@ defmodule BeamWeaver.Agent.Nodes.Model do
            runtime: runtime,
            model_opts: Prompt.model_opts(node, runtime)
          },
-         {:ok, response} <- call_model_with_middleware(node.middleware, request) do
-      Response.to_update(response)
+         {:ok, response} <- call_model_with_middleware(node, request) do
+      response
+      |> forget_tool_set(node)
+      |> Response.to_update(
+        structured_output: node.structured_output,
+        history: if(messages != history, do: messages),
+        thread: history
+      )
     end
   end
 
-  def invoke(%__MODULE__{}, _state, _runtime) do
-    {:error, Error.new(:invalid_agent_state, "agent model node expected map state")}
+  # The tools node runs the tools of the agent loop's latest model call. The
+  # structured-response call after the loop offers only its own tool, which
+  # no tools node runs, so it leaves the loop's tool set in place.
+  defp forget_tool_set(%ModelResponse{} = response, %__MODULE__{save_tool_set: false}),
+    do: %{response | tool_set: nil}
+
+  defp forget_tool_set(response, _node), do: response
+
+  # Middleware such as StructuredOutputRetry find the reply that failed the
+  # structured-output checks in `details.failed_reply`. It stays inside the
+  # model call: the error the run returns carries only the redacted diagnostics.
+  defp put_failed_reply(%Error{} = error, %Message{} = reply),
+    do: %{error | details: Map.put(error.details || %{}, :failed_reply, reply)}
+
+  defp drop_failed_reply({:error, %Error{details: %{failed_reply: _reply} = details} = error}),
+    do: {:error, %{error | details: Map.delete(details, :failed_reply)}}
+
+  defp drop_failed_reply(result), do: result
+
+  # A call that must answer the conversation so far, such as the structured
+  # response after a tool loop, would otherwise end on the assistant's own turn,
+  # which several providers reject. The instruction goes to this one request;
+  # it is not added to the state.
+  defp with_final_instruction(messages, nil), do: messages
+
+  defp with_final_instruction(messages, instruction) do
+    case List.last(messages) do
+      %Message{role: :assistant} -> messages ++ [Message.user(instruction)]
+      _other -> messages
+    end
   end
 
-  defp resolve_model(model_fun, _state, _runtime) when is_function(model_fun) do
-    {:error,
-     Error.new(
-       :invalid_agent_model,
-       "agent model must be a model value; use wrap_model_call middleware for dynamic model selection"
-     )}
-  end
-
-  defp resolve_model(model, _state, _runtime), do: {:ok, model}
-
-  defp call_model_with_middleware(middleware, %ModelRequest{} = request) do
-    wrappers = Enum.filter(middleware, &Middleware.hook?(&1, :wrap_model_call))
+  defp call_model_with_middleware(%__MODULE__{} = node, %ModelRequest{} = request) do
+    wrappers = Enum.filter(node.middleware, &Middleware.hook?(&1, :wrap_model_call))
 
     base_handler = fn request ->
       request
-      |> execute_model()
+      |> execute_model(node.step_costs)
       |> Response.normalize_model_result()
     end
 
@@ -112,7 +130,9 @@ defmodule BeamWeaver.Agent.Nodes.Model do
         end
       end)
 
-    handler.(request)
+    request
+    |> handler.()
+    |> drop_failed_reply()
   rescue
     exception ->
       {:error,
@@ -121,7 +141,30 @@ defmodule BeamWeaver.Agent.Nodes.Model do
        })}
   end
 
-  defp execute_model(%ModelRequest{} = request) do
+  defp execute_model(%ModelRequest{} = request, step_costs) do
+    case resolve_model(request) do
+      {:ok, request} ->
+        call_resolved_model(request, step_costs)
+
+      {:error, %Error{} = error} ->
+        messages = Prompt.prompt_messages(request.system_message) ++ request.messages
+        {:error, Response.attach_diagnostics(error, request, messages, request.model_opts)}
+    end
+  end
+
+  # Middleware can put a "provider:model" string on the request. It becomes a
+  # chat model for this call, with its provider profile, as the agent's own
+  # `model` does when the agent is built. The request's model options go with
+  # the call, as for any model.
+  defp resolve_model(%ModelRequest{model: %_{}} = request), do: {:ok, request}
+
+  defp resolve_model(%ModelRequest{model: model} = request) do
+    opts = if is_binary(model) or is_atom(model), do: ProviderProfile.apply_provider_profile(to_string(model)), else: []
+
+    with {:ok, model} <- ModelResolver.resolve_agent_model(model, opts), do: {:ok, %{request | model: model}}
+  end
+
+  defp call_resolved_model(%ModelRequest{} = request, step_costs) do
     base_tool_set = request.tool_set || ToolSet.new(request.tools)
 
     {strategy, structured_policy} =
@@ -132,14 +175,14 @@ defmodule BeamWeaver.Agent.Nodes.Model do
       )
 
     tool_set = ToolSet.add(base_tool_set, StructuredOutput.setup_tools(strategy), source: :model)
-    tools = ToolSet.list(tool_set)
+    tools = provider_tools(request.model_opts) ++ ToolSet.list(tool_set)
 
     opts =
       request.model_opts
       |> Keyword.put(:tools, tools)
       |> Keyword.put_new(:context, Map.get(request.runtime || %{}, :context))
       |> maybe_put_tool_choice(request.tool_choice)
-      |> maybe_force_structured_tool_choice(strategy)
+      |> maybe_force_structured_tool_choice(strategy, request.model)
       |> put_structured_output_trace_opts(strategy, structured_policy)
       |> Keyword.merge(structured_provider_opts(strategy))
 
@@ -148,45 +191,46 @@ defmodule BeamWeaver.Agent.Nodes.Model do
     trace_structured_output(strategy, structured_policy, request, messages, opts, fn ->
       with :ok <- ToolSet.validate(tool_set),
            {:ok, response} <- call_model(request.model, messages, opts, request.runtime) do
-        case StructuredOutput.handle_model_output(response, strategy) do
+        case StructuredOutput.handle_model_output(response, strategy, request.messages) do
           {:ok, model_response} ->
-            model_response = Response.maybe_limit_steps_response(request, model_response)
-
-            model_response =
-              model_response
-              |> Response.put_assistant_name(request)
-              |> Response.attach_runtime_metadata(tool_set)
-
-            {:ok, model_response}
+            {:ok,
+             request
+             |> Response.maybe_limit_steps_response(model_response, step_costs)
+             |> Response.put_assistant_name(request)
+             |> Response.attach_runtime_metadata(tool_set)}
 
           {:error, %Error{} = error} ->
-            {:error, Response.attach_diagnostics(error, request, messages, opts, response)}
+            error = Response.attach_diagnostics(error, request, messages, opts, response)
+            {:error, put_failed_reply(error, response)}
         end
       else
-        {:error, %Error{} = error} ->
-          {:error, Response.attach_diagnostics(error, request, messages, opts)}
-
-        {:error, reason} ->
-          {:error, error} = Response.normalize_model_result({:error, reason})
+        {:error, _reason} = result ->
+          {:error, error} = Response.normalize_model_result(result)
           {:error, Response.attach_diagnostics(error, request, messages, opts)}
       end
     end)
   end
 
+  # A model call that fails sends a `Debug` event, `%{type: :model_call_failed,
+  # error: error}`, to the run's stream: the text the call streamed is not
+  # part of the answer. The error goes back to the middleware, which may call
+  # a model again (`ModelRetry`, `ModelFallback`); only a run that fails ends
+  # with an `Error` event.
   defp call_model(model, messages, opts, runtime) do
+    with {:error, _reason} = result <- send_model_call(model, messages, opts, runtime) do
+      {:error, error} = Response.normalize_model_result(result)
+      emit_stream_event(runtime, %Events.Debug{payload: %{type: :model_call_failed, error: error}})
+      result
+    end
+  end
+
+  defp send_model_call(model, messages, opts, runtime) do
     cond do
       typed_stream?(model, opts) ->
         ChatModel.trace_call(model, messages, opts, fn ->
-          case stream_typed_model(model, messages, opts, runtime) do
-            {:error, %Error{type: :unsupported_feature}} = error ->
-              if stream_response?(model, opts) do
-                model.__struct__.stream_response(model, messages, opts)
-              else
-                error
-              end
-
-            result ->
-              result
+          with {:error, %Error{type: :unsupported_feature}} = error <-
+                 stream_typed_model(model, messages, opts, runtime) do
+            if stream_response?(model, opts), do: model.__struct__.stream_response(model, messages, opts), else: error
           end
         end)
 
@@ -201,33 +245,25 @@ defmodule BeamWeaver.Agent.Nodes.Model do
   end
 
   defp typed_stream?(model, opts) do
-    Keyword.get(opts, :stream, false) == true and
-      function_exported?(model.__struct__, :stream_typed_events, 3)
+    stream?(model, opts) and function_exported?(model.__struct__, :stream_typed_events, 3)
   end
 
   defp stream_response?(model, opts) do
-    Keyword.get(opts, :stream, false) == true and
-      function_exported?(model.__struct__, :stream_response, 3)
+    stream?(model, opts) and function_exported?(model.__struct__, :stream_response, 3)
   end
+
+  # A model created with `stream: true` streams unless the call says otherwise.
+  defp stream?(model, opts), do: Keyword.get(opts, :stream, Map.get(model, :streaming, false)) == true
 
   defp stream_typed_model(model, messages, opts, runtime) do
     with {:ok, events} <- ChatModel.stream_typed_events(model, messages, opts) do
       events
-      |> Enum.reduce_while(stream_acc(), &collect_stream_event(&1, &2, runtime))
+      |> Enum.reduce_while(%{message: nil, chunks: [], tokens: [], error: nil}, fn event, acc ->
+        emit_stream_event(runtime, event)
+        collect_typed_event(with(%Envelope{event: inner} <- event, do: inner), acc)
+      end)
       |> stream_result()
     end
-  end
-
-  defp stream_acc, do: %{message: nil, chunks: [], tokens: [], error: nil}
-
-  defp collect_stream_event(%Envelope{} = envelope, acc, runtime) do
-    emit_stream_event(runtime, envelope)
-    collect_typed_event(envelope.event, acc)
-  end
-
-  defp collect_stream_event(event, acc, runtime) do
-    emit_stream_event(runtime, event)
-    collect_typed_event(event, acc)
   end
 
   defp collect_typed_event(%Events.Message{message: %Message{role: :assistant} = message}, acc) do
@@ -260,6 +296,9 @@ defmodule BeamWeaver.Agent.Nodes.Model do
   # would emit the same assistant message twice.
   defp emit_stream_event(_runtime, %Events.Message{message: %Message{role: :assistant}}), do: :ok
 
+  # A model stream's `Error` fails the call, not the run (see `call_model/4`).
+  defp emit_stream_event(_runtime, %Events.Error{}), do: :ok
+
   defp emit_stream_event(%{stream_writer: writer}, event) when is_function(writer, 1) do
     writer.(event)
     :ok
@@ -283,11 +322,7 @@ defmodule BeamWeaver.Agent.Nodes.Model do
   defp stream_result(%{message: %Message{} = message}), do: {:ok, message}
 
   defp stream_result(%{chunks: [_ | _] = chunks, tokens: tokens}) do
-    chunks =
-      chunks
-      |> Enum.reverse()
-
-    case MessageChunk.merge_many(chunks) do
+    case MessageChunk.merge_many(Enum.reverse(chunks)) do
       nil ->
         stream_text_result([])
 
@@ -309,14 +344,7 @@ defmodule BeamWeaver.Agent.Nodes.Model do
 
   defp stream_result(%{tokens: tokens}), do: stream_text_result(tokens)
 
-  defp stream_text_result(tokens) do
-    text =
-      tokens
-      |> Enum.reverse()
-      |> Enum.join()
-
-    {:ok, Message.assistant(text)}
-  end
+  defp stream_text_result(tokens), do: {:ok, Message.assistant(tokens |> Enum.reverse() |> Enum.join())}
 
   defp visible_chunk(%{content: content, tool_call_chunks: tool_call_chunks} = chunk)
        when content in [nil, ""] do
@@ -364,30 +392,50 @@ defmodule BeamWeaver.Agent.Nodes.Model do
   defp maybe_put_tool_choice(opts, nil), do: opts
   defp maybe_put_tool_choice(opts, tool_choice), do: Keyword.put_new(opts, :tool_choice, tool_choice)
 
-  defp maybe_force_structured_tool_choice(opts, %ToolStrategy{}) do
-    Keyword.put_new(opts, :tool_choice, :required)
+  # The tool strategy asks the model to call a tool, unless the model rejects a
+  # forced tool choice (such as Kimi with thinking on); the request then only
+  # offers the structured-output tool.
+  defp maybe_force_structured_tool_choice(opts, %ToolStrategy{}, model) do
+    if forced_tool_choice?(model, opts), do: Keyword.put_new(opts, :tool_choice, :required), else: opts
   end
 
-  defp maybe_force_structured_tool_choice(opts, _strategy), do: opts
+  defp maybe_force_structured_tool_choice(opts, _strategy, _model), do: opts
 
-  defp put_structured_output_trace_opts(opts, %ToolStrategy{schema_specs: specs}, structured_policy) do
-    opts
-    |> Keyword.put(:structured_output_strategy, :tool)
-    |> Keyword.put(:structured_output_tool_names, Enum.map(specs, & &1.name))
-    |> put_structured_policy_opts(structured_policy)
+  defp forced_tool_choice?(%{__struct__: module} = model, opts) do
+    cond do
+      function_exported?(module, :forced_tool_choice?, 2) -> module.forced_tool_choice?(model, opts)
+      is_struct(Map.get(model, :model)) -> forced_tool_choice?(model.model, opts)
+      true -> true
+    end
   end
 
-  defp put_structured_output_trace_opts(opts, %ProviderStrategy{}, structured_policy) do
-    opts
-    |> Keyword.put(:structured_output_strategy, :provider)
-    |> put_structured_policy_opts(structured_policy)
+  defp forced_tool_choice?(_model, _opts), do: true
+
+  # Tool declarations in the model options, such as a provider's built-in web
+  # search, are offered next to the agent's tools. The provider runs them, so
+  # they are not part of the agent's tool set.
+  defp provider_tools(model_opts) do
+    model_opts
+    |> Keyword.get(:tools, [])
+    |> List.wrap()
+    |> Enum.filter(&(is_map(&1) and not is_struct(&1)))
   end
 
-  defp put_structured_output_trace_opts(opts, _strategy, structured_policy) do
-    put_structured_policy_opts(opts, structured_policy)
-  end
+  defp put_structured_output_trace_opts(opts, strategy, structured_policy) do
+    opts =
+      case strategy do
+        %ToolStrategy{schema_specs: specs} ->
+          opts
+          |> Keyword.put(:structured_output_strategy, :tool)
+          |> Keyword.put(:structured_output_tool_names, Enum.map(specs, & &1.name))
 
-  defp put_structured_policy_opts(opts, structured_policy) do
+        %ProviderStrategy{} ->
+          Keyword.put(opts, :structured_output_strategy, :provider)
+
+        _strategy ->
+          opts
+      end
+
     Enum.reduce(StructuredOutput.Policy.to_metadata(structured_policy), opts, fn {key, value}, acc ->
       Keyword.put(acc, key, value)
     end)
@@ -396,36 +444,26 @@ defmodule BeamWeaver.Agent.Nodes.Model do
   defp trace_structured_output(nil, _structured_policy, _request, _messages, _opts, fun), do: fun.()
 
   defp trace_structured_output(strategy, structured_policy, request, messages, opts, fun) when is_function(fun, 0) do
-    if trace_structured_output?() do
-      {:ok, run} =
-        Tracing.start_run("RunnableSequence",
+    if Tracing.capture_context() do
+      Tracing.Runner.run(
+        "StructuredOutput",
+        [
           kind: :chain,
           inputs: %{messages: messages},
           tags: [:structured_output],
           metadata: structured_trace_metadata(strategy, structured_policy, request, opts),
           context_metadata: %{}
-        )
-
-      try do
-        result = fun.()
-        finish_structured_run(run, result)
-        result
-      rescue
-        exception ->
-          Tracing.fail_run(run, exception)
-          reraise exception, __STACKTRACE__
-      catch
-        kind, reason ->
-          Tracing.fail_run(run, %{kind: kind, reason: reason})
-          :erlang.raise(kind, reason, __STACKTRACE__)
-      end
+        ],
+        [],
+        fun,
+        fn run, result ->
+          finish_structured_run(run, result)
+          result
+        end
+      )
     else
       fun.()
     end
-  end
-
-  defp trace_structured_output? do
-    not is_nil(Tracing.capture_context())
   end
 
   defp finish_structured_run(run, {:ok, %ModelResponse{} = response}) do
@@ -436,17 +474,13 @@ defmodule BeamWeaver.Agent.Nodes.Model do
     Tracing.fail_run(run, error)
   end
 
-  defp finish_structured_run(run, other) do
-    Tracing.finish_run(run, outputs: %{output: inspect(other)})
-  end
-
   defp structured_trace_metadata(strategy, structured_policy, %ModelRequest{} = request, opts) do
     %{
       structured_output: true,
       structured_output_schema: structured_schema_names(strategy),
       structured_output_strategy: structured_strategy_name(strategy),
       provider_strategy: Keyword.get(opts, :structured_output_strategy),
-      model: model_name(request.model)
+      model: Response.model_name(request.model)
     }
     |> Map.merge(StructuredOutput.Policy.to_metadata(structured_policy))
   end
@@ -473,18 +507,4 @@ defmodule BeamWeaver.Agent.Nodes.Model do
 
   defp structured_strategy_name(%ToolStrategy{}), do: :tool
   defp structured_strategy_name(%ProviderStrategy{}), do: :provider
-
-  defp model_name(%{model: model}) when is_binary(model), do: model
-
-  defp model_name(%{__struct__: module} = model) do
-    cond do
-      function_exported?(module, :model_name, 1) -> module.model_name(model)
-      function_exported?(module, :model_id, 1) -> module.model_id(model)
-      true -> inspect(module)
-    end
-  rescue
-    _exception -> inspect(model)
-  end
-
-  defp model_name(model), do: inspect(model)
 end

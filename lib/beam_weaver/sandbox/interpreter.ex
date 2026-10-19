@@ -26,19 +26,34 @@ defmodule BeamWeaver.Sandbox.Interpreter do
           }
   end
 
+  @doc """
+  Initializes adapter state for a new session.
+  """
   @callback open(keyword()) :: {:ok, term()} | {:error, Error.t()} | term()
+  @doc """
+  Evaluates source text. The three-element success form returns value and next state; an explicit error can also supply next state.
+  """
   @callback eval(term(), String.t(), keyword()) ::
               {:ok, term(), term()}
               | {:ok, term()}
               | {:error, Error.t(), term()}
               | {:error, Error.t()}
               | term()
+  @doc """
+  Optional serialization of adapter state to plain bounded data, with optional metadata.
+  """
   @callback snapshot(term(), keyword()) ::
               {:ok, term()}
               | {:ok, term(), map()}
               | {:error, Error.t()}
               | term()
+  @doc """
+  Optional restoration from saved snapshot data to adapter state.
+  """
   @callback restore(term(), keyword()) :: {:ok, term()} | {:error, Error.t()} | term()
+  @doc """
+  Optional cleanup of resources owned by the adapter state.
+  """
   @callback close(term(), keyword()) :: :ok | {:error, Error.t()} | term()
 
   @optional_callbacks snapshot: 2, restore: 2, close: 2

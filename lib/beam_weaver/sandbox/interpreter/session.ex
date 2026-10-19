@@ -1,6 +1,17 @@
 defmodule BeamWeaver.Sandbox.Interpreter.Session do
-  @moduledoc """
-  Supervised process wrapper for explicit interpreter adapters.
+  @moduledoc ~S"""
+  Own an explicitly configured interpreter adapter in a GenServer session.
+
+  start_link is suitable for supervision; start creates an unlinked process.
+  The caller supplies the adapter and owns eventual close/cleanup. Evaluation
+  has a millisecond timeout (default 30,000); snapshots are bounded to
+  max_snapshot_bytes (default 1,000,000).
+
+  Timeouts and raised adapter failures retain prior state. An adapter can
+  explicitly return updated state with an error, in which case that state is
+  retained. Snapshot restoration requires the same adapter identity. The OTP
+  session provides lifecycle control, not operating-system isolation.
+  See [Sandboxes](sandboxes.md#interpreters).
   """
 
   use GenServer
@@ -20,31 +31,49 @@ defmodule BeamWeaver.Sandbox.Interpreter.Session do
 
   @type t :: pid()
 
+  @doc """
+  Starts a linked session with the required adapter and its options.
+  """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts)
   end
 
+  @doc """
+  Starts an unlinked session; the application must close or supervise its lifetime.
+  """
   @spec start(keyword()) :: GenServer.on_start()
   def start(opts) do
     GenServer.start(__MODULE__, opts)
   end
 
+  @doc """
+  Evaluates code under the adapter contract and returns a result or typed error.
+  """
   @spec eval(t(), String.t(), keyword()) :: {:ok, term()} | {:error, Error.t()}
   def eval(pid, code, opts \\ []) when is_pid(pid) and is_binary(code) do
     GenServer.call(pid, {:eval, code, opts}, call_timeout(pid, opts))
   end
 
+  @doc """
+  Returns a bounded tagged snapshot when the adapter supports snapshots.
+  """
   @spec snapshot(t(), keyword()) :: {:ok, Snapshot.t()} | {:error, Error.t()}
   def snapshot(pid, opts \\ []) when is_pid(pid) do
     GenServer.call(pid, {:snapshot, opts}, call_timeout(pid, opts))
   end
 
+  @doc """
+  Restores a compatible snapshot; rejects a different adapter or unsupported restore operation.
+  """
   @spec restore(t(), Snapshot.t(), keyword()) :: :ok | {:error, Error.t()}
   def restore(pid, %Snapshot{} = snapshot, opts \\ []) when is_pid(pid) do
     GenServer.call(pid, {:restore, snapshot, opts}, call_timeout(pid, opts))
   end
 
+  @doc """
+  Closes the adapter/session; an already-exited session is treated as closed.
+  """
   @spec close(t(), keyword()) :: :ok
   def close(pid, opts \\ []) when is_pid(pid) do
     GenServer.call(pid, {:close, opts}, call_timeout(pid, opts))
@@ -74,11 +103,7 @@ defmodule BeamWeaver.Sandbox.Interpreter.Session do
 
   @impl true
   def handle_call({:eval, code, opts}, _from, state) do
-    timeout = Keyword.get(opts, :timeout, state.timeout)
-
-    case timed_call(state, :eval, timeout, fn ->
-           state.adapter.eval(state.adapter_state, code, opts)
-         end) do
+    case timed_call(state, :eval, opts, fn -> state.adapter.eval(state.adapter_state, code, opts) end) do
       {:ok, result} ->
         case normalize_eval(result, state.adapter_state) do
           {:ok, value, adapter_state} ->
@@ -95,9 +120,7 @@ defmodule BeamWeaver.Sandbox.Interpreter.Session do
 
   def handle_call({:snapshot, opts}, _from, state) do
     if function_exported?(state.adapter, :snapshot, 2) do
-      timeout = Keyword.get(opts, :timeout, state.timeout)
-
-      case timed_call(state, :snapshot, timeout, fn -> state.adapter.snapshot(state.adapter_state, opts) end) do
+      case timed_call(state, :snapshot, opts, fn -> state.adapter.snapshot(state.adapter_state, opts) end) do
         {:ok, result} ->
           case normalize_snapshot(result, state) do
             {:ok, %Snapshot{} = snapshot} -> {:reply, {:ok, snapshot}, state}
@@ -128,11 +151,9 @@ defmodule BeamWeaver.Sandbox.Interpreter.Session do
          state}
 
       true ->
-        timeout = Keyword.get(opts, :timeout, state.timeout)
-
-        case timed_call(state, :restore, timeout, fn -> state.adapter.restore(snapshot.data, opts) end) do
+        case timed_call(state, :restore, opts, fn -> state.adapter.restore(snapshot.data, opts) end) do
           {:ok, result} ->
-            case normalize_restore(result) do
+            case normalize_state(result) do
               {:ok, adapter_state} -> {:reply, :ok, %{state | adapter_state: adapter_state}}
               {:error, %Error{} = error} -> {:reply, {:error, error}, state}
             end
@@ -189,11 +210,7 @@ defmodule BeamWeaver.Sandbox.Interpreter.Session do
   end
 
   defp open_adapter(adapter, opts) do
-    case adapter.open(opts) do
-      {:ok, state} -> {:ok, state}
-      {:error, %Error{} = error} -> {:error, error}
-      state -> {:ok, state}
-    end
+    normalize_state(adapter.open(opts))
   rescue
     exception ->
       {:error,
@@ -203,7 +220,8 @@ defmodule BeamWeaver.Sandbox.Interpreter.Session do
        })}
   end
 
-  defp timed_call(state, operation, timeout, fun) do
+  defp timed_call(state, operation, opts, fun) do
+    timeout = Keyword.get(opts, :timeout, state.timeout)
     metadata = operation_metadata(state, operation, timeout)
     start = System.monotonic_time()
 
@@ -215,69 +233,45 @@ defmodule BeamWeaver.Sandbox.Interpreter.Session do
 
     task = Task.async(fn -> safe_adapter_call(fun) end)
 
-    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
-      {:ok, {:ok, result}} ->
-        Telemetry.emit(
-          [:beam_weaver, :sandbox, :interpreter, operation, :stop],
-          %{duration: System.monotonic_time() - start},
-          metadata
-        )
+    {event, details, result} =
+      case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+        {:ok, {:ok, result}} ->
+          {:stop, %{}, {:ok, result}}
 
-        {:ok, result}
+        {:ok, {:exception, exception}} ->
+          message = Exception.message(exception)
+          {:exception, %{error: message}, failed(operation, %{reason: message})}
 
-      {:ok, {:exception, exception}} ->
-        Telemetry.emit(
-          [:beam_weaver, :sandbox, :interpreter, operation, :exception],
-          %{duration: System.monotonic_time() - start},
-          Map.put(metadata, :error, Exception.message(exception))
-        )
+        {:ok, {:throw, kind, reason}} ->
+          details = %{kind: kind, reason: inspect(reason)}
+          {:exception, details, failed(operation, details)}
 
-        {:error,
-         Error.new(:interpreter_execution_failed, "interpreter operation failed", %{
-           operation: operation,
-           reason: Exception.message(exception)
-         })}
+        nil ->
+          error =
+            Error.new(:interpreter_timeout, "interpreter operation timed out", %{
+              operation: operation,
+              timeout_ms: timeout
+            })
 
-      {:ok, {:throw, kind, reason}} ->
-        Telemetry.emit(
-          [:beam_weaver, :sandbox, :interpreter, operation, :exception],
-          %{duration: System.monotonic_time() - start},
-          metadata |> Map.put(:kind, kind) |> Map.put(:reason, inspect(reason))
-        )
+          {:timeout, %{}, {:error, error}}
 
-        {:error,
-         Error.new(:interpreter_execution_failed, "interpreter operation failed", %{
-           operation: operation,
-           kind: kind,
-           reason: inspect(reason)
-         })}
+        {:exit, reason} ->
+          details = %{reason: inspect(reason)}
+          {:exception, details, failed(operation, details)}
+      end
 
-      nil ->
-        Telemetry.emit(
-          [:beam_weaver, :sandbox, :interpreter, operation, :timeout],
-          %{duration: System.monotonic_time() - start},
-          metadata
-        )
+    Telemetry.emit(
+      [:beam_weaver, :sandbox, :interpreter, operation, event],
+      %{duration: System.monotonic_time() - start},
+      Map.merge(metadata, details)
+    )
 
-        {:error,
-         Error.new(:interpreter_timeout, "interpreter operation timed out", %{
-           operation: operation,
-           timeout_ms: timeout
-         })}
+    result
+  end
 
-      {:exit, reason} ->
-        Telemetry.emit(
-          [:beam_weaver, :sandbox, :interpreter, operation, :exception],
-          %{duration: System.monotonic_time() - start},
-          Map.put(metadata, :reason, inspect(reason))
-        )
-
-        {:error,
-         Error.new(:interpreter_execution_failed, "interpreter operation failed", %{
-           operation: operation,
-           reason: inspect(reason)
-         })}
-    end
+  defp failed(operation, details) do
+    details = Map.put(details, :operation, operation)
+    {:error, Error.new(:interpreter_execution_failed, "interpreter operation failed", details)}
   end
 
   defp safe_adapter_call(fun) do
@@ -322,19 +316,15 @@ defmodule BeamWeaver.Sandbox.Interpreter.Session do
     end
   end
 
-  defp normalize_restore({:ok, adapter_state}), do: {:ok, adapter_state}
-  defp normalize_restore({:error, %Error{} = error}), do: {:error, error}
-  defp normalize_restore(adapter_state), do: {:ok, adapter_state}
+  # An adapter's state from `open/1` or `restore/2`, which may return it bare.
+  defp normalize_state({:ok, adapter_state}), do: {:ok, adapter_state}
+  defp normalize_state({:error, %Error{} = error}), do: {:error, error}
+  defp normalize_state(adapter_state), do: {:ok, adapter_state}
 
   defp close_adapter(%__MODULE__{adapter_state: nil} = state, _opts), do: state
 
   defp close_adapter(%__MODULE__{adapter: adapter, adapter_state: adapter_state} = state, opts) do
-    if function_exported?(adapter, :close, 2) do
-      adapter.close(adapter_state, opts)
-    else
-      :ok
-    end
-
+    if function_exported?(adapter, :close, 2), do: adapter.close(adapter_state, opts)
     %{state | adapter_state: nil}
   rescue
     _exception -> %{state | adapter_state: nil}

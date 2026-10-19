@@ -1,411 +1,239 @@
 # Guardrails
 
-Guardrails validate, filter, or interrupt agent behavior at important execution
-boundaries. Use them to protect private data, require human approval for
-sensitive actions, enforce business rules, moderate content, and validate final
-answers before they leave your application.
+Guardrails check inputs, actions and outputs at different points in a run.
+Choose the boundary that matters: rejecting a request, authorizing a tool,
+redacting displayed text and limiting resource use are separate operations.
+A model instruction alone does not enforce any of them.
 
-BeamWeaver implements guardrails through middleware. A guardrail can run before
-the agent starts, before or after each model call, after the agent finishes, or
-around individual model and tool calls.
 
-{% hint style="info" %}
-**BeamWeaver Shape**
+Run this page’s examples in order in one IEx session; later blocks reuse the modules and values defined earlier.
 
-LangChain's Python guardrails page uses `create_agent`, decorator-based
-middleware, and `Command(resume=...)` for human review. BeamWeaver uses
-`use BeamWeaver.Agent` or `BeamWeaver.Agent.build/1`, Elixir middleware modules
-or structs, `BeamWeaver.Agent.resume/3`, and tagged `{:ok, ...}`,
-`{:interrupted, ...}`, or `{:error, ...}` results.
-{% endhint %}
+## Redact personal data
 
-## Guardrail Approaches
-
-BeamWeaver supports both common guardrail styles:
-
-| Style | Use for | Tradeoff |
-| --- | --- | --- |
-| Deterministic | Regex checks, keyword policies, allowlists, quotas, schema checks, PII detection. | Fast and predictable, but misses nuanced violations. |
-| Model-based | Safety classification, semantic policy checks, final answer review, moderation APIs. | More flexible, but slower, costlier, and provider-dependent. |
-
-Deterministic guardrails should be your default for explicit rules. Add
-model-based checks where the policy needs semantic judgment.
-
-## Built-In Guardrails
-
-### PII Detection
-
-`BeamWeaver.Agent.Middleware.PII` detects and handles personally identifiable
-information in message text. It can inspect user input, model output, and tool
-results.
+After [Installation](installation.md), run this OpenAI example. It checks the
+saved input as well as successful completion:
 
 ```elixir
-defmodule MyApp.SafeSupportAgent do
+defmodule MyApp.RedactedAgent do
   use BeamWeaver.Agent
 
-  alias BeamWeaver.Agent.Middleware.PII
-
-  model BeamWeaver.Models.init_chat_model!("openai:gpt-5.4")
-
-  tools do
-    tool MyApp.CustomerServiceTool
-    tool MyApp.EmailTool
-  end
-
-  middleware do
-    use PII, type: :email, strategy: :redact, apply_to_input: true
-    use PII, type: :credit_card, strategy: :mask, apply_to_input: true
-
-    use PII,
-      type: :api_key,
-      detector: ~S/sk-[A-Za-z0-9]{32}/,
-      strategy: :block,
-      apply_to_input: true
-  end
+  model "openai:gpt-5.4-mini", max_tokens: 128, timeout: 60_000
+  system_prompt "Acknowledge the user's message briefly."
+  middleware [{BeamWeaver.Agent.Middleware.PII, type: :email, strategy: :redact}]
 end
+
+{:ok, result} = MyApp.RedactedAgent.invoke(%{messages: ["Contact me at ada@example.com."]})
+input = result.messages |> hd() |> BeamWeaver.Core.Message.text()
+false = input =~ "ada@example.com"
+true = input =~ "[REDACTED_EMAIL]"
+true = byte_size(result.messages |> List.last() |> BeamWeaver.Core.Message.text()) > 0
 ```
 
-Supported strategies:
+PII detection is local and pattern-based. Strategies are redact, mask, hash
+and block; types include email, credit card, IP, MAC address and URL.
+`detector:` adds custom patterns. Input is checked by default; enable
+`apply_to_tool_results:` and `apply_to_output:` for those text boundaries.
 
-| Strategy | Behavior |
-| --- | --- |
-| `:redact` | Replace with `[REDACTED_TYPE]`. |
-| `:mask` | Keep only a safe suffix or type-specific masked shape. |
-| `:hash` | Replace with a deterministic short hash marker. |
-| `:block` | Return a tagged `:pii_detected` error from the middleware boundary. |
+Message-text redaction leaves other data intact: tool arguments, reasoning,
+media, structured response maps, artifacts and metadata. Inventory the data
+your application stores or exports. Encryption protects stored data at rest;
+it does not remove sensitive fields from a trace or external tool request.
 
-Built-in detector types are `:email`, `:credit_card`, `:ip`, `:mac_address`,
-and `:url`. Custom detectors are supported as regex strings or functions that
-return match maps with `:text` or `:value`, `:start`, and `:end` byte offsets.
+## Block a request
+
+Use a before hook for a rule your application can decide without a model.
+Here the caller's account state is validated before any provider call:
 
 ```elixir
-defmodule MyApp.PII do
-  def detect_ssn(content) do
-    Regex.scan(~r/\d{3}-\d{2}-\d{4}/, content, return: :index)
-    |> Enum.map(fn [{start, length}] ->
-      %{text: binary_part(content, start, length), start: start, end: start + length}
-    end)
+defmodule MyApp.ActiveAccounts do
+  use BeamWeaver.Agent.Middleware
+
+  @impl true
+  def before_agent(_middleware, _state, runtime) do
+    if runtime.context.account_active do
+      nil
+    else
+      {:error, BeamWeaver.Core.Error.new(:account_disabled, "This account cannot start agent runs.")}
+    end
   end
 end
 
-middleware do
-  use BeamWeaver.Agent.Middleware.PII,
-   type: :ssn,
-   detector: &MyApp.PII.detect_ssn/1,
-   strategy: :hash
-end
-```
-
-{% hint style="warning" %}
-**Local PII Detection**
-
-BeamWeaver's PII middleware is local and pattern-based. It does not call a DLP
-service or provider moderation endpoint. Use `BeamWeaver.OpenAI.ModerationMiddleware`
-or a custom middleware backed by your approved service when compliance requires
-external classification.
-{% endhint %}
-
-### Human-In-The-Loop
-
-`BeamWeaver.Agent.Middleware.HumanInTheLoop` pauses before configured tool calls
-and returns an interrupt payload for your UI, CLI, or service layer to review.
-This is the preferred guardrail for high-impact operations such as sending
-messages, writing production data, making purchases, or deleting records.
-
-```elixir
-defmodule MyApp.ReviewedAgent do
+defmodule MyApp.AccountAgent do
   use BeamWeaver.Agent
 
-  alias BeamWeaver.Agent.Middleware.HumanInTheLoop
+  model "openai:gpt-5.4-mini", max_tokens: 128, timeout: 60_000
+  middleware [MyApp.ActiveAccounts]
 
-  model BeamWeaver.Models.init_chat_model!("openai:gpt-5.4")
-
-  tools do
-    tool MyApp.SearchTool
-    tool MyApp.SendEmailTool
-    tool MyApp.DeleteRecordTool
-  end
-
-  middleware do
-    use HumanInTheLoop,
-      interrupt_on: %{
-        "send_email" => %{allowed_decisions: [:approve, :edit, :reject]},
-        "delete_record" => true,
-        "search" => false
-      },
-      tools: [MyApp.SearchTool, MyApp.SendEmailTool, MyApp.DeleteRecordTool]
+  context_schema do
+    field :account_active, :boolean, required: true
   end
 end
+
+{:error, denied} = MyApp.AccountAgent.invoke(%{messages: ["Hello."]}, context: %{account_active: false})
+:account_disabled = denied.type
+{:ok, allowed} = MyApp.AccountAgent.invoke(%{messages: ["Hello."]}, context: %{account_active: true})
+true = byte_size(allowed.messages |> List.last() |> BeamWeaver.Core.Message.text()) > 0
 ```
 
-Human review requires a checkpointer because the graph must pause and resume
-from a persisted state.
+Get account state from your application, not the prompt. Returning
+`{:jump, :end, update}` instead of an error produces an intentional answer
+without calling the model. A keyword blocklist can be a product policy, but
+is not a general defense against harmful actions or prompt injection.
+
+## Check the answer
+
+`after_model/3` checks each reply before requested tools execute;
+`after_agent/3` checks the final state. To replace a message, preserve its ID.
+A fresh ID appends another message instead. Use structured data validation
+when downstream code depends on answer fields.
+
+Output hooks run after generation. Streamed text may already have left the
+server. Buffer output until approval when that boundary must be strict, or
+apply an appropriate [stream transform](streaming.md#redact-a-stream).
+Per-token pattern replacement can miss values split across token boundaries.
+
+Replace a disallowed output while retaining its ID. This local wording policy is deliberately narrow:
 
 ```elixir
-alias BeamWeaver.Checkpoint.ETS, as: CheckpointETS
-alias BeamWeaver.Core.Message
+defmodule MyApp.NoGuarantees do
+  use BeamWeaver.Agent.Middleware
+  @impl true
+  def after_agent(_middleware, state, _runtime) do
+    answer = List.last(state.messages)
 
-checkpointer = CheckpointETS.new()
-config = %{"configurable" => %{"thread_id" => "review-thread-1"}}
+    if BeamWeaver.Core.Message.text(answer) =~ ~r/guarantee/i,
+      do: %{messages: [%{answer | content: "A teammate must confirm the refund terms."}]}
+  end
+end
 
-case MyApp.ReviewedAgent.invoke(
-       %{messages: [Message.user("Send the launch update to the team.")]},
-       checkpointer: checkpointer,
-       config: config
-     ) do
-  {:interrupted, interrupt} ->
-    IO.inspect(interrupt.value.action_requests)
+{:ok, agent} =
+  BeamWeaver.Agent.build(
+    model: "openai:gpt-5.4-mini",
+    model_opts: [max_tokens: 128, timeout: 60_000],
+    system_prompt: "For this wording demonstration, reply exactly: We guarantee a full refund today.",
+    middleware: [MyApp.NoGuarantees]
+  )
 
-    MyApp.ReviewedAgent.resume(
-      %{decisions: [%{type: :approve}]},
-      checkpointer: checkpointer,
-      config: config
+{:ok, result} = BeamWeaver.Agent.invoke(agent, %{messages: ["Return the demonstration sentence."]})
+"A teammate must confirm the refund terms." = BeamWeaver.Core.Message.text(List.last(result.messages))
+2 = length(result.messages)
+```
+
+## Limit model and tool calls
+
+Set `ModelCallLimit` and `ToolCallLimit` for per-run or checkpointed
+per-thread limits. Configure `recursion_limit`, provider timeouts and a whole
+`run_timeout` for different resource boundaries. Limits constrain work; they
+do not decide whether a particular action is authorized.
+[Built-in Middleware](builtin_middleware.md#limits) lists exit policies.
+
+## Require approval
+
+Use `interrupt_on` for actions a person must review before execution.
+The reviewer must see the actual tool arguments and have permission to approve
+that action. Resume using the same saved thread and fresh caller context.
+[Human Review](human_in_the_loop.md) shows approval, editing and rejection.
+
+## Block risky tool calls
+
+`AutoMode` asks a decision model to assess selected tool calls using their
+description and recent conversation. A risk probability below 0.5 permits
+the call; otherwise it returns a blocked tool result. Refusal blocks; a
+classifier failure fails the run without executing the tool.
+
+Configure `classifier:` explicitly for the integration you use. The default
+is TypeSafe's Jev; OpenAI decisions are another supported option. `tools:`
+selects guarded actions and `instructions:` controls classification criteria.
+This makes additional model requests. It is a probabilistic policy layer,
+not a replacement for tool-side authorization or human approval.
+
+This agent asks a real decision model to assess a requested file write. The file is created only if the policy permits the tool:
+
+```elixir
+defmodule MyApp.WriteDraft do
+  use BeamWeaver.Tool
+  name "write_draft"
+  description "Write the requested text to draft.txt in this request's temporary workspace."
+  injected :context, :context
+
+  schema do
+    field :text, :string
+  end
+
+  @impl true
+  def invoke(_tool, %{"text" => text, context: context}, _opts) do
+    with :ok <- File.write(Path.join(context.root, "draft.txt"), text), do: {:ok, "Draft saved."}
+  end
+end
+
+defmodule MyApp.CheckedWriter do
+  use BeamWeaver.Agent
+  model "openai:gpt-5.4-mini", max_tokens: 256, timeout: 60_000
+  system_prompt "Write the requested draft using write_draft, then confirm."
+  tools [MyApp.WriteDraft]
+  middleware [{BeamWeaver.Agent.Middleware.AutoMode, tools: ["write_draft"], classifier: "openai:gpt-6-luna"}]
+end
+
+root = Path.join(System.tmp_dir!(), "beam-weaver-guardrail-#{System.unique_integer([:positive])}")
+File.mkdir_p!(root)
+
+try do
+  {:ok, result} =
+    MyApp.CheckedWriter.invoke(%{messages: ["Write draft.txt with exactly: Order A-1001 arrives Thursday."]},
+      context: %{root: root}
     )
 
-  other ->
-    other
+  "Order A-1001 arrives Thursday." = File.read!(Path.join(root, "draft.txt"))
+  true = Enum.any?(result.messages, &(&1.role == :tool and &1.name == "write_draft"))
+after
+  File.rm_rf!(root)
 end
 ```
 
-Decision types are `:approve`, `:edit`, `:reject`, and `:respond`. Use
-`BeamWeaver.Agent.resume_review/3` when you want BeamWeaver to normalize
-decision structs or raw decision lists into the expected resume payload.
+## Moderate with a model
 
-{% hint style="info" %}
-**Resume Payloads Are Elixir Data**
+A custom wrapper can call a second model and fail closed if the check fails.
+For OpenAI's moderation endpoint, `OpenAIModeration` supports `check_input:`
+and `check_output:` and requires its own OpenAI credentials. Moderation
+classifies content; it does not verify ownership or transaction eligibility.
 
-Python examples resume with `Command(resume=...)`. BeamWeaver resumes with
-`BeamWeaver.Agent.resume/3`, the generated module `resume(...)` helper, or
-`BeamWeaver.Agent.resume_review/3`. The resume value is a map or list of
-decision maps, not a LangGraph `Command` object.
-{% endhint %}
-
-### OpenAI Moderation
-
-`BeamWeaver.OpenAI.ModerationMiddleware` is a provider-backed model-based
-guardrail for OpenAI moderation. It can check input, output, and tool results.
+Check a benign message with the actual moderation endpoint, then attach that same policy to an agent:
 
 ```elixir
-middleware do
-  use BeamWeaver.OpenAI.ModerationMiddleware,
-    check_input: true,
-    check_output: true,
-    check_tool_results: false,
-    exit_behavior: :end
-end
+alias BeamWeaver.Agent.Middleware.OpenAIModeration
+moderation = OpenAIModeration.new(check_input: true, check_output: true, exit_behavior: :error)
+{:ok, %{"flagged" => false}} = OpenAIModeration.moderate(moderation, "Please explain parcel tracking.")
+
+{:ok, agent} =
+  BeamWeaver.Agent.build(
+    model: "openai:gpt-5.4-mini",
+    model_opts: [max_tokens: 128, timeout: 60_000],
+    middleware: [moderation]
+  )
+
+{:ok, result} = BeamWeaver.Agent.invoke(agent, %{messages: ["Explain parcel tracking briefly."]})
+true = byte_size(BeamWeaver.Core.Message.text(List.last(result.messages))) > 0
 ```
 
-The `:exit_behavior` option controls what happens when content is flagged:
+## Handle a filtered reply
 
-| Behavior | Result |
-| --- | --- |
-| `:end` | Jump to the end with a violation message. |
-| `:replace` | Replace the flagged message content with a violation message. |
-| `:error` | Return a tagged `:openai_moderation_violation` error. |
+Some providers return a partial or filtered reply as a normal response.
+`BeamWeaver.Provider.Outcome.classify/1` exposes a `turn_disposition` such as
+`:filtered`. Inspect this before presenting the answer as complete. Your
+policy can fail immediately or request one bounded correction.
 
-{% hint style="warning" %}
-**Provider-Specific Scope**
+Other providers normalize safety failures into errors. Handle both outcomes;
+HTTP success and a nonempty string alone are not sufficient completion checks.
 
-LangChain documents provider middleware catalogs for several integrations.
-BeamWeaver currently has OpenAI moderation middleware and provider-specific
-adapter options documented in provider guides. AWS or Anthropic moderation
-middleware is not part of BeamWeaver unless you add it as custom middleware.
-{% endhint %}
+## Order
 
-## Custom Guardrails
+Place cheap input checks before expensive calls. Before hooks run in declared
+order, wrappers nest and after hooks run in reverse. Avoid later middleware
+reintroducing content or tools an earlier policy removed. See [Middleware](middleware.md#order).
 
-Use custom middleware when the built-in guardrails do not encode your policy.
-BeamWeaver does not expose Python decorators such as `@before_agent`; instead,
-implement the `BeamWeaver.Agent.Middleware` behaviour.
+## Test guardrails
 
-### Before-Agent Guardrails
-
-Use `before_agent` for request-level checks that should run once before any
-model or tool work happens.
-
-```elixir
-defmodule MyApp.ContentFilterMiddleware do
-  @behaviour BeamWeaver.Agent.Middleware
-
-  alias BeamWeaver.Core.Message
-
-  defstruct banned_keywords: []
-
-  def new(opts \\ []) do
-    words =
-      opts
-      |> Keyword.get(:banned_keywords, [])
-      |> Enum.map(&String.downcase/1)
-
-    %__MODULE__{banned_keywords: words}
-  end
-
-  def name(_middleware), do: :content_filter
-
-  def can_jump_to(_middleware, :before_agent), do: [:end]
-  def can_jump_to(_middleware, _hook), do: []
-
-  def before_agent(%__MODULE__{banned_keywords: words}, state, _runtime) do
-    content =
-      state
-      |> Map.get(:messages, [])
-      |> Enum.find(&match?(%Message{role: :user}, &1))
-      |> case do
-        nil -> ""
-        message -> Message.text(message) |> String.downcase()
-      end
-
-    if Enum.any?(words, &String.contains?(content, &1)) do
-      %{
-        messages: [
-          Message.assistant(
-            "I cannot process that request. Please rephrase it."
-          )
-        ],
-        jump_to: :end
-      }
-    else
-      nil
-    end
-  end
-end
-```
-
-Attach it like any other middleware:
-
-```elixir
-middleware do
-  use MyApp.ContentFilterMiddleware,
-    banned_keywords: ["credential theft", "exploit production"]
-end
-```
-
-### After-Agent Guardrails
-
-Use `after_agent` to validate the final answer before returning it. This is a
-good place for model-based safety checks or final business-rule validation.
-
-```elixir
-defmodule MyApp.SafetyGuardrailMiddleware do
-  @behaviour BeamWeaver.Agent.Middleware
-
-  alias BeamWeaver.Core.ChatModel
-  alias BeamWeaver.Core.Message
-  alias BeamWeaver.Graph.Overwrite
-
-  defstruct [:safety_model]
-
-  def new(opts), do: %__MODULE__{safety_model: Keyword.fetch!(opts, :model)}
-
-  def name(_middleware), do: :safety_guardrail
-
-  def can_jump_to(_middleware, :after_agent), do: [:end]
-  def can_jump_to(_middleware, _hook), do: []
-
-  def after_agent(%__MODULE__{safety_model: model}, state, _runtime) do
-    messages = Map.get(state, :messages, [])
-    last_index = last_assistant_index(messages)
-
-    with index when is_integer(index) <- last_index,
-         %Message{} = last <- Enum.at(messages, index),
-         prompt <- safety_prompt(Message.text(last)),
-         {:ok, review} <- ChatModel.invoke(model, [Message.user(prompt)]) do
-      if String.contains?(String.upcase(Message.text(review)), "UNSAFE") do
-        replacement = Message.assistant("I cannot provide that response.")
-
-        %{
-          messages: messages |> List.replace_at(index, replacement) |> Overwrite.new(),
-          jump_to: :end
-        }
-      else
-        nil
-      end
-    else
-      nil -> nil
-      {:error, error} -> {:error, error}
-    end
-  end
-
-  defp safety_prompt(response) do
-    """
-    Evaluate whether this response is safe and policy-compliant.
-    Reply with only SAFE or UNSAFE.
-
-    Response:
-    #{response}
-    """
-  end
-
-  defp last_assistant_index(messages) do
-    messages
-    |> Enum.with_index()
-    |> Enum.reverse()
-    |> Enum.find_value(fn
-      {%Message{role: :assistant}, index} -> index
-      _other -> nil
-    end)
-  end
-end
-```
-
-{% hint style="info" %}
-**Immutable Message Updates**
-
-Python examples sometimes mutate `last_message.content`. BeamWeaver messages
-are structs in graph state. Replace the message list with
-`BeamWeaver.Graph.Overwrite` when you need to rewrite final output instead of
-appending another assistant message.
-{% endhint %}
-
-## Combining Guardrails
-
-Guardrails are layered by ordering middleware in the agent definition. Put
-cheap deterministic checks early, then review or model-based checks around the
-operations that need them.
-
-```elixir
-middleware do
-  use MyApp.ContentFilterMiddleware,
-    banned_keywords: ["credential theft", "exploit production"]
-
-  use BeamWeaver.Agent.Middleware.PII,
-    type: :email,
-    strategy: :redact,
-    apply_to_input: true,
-    apply_to_output: true
-
-  use BeamWeaver.Agent.Middleware.HumanInTheLoop,
-    interrupt_on: %{"send_email" => true},
-    tools: [MyApp.SendEmailTool]
-
-  use MyApp.SafetyGuardrailMiddleware,
-    model: BeamWeaver.Models.init_chat_model!("openai:gpt-5.4-mini")
-end
-```
-
-Order matters:
-
-- `before_agent` and `before_model` hooks run in middleware order.
-- `after_model` and `after_agent` hooks run in reverse order.
-- Wrap hooks nest, with earlier middleware wrapping later middleware.
-
-## Testing Guardrails
-
-Test deterministic guardrails directly with ExUnit, then run integration tests
-through an agent. Use fake or replay models for model-based guardrails so tests
-do not depend on live provider calls. For human review, assert that invocation
-returns `{:interrupted, interrupt}` and that resume decisions produce the
-expected tool messages or final state.
-
-Use `BeamWeaver.Agent.stream_events/3` when your UI needs to observe guardrail
-activity in real time. Interrupts, model calls, tool calls, errors, graph
-updates, and completion all appear as typed stream envelopes.
-
-{% hint style="warning" %}
-**Testing Platform Scope**
-
-LangChain's guardrails page links to hosted testing. BeamWeaver's current
-testing path is ordinary ExUnit tests plus BeamWeaver tracing. Use fake or
-replay models for deterministic guardrail behavior; there is no
-BeamWeaver-specific hosted agent test runner.
-{% endhint %}
+Exercise both accepted and rejected inputs, verify the protected tool was or
+was not executed, and check persisted state as well as displayed text. Use
+scripted models for deterministic branch coverage and real providers for
+integration checks. [Testing](testing.md) provides the application patterns.

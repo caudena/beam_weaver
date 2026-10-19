@@ -1,12 +1,5 @@
 defmodule BeamWeaver.Agent.ToolSet do
-  @moduledoc """
-  Scoped tool authority for one agent model/tool step.
-
-  A `ToolSet` is stored in private graph state after the model node chooses the
-  effective tools for a turn. The following validation/tool node reads the same
-  set, so dynamic middleware cannot expose one tool schema to the model and
-  execute a different static registry afterwards.
-  """
+  @moduledoc false
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Tool
@@ -21,7 +14,7 @@ defmodule BeamWeaver.Agent.ToolSet do
         }
 
   @spec new([term()], keyword()) :: t()
-  def new(tools \\ [], opts \\ []) do
+  def new(tools, opts \\ []) do
     entries = tool_entries(tools)
 
     %__MODULE__{
@@ -33,7 +26,7 @@ defmodule BeamWeaver.Agent.ToolSet do
   end
 
   @spec add(t(), [term()], keyword()) :: t()
-  def add(%__MODULE__{} = tool_set, tools, opts \\ []) do
+  def add(%__MODULE__{} = tool_set, tools, opts) do
     entries = tool_entries(tools)
     incoming = Map.new(entries)
     merged = Map.merge(tool_set.tools, incoming)
@@ -56,10 +49,7 @@ defmodule BeamWeaver.Agent.ToolSet do
 
   @spec list(t() | nil) :: [term()]
   def list(%__MODULE__{tools: tools, order: order}) do
-    ordered =
-      Enum.flat_map(order, fn name ->
-        if Map.has_key?(tools, name), do: [tools[name]], else: []
-      end)
+    ordered = for name <- order, Map.has_key?(tools, name), do: Map.fetch!(tools, name)
 
     extras = tools |> Map.drop(order) |> Map.values()
     ordered ++ extras
@@ -80,17 +70,17 @@ defmodule BeamWeaver.Agent.ToolSet do
   def from_state(%{"tool_set" => %__MODULE__{} = tool_set}), do: tool_set
   def from_state(_state), do: nil
 
+  # The tool set itself isn't saved with the thread; a run that continues from
+  # a checkpoint finds the names of the tools in it under `tool_set_names`, or
+  # `nil` before the thread's first model call.
+  @spec saved_names(term()) :: [String.t()] | nil
+  def saved_names(%{tool_set_names: names}) when is_list(names), do: names
+  def saved_names(%{"tool_set_names" => names}) when is_list(names), do: names
+  def saved_names(_state), do: nil
+
   @spec validate(t()) :: :ok | {:error, Error.t()}
-  def validate(%__MODULE__{} = tool_set) do
-    tool_set.tools
-    |> Map.values()
-    |> Enum.reduce_while(:ok, fn tool, :ok ->
-      case validate_tool(tool) do
-        :ok -> {:cont, :ok}
-        {:error, %Error{} = error} -> {:halt, {:error, error}}
-      end
-    end)
-  end
+  def validate(%__MODULE__{} = tool_set),
+    do: Enum.find_value(Map.values(tool_set.tools), :ok, fn tool -> with :ok <- validate_tool(tool), do: nil end)
 
   defp validate_tool(tool) do
     name = Tool.name(tool)
@@ -114,10 +104,5 @@ defmodule BeamWeaver.Agent.ToolSet do
        })}
   end
 
-  defp tool_entries(tools) do
-    tools
-    |> List.wrap()
-    |> Enum.reject(&is_nil/1)
-    |> Enum.map(fn tool -> {Tool.name(tool), tool} end)
-  end
+  defp tool_entries(tools), do: for(tool <- List.wrap(tools), not is_nil(tool), do: {Tool.name(tool), tool})
 end

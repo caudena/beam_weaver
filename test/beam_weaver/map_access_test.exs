@@ -37,11 +37,11 @@ defmodule BeamWeaver.MapAccessTest do
   end
 
   test "first returns the first present key including falsey values" do
-    assert MapAccess.first(%{enabled: false, fallback: true}, [:enabled, :fallback], :default) == false
-    assert MapAccess.first(%{value: nil, other: 1}, [:value, :other], :default) == nil
-    assert MapAccess.first(%{"value" => false}, [:value], :default) == false
-    assert MapAccess.first(%{other: 1}, [:value, :other], :default) == 1
-    assert MapAccess.first(%{}, [:value, :other], :default) == :default
+    assert MapAccess.first(%{enabled: false, fallback: true}, [:enabled, :fallback]) == false
+    assert MapAccess.first(%{value: nil, other: 1}, [:value, :other]) == nil
+    assert MapAccess.first(%{"value" => false}, [:value]) == false
+    assert MapAccess.first(%{other: 1}, [:value, :other]) == 1
+    assert MapAccess.first(%{}, [:value, :other]) == nil
   end
 
   test "normalizes only allowlisted string keys" do

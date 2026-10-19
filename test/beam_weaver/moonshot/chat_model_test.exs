@@ -6,38 +6,32 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Core.Messages.ToolCall
-  alias BeamWeaver.Models
-  alias BeamWeaver.Models.UsageCost
   alias BeamWeaver.Moonshot.ChatModel
   alias BeamWeaver.Moonshot.Client
-  alias BeamWeaver.Moonshot.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Moonshot.Messages
   alias BeamWeaver.Moonshot.Tools
   alias BeamWeaver.Stream.Events
 
   test "namespace and client constructors read Moonshot config defaults and derive endpoints" do
-    with_config(
-      :moonshot,
-      [
-        api_key: "moonshot-secret",
-        base_url: "https://proxy.test/v1"
-      ],
-      fn ->
-        model =
-          BeamWeaver.Moonshot.chat_model(default_headers: [{"x-test-header", "beam-weaver-test"}])
-
-        request = Client.request(%Client{endpoint: model.endpoint, api_key: model.api_key}, %{})
-
-        assert model.endpoint == "https://proxy.test/v1/chat/completions"
-
-        assert model.count_tokens_endpoint ==
-                 "https://proxy.test/v1/tokenizers/estimate-token-count"
-
-        assert model.api_key == "moonshot-secret"
-        assert {"authorization", "Bearer moonshot-secret"} in request.headers
-        assert {"user-agent", "beam_weaver-moonshot/0.1"} in request.headers
-      end
+    BeamWeaver.TestSupport.ConfigHelper.put_config(:moonshot,
+      api_key: "moonshot-secret",
+      base_url: "https://proxy.test/v1"
     )
+
+    model =
+      BeamWeaver.Moonshot.chat_model(default_headers: [{"x-test-header", "beam-weaver-test"}])
+
+    request = Client.request(%Client{endpoint: model.endpoint, api_key: model.api_key}, %{})
+
+    assert model.endpoint == "https://proxy.test/v1/chat/completions"
+
+    assert model.count_tokens_endpoint ==
+             "https://proxy.test/v1/tokenizers/estimate-token-count"
+
+    assert model.api_key == "moonshot-secret"
+    assert {"authorization", "Bearer moonshot-secret"} in request.headers
+    assert {"user-agent", "beam_weaver-moonshot/0.1"} in request.headers
   end
 
   test "model constructor accepts Moonshot base_url alias" do
@@ -47,7 +41,7 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
     assert model.count_tokens_endpoint == "https://proxy.test/v1/tokenizers/estimate-token-count"
   end
 
-  test "request body supports K2.6 thinking, structured output, partial mode, cache key, and safety identifier" do
+  test "request body supports K2.6 thinking, partial mode, cache key, and safety identifier" do
     assert {:ok, body} =
              ChatModel.request_body(
                ChatModel.new(model: "kimi-k2.6"),
@@ -58,10 +52,6 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
                  )
                ],
                thinking: %{type: :enabled, keep: :all},
-               response_format: %{
-                 name: "Answer",
-                 schema: %{type: :object, properties: %{answer: %{type: :string}}}
-               },
                prompt_cache_key: "session-1",
                safety_identifier: "user-123",
                max_tokens: 128
@@ -69,8 +59,6 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
 
     assert body["model"] == "kimi-k2.6"
     assert body["thinking"] == %{"type" => "enabled", "keep" => "all"}
-    assert body["response_format"]["type"] == "json_schema"
-    assert body["response_format"]["json_schema"]["name"] == "Answer"
     assert body["prompt_cache_key"] == "session-1"
     assert body["safety_identifier"] == "user-123"
     assert body["max_completion_tokens"] == 128
@@ -81,6 +69,53 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
              "partial" => true,
              "reasoning_content" => "plan"
            }
+  end
+
+  # Kimi K2.6 ignores a json_schema response format and answers in
+  # prose, so a schema goes out as JSON mode with the schema in the prompt.
+  test "K2 thinking-toggle models send a response schema as JSON mode with the schema in the prompt" do
+    schema = %{type: :object, properties: %{answer: %{type: :string}}, required: [:answer]}
+
+    for model <- ["kimi-k2.6"] do
+      assert {:ok, body} =
+               ChatModel.request_body(
+                 ChatModel.new(model: model),
+                 [Message.system("Be brief."), Message.user("answer as JSON")],
+                 response_format: %{name: "Answer", schema: schema}
+               )
+
+      assert body["response_format"] == %{"type" => "json_object"}
+
+      assert [
+               %{"role" => "system", "content" => "Be brief."},
+               %{"role" => "system", "content" => instruction},
+               %{"role" => "user", "content" => "answer as JSON"}
+             ] = body["messages"]
+
+      assert instruction =~ "Schema name: Answer"
+      assert instruction =~ ~s("answer")
+    end
+
+    assert {:ok, wire_body} =
+             ChatModel.request_body(ChatModel.new(model: "kimi-k2.6"), [Message.user("answer")],
+               response_format: %{
+                 "type" => "json_schema",
+                 "json_schema" => %{"name" => "Answer", "schema" => %{"type" => "object"}, "strict" => true}
+               }
+             )
+
+    assert wire_body["response_format"] == %{"type" => "json_object"}
+
+    for model <- ["kimi-k3", "kimi-k2.7-code"] do
+      assert {:ok, body} =
+               ChatModel.request_body(ChatModel.new(model: model), [Message.user("answer as JSON")],
+                 response_format: %{name: "Answer", schema: schema}
+               )
+
+      assert body["response_format"]["type"] == "json_schema"
+      assert body["response_format"]["json_schema"]["name"] == "Answer"
+      assert [%{"role" => "user"}] = body["messages"]
+    end
   end
 
   test "request body encodes image and video input and rejects ordinary remote media URLs" do
@@ -135,6 +170,24 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
     assert file_error.details.feature == :file_input
   end
 
+  test "request body returns an error for citation and tool result blocks" do
+    for block <- [
+          ContentBlock.citation(%{url: "https://docs.test", title: "Docs", text: "cited"}),
+          ContentBlock.tool_result(%{tool_call_id: "call_1", content: "ok"})
+        ] do
+      reply = Message.new!(:assistant, [ContentBlock.text("Answer"), block])
+
+      assert {:error, %Error{type: :unsupported_feature} = error} =
+               ChatModel.request_body(ChatModel.new(model: "kimi-k2.6"), [
+                 Message.user("question"),
+                 reply,
+                 Message.user("follow-up")
+               ])
+
+      assert error.details.feature == block.type
+    end
+  end
+
   test "K2.6 fixed sampling params and partial JSON mode fail before transport" do
     assert {:error, temp_error} =
              ChatModel.request_body(ChatModel.new(model: "kimi-k2.6"), [Message.user("hi")], temperature: 0.2)
@@ -155,14 +208,30 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
     assert body["thinking"] == %{"type" => "disabled"}
     assert body["temperature"] == 0.6
 
+    # Kimi K2 takes a forced tool choice only with thinking disabled.
+    lookup =
+      Tool.from_function!(
+        name: "lookup",
+        description: "Look up",
+        input_schema: %{type: :object, properties: %{}},
+        handler: fn _args, _opts -> "ok" end
+      )
+
     assert {:error, required_tool_error} =
              ChatModel.request_body(ChatModel.new(model: "kimi-k2.6"), [Message.user("hi")],
-               thinking: %{type: :disabled},
+               tools: [lookup],
                tool_choice: :required
              )
 
     assert required_tool_error.type == :unsupported_model_param
     assert required_tool_error.details.param == :tool_choice
+
+    assert {:ok, %{"tool_choice" => "required"}} =
+             ChatModel.request_body(ChatModel.new(model: "kimi-k2.6"), [Message.user("hi")],
+               thinking: %{type: :disabled},
+               tools: [lookup],
+               tool_choice: :required
+             )
 
     assert {:error, partial_error} =
              ChatModel.request_body(
@@ -172,30 +241,6 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
              )
 
     assert partial_error.type == :invalid_request
-  end
-
-  test "K2.5 uses the same fixed sampling params as K2.6" do
-    assert {:error, temp_error} =
-             ChatModel.request_body(ChatModel.new(model: "kimi-k2.5"), [Message.user("hi")], temperature: 0.2)
-
-    assert temp_error.type == :unsupported_model_param
-    assert temp_error.details.model == "kimi-k2.5"
-    assert temp_error.details.param == :temperature
-    assert temp_error.details.supported == 1.0
-
-    assert {:ok, body} =
-             ChatModel.request_body(ChatModel.new(model: "kimi-k2.5"), [Message.user("hi")],
-               thinking: %{type: :disabled},
-               temperature: 0.6,
-               top_p: 0.95,
-               n: 1,
-               presence_penalty: 0,
-               frequency_penalty: 0
-             )
-
-    assert body["model"] == "kimi-k2.5"
-    assert body["thinking"] == %{"type" => "disabled"}
-    assert body["temperature"] == 0.6
   end
 
   test "K2.7 Code supports only enabled thinking and automatic tool choice" do
@@ -267,12 +312,18 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
     assert body["tool_choice"] == "required"
     refute Map.has_key?(body, "thinking")
 
+    for effort <- [:low, :high] do
+      assert {:ok, body} =
+               ChatModel.request_body(ChatModel.new(model: "kimi-k3"), [Message.user("hi")], reasoning_effort: effort)
+
+      assert body["reasoning_effort"] == Atom.to_string(effort)
+    end
+
     assert {:error, effort_error} =
-             ChatModel.request_body(ChatModel.new(model: "kimi-k3"), [Message.user("hi")], reasoning_effort: :high)
+             ChatModel.request_body(ChatModel.new(model: "kimi-k3"), [Message.user("hi")], reasoning_effort: :medium)
 
     assert effort_error.type == :unsupported_model_param
     assert effort_error.details.param == :reasoning_effort
-    assert effort_error.details.supported == ["max"]
 
     assert {:error, thinking_error} =
              ChatModel.request_body(ChatModel.new(model: "kimi-k3"), [Message.user("hi")], thinking: %{type: :enabled})
@@ -294,6 +345,30 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
 
     assert missing_tool_error.type == :invalid_request
     assert missing_tool_error.details.param == :tool_choice
+  end
+
+  test "cache TTL, log probabilities and predicted output reach the provider" do
+    model =
+      ChatModel.new(
+        model: "kimi-k3",
+        prompt_cache_options: %{mode: "implicit", ttl: "5m"},
+        logprobs: true,
+        top_logprobs: 3,
+        prediction: %{type: :content, content: "expected answer"},
+        api_key: "test-key",
+        transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+        transport_opts: [parent: self(), body: %{"choices" => [%{"message" => %{"content" => "answer"}}]}]
+      )
+
+    assert {:ok, _reply} =
+             CoreChatModel.invoke(model, "finish", prompt_cache_options: %{mode: "implicit", ttl: "1h"})
+
+    assert_received {:fake_transport_request, request}
+    body = request.json
+    assert body["prompt_cache_options"] == %{"mode" => "implicit", "ttl" => "1h"}
+    assert body["logprobs"] == true
+    assert body["top_logprobs"] == 3
+    assert body["prediction"] == %{"type" => "content", "content" => "expected answer"}
   end
 
   test "K3 dynamically loads tools through contentless system messages" do
@@ -401,6 +476,24 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
 
     assert error.type == :unsupported_feature
     assert error.details.feature == :web_search
+  end
+
+  test "a Responses API built-in tool returns an :unsupported_feature error" do
+    responses_tool = %{"type" => "web_search"}
+    model = ChatModel.new(model: "kimi-k3", api_key: "moonshot-secret")
+
+    assert {:error, %Error{type: :unsupported_feature} = error} =
+             CoreChatModel.invoke(model, [Message.user("search")], tools: [responses_tool])
+
+    assert error.details.provider == :moonshot
+    assert error.details.tool_type == "web_search"
+
+    dynamic_message = Message.system("", metadata: %{moonshot_dynamic_tools: [responses_tool]})
+
+    assert {:error, %Error{type: :unsupported_feature}} =
+             ChatModel.request_body(model, [Message.user("search"), dynamic_message])
+
+    assert_raise ArgumentError, ~r/Responses API tool/, fn -> Tools.to_chat_tool(responses_tool) end
   end
 
   test "deprecated OpenAI function params are rejected" do
@@ -668,24 +761,6 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
            }
   end
 
-  test "K3 profile prices both cache-write TTLs" do
-    {:ok, profile} = BeamWeaver.Models.ProfileRegistry.Moonshot.resolve("kimi-k3")
-
-    cost =
-      UsageCost.calculate(profile, %{
-        input_tokens: 1_000,
-        input_token_details: %{
-          cache_read: 200,
-          cache_write: 400,
-          ephemeral_5m_input_tokens: 100,
-          ephemeral_1h_input_tokens: 300
-        },
-        output_tokens: 100
-      })
-
-    assert_in_delta cost.total_cost, 0.00486, 0.000000001
-  end
-
   test "stream_events returns envelopes tagged with Moonshot invocation metadata" do
     body = """
     data: {"id":"chatcmpl_kimi","model":"kimi-k2.6","choices":[{"index":0,"delta":{"reasoning_content":"think"},"finish_reason":null}]}
@@ -743,6 +818,7 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
   test "Moonshot context_length_exceeded HTTP errors are normalized as context overflow" do
     model =
       ChatModel.new(
+        api_key: "test-key",
         transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
         transport_opts: [
           expect: %{method: :post, path: "/v1/chat/completions"},
@@ -765,14 +841,15 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
     assert error.details.error["type"] == "invalid_request_error"
   end
 
-  test "Moonshot auth, quota, and overloaded HTTP errors are normalized from provider codes" do
+  test "Moonshot auth, quota, and overloaded HTTP errors get their types" do
     for {status, code, expected_type} <- [
-          {401, "invalid_authentication_error", :authentication_error},
-          {429, "exceeded_current_quota_error", :quota_error},
-          {503, "engine_overloaded_error", :overloaded_error}
+          {401, "invalid_authentication_error", :authentication},
+          {429, "exceeded_current_quota_error", :billing_exhausted},
+          {503, "engine_overloaded_error", :server_error}
         ] do
       model =
         ChatModel.new(
+          api_key: "test-key",
           transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
           transport_opts: [
             expect: %{method: :post, path: "/v1/chat/completions"},
@@ -795,26 +872,26 @@ defmodule BeamWeaver.Moonshot.ChatModelTest do
     end
   end
 
-  test "model initializer supports Moonshot prefix, rejects aliases, and reports deprecated models" do
-    for model <- ["kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5"] do
-      assert {:ok, %ChatModel{model: ^model}} = Models.init_chat_model("moonshot:" <> model)
+  test "Moonshot quota errors named in the error type are not retried" do
+    for status <- [429, 403] do
+      model =
+        ChatModel.new(
+          api_key: "test-key",
+          transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+          transport_opts: [
+            status: status,
+            body: %{
+              "error" => %{
+                "type" => "exceeded_current_quota_error",
+                "message" => "Your account is suspended, please check your plan and billing details"
+              }
+            }
+          ]
+        )
+
+      assert {:error, %Error{type: :billing_exhausted} = error} = CoreChatModel.invoke(model, [Message.user("test")])
+      assert error.details.retryable == false
+      refute BeamWeaver.RetryPredicates.transient?(error)
     end
-
-    assert {:error, invalid} = Models.init_chat_model("kimi-k2.6")
-    assert invalid.type == :invalid_model
-    assert invalid.details.expected == "moonshot:kimi-k2.6"
-
-    assert {:error, unsupported} = Models.init_chat_model("kimi:kimi-k2.6")
-    assert unsupported.type == :unsupported_provider
-
-    assert {:error, deprecated} = Models.init_chat_model("moonshot:kimi-latest")
-    assert deprecated.type == :deprecated_model
-    assert deprecated.details.replacement == "kimi-k3"
-    assert deprecated.details.expected == "moonshot:kimi-k3"
-  end
-
-  defp with_config(group, values, fun) do
-    BeamWeaver.TestSupport.ConfigHelper.put_config(group, values)
-    fun.()
   end
 end

@@ -45,9 +45,6 @@ defmodule BeamWeaver.Stream.Sink do
         {:beam_weaver_mux_ack, ^ref, response} ->
           response
 
-        {:beam_weaver_mux_cancel, ^ref} ->
-          {:error, Error.new(:stream_cancelled, "stream was cancelled")}
-
         {:beam_weaver_mux_cancel, ^token} ->
           {:error, Error.new(:stream_cancelled, "stream was cancelled")}
       after
@@ -97,11 +94,5 @@ defmodule BeamWeaver.Stream.Sink do
         namespace: Keyword.get(opts, :namespace, sink.namespace),
         metadata: Map.merge(sink.metadata || %{}, Keyword.get(opts, :metadata, %{}))
     }
-  end
-
-  @doc false
-  def cancel(%__MODULE__{token: token}) do
-    send(self(), {:beam_weaver_mux_cancel, token})
-    :ok
   end
 end

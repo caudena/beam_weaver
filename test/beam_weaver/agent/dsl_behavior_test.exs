@@ -305,45 +305,45 @@ defmodule BeamWeaver.Agent.DSLBehaviorTest do
   end
 
   defmodule OrderMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :order_middleware
 
-    def before_model(_state, runtime) do
+    def before_model(_middleware, _state, runtime) do
       send(runtime.context.parent, :before_model)
       nil
     end
 
-    def wrap_model_call(request, handler) do
+    def wrap_model_call(_middleware, request, handler) do
       send(request.runtime.context.parent, :wrap_model_before)
       result = handler.(request)
       send(request.runtime.context.parent, :wrap_model_after)
       result
     end
 
-    def after_model(_state, runtime) do
+    def after_model(_middleware, _state, runtime) do
       send(runtime.context.parent, :after_model)
       nil
     end
   end
 
   defmodule ShortCircuitModelMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :short_circuit_model_middleware
 
-    def wrap_model_call(request, _handler) do
+    def wrap_model_call(_middleware, request, _handler) do
       send(request.runtime.context.parent, :short_circuit_model)
       %ModelResponse{messages: [Message.assistant("cached")]}
     end
   end
 
   defmodule SwitchModelMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :switch_model_middleware
 
-    def wrap_model_call(request, handler) do
+    def wrap_model_call(_middleware, request, handler) do
       replacement = %RecordingModel{
         parent: request.runtime.context.parent,
         label: :switched,
@@ -357,11 +357,11 @@ defmodule BeamWeaver.Agent.DSLBehaviorTest do
   end
 
   defmodule UppercaseResponseMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :uppercase_response_middleware
 
-    def wrap_model_call(request, handler) do
+    def wrap_model_call(_middleware, request, handler) do
       case handler.(request) do
         {:ok, %ModelResponse{} = response} ->
           messages =
@@ -382,22 +382,22 @@ defmodule BeamWeaver.Agent.DSLBehaviorTest do
   end
 
   defmodule RewriteToolMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :rewrite_tool_middleware
 
-    def wrap_tool_call(request, handler) do
+    def wrap_tool_call(_middleware, request, handler) do
       rewritten_call = Map.put(request.tool_call, :args, %{"value" => "rewritten"})
       handler.(ToolCallRequest.override(request, tool_call: rewritten_call))
     end
   end
 
   defmodule ToolNodeSpyMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :tool_node_spy_middleware
 
-    def wrap_tool_call(request, handler) do
+    def wrap_tool_call(_middleware, request, handler) do
       send(
         request.runtime.context.parent,
         {:tool_node_call, request.tool_call.name, request.tool_call.args}
@@ -408,7 +408,7 @@ defmodule BeamWeaver.Agent.DSLBehaviorTest do
   end
 
   defmodule JumpMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :jump_middleware
 
@@ -420,13 +420,13 @@ defmodule BeamWeaver.Agent.DSLBehaviorTest do
       }
     end
 
-    def before_model(_state, _runtime) do
+    def before_model(_middleware, _state, _runtime) do
       {:jump, :end, %{messages: [Message.assistant("skipped")]}}
     end
   end
 
   defmodule ContextSchemaMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :context_schema_middleware
 
@@ -436,11 +436,11 @@ defmodule BeamWeaver.Agent.DSLBehaviorTest do
   end
 
   defmodule DynamicContextMiddleware do
-    @behaviour BeamWeaver.Agent.Middleware
+    use BeamWeaver.Agent.Middleware
 
     def name(_middleware), do: :dynamic_context_middleware
 
-    def wrap_model_call(request, handler) do
+    def wrap_model_call(_middleware, request, handler) do
       tier = request.runtime.context.tier
 
       request
@@ -570,6 +570,39 @@ defmodule BeamWeaver.Agent.DSLBehaviorTest do
         )
       ]
     end
+  end
+
+  defmodule AfterModelNoop do
+    use BeamWeaver.Agent.Middleware
+
+    @impl true
+    def after_model(_middleware, _state, _runtime), do: nil
+  end
+
+  defmodule AgentEndNoop do
+    use BeamWeaver.Agent.Middleware
+
+    @impl true
+    def before_model(_middleware, _state, _runtime), do: nil
+
+    @impl true
+    def after_agent(_middleware, _state, _runtime), do: nil
+  end
+
+  defmodule LoopingAgent do
+    use BeamWeaver.Agent
+
+    # The last scripted turn repeats, so the model asks for the tool forever.
+    model("fake:chat", responses: [BeamWeaver.Models.FakeChatModel.tool_call("echo", %{"value" => "again"})])
+    tools(StepLimitAgent.tools())
+  end
+
+  defmodule LoopingMiddlewareAgent do
+    use BeamWeaver.Agent
+
+    model("fake:chat", responses: [BeamWeaver.Models.FakeChatModel.tool_call("echo", %{"value" => "again"})])
+    tools(StepLimitAgent.tools())
+    middleware([AfterModelNoop, AgentEndNoop])
   end
 
   defmodule ToolValidationAgent do
@@ -862,9 +895,6 @@ defmodule BeamWeaver.Agent.DSLBehaviorTest do
   end
 
   test "return_direct tools still respect the final-attempt step budget" do
-    # Upstream reference:
-    # - a final model attempt with tool calls returns the apology instead of
-    #   executing tools when no safe tool step remains, even for return_direct tools.
     assert {:ok, %{messages: messages}} =
              ReturnDirectAgent.invoke(%{messages: [Message.user("finish now")]},
                recursion_limit: 1
@@ -884,9 +914,6 @@ defmodule BeamWeaver.Agent.DSLBehaviorTest do
   end
 
   test "return_direct tools execute when exactly one tool step remains" do
-    # Upstream reference:
-    # - enough budget for a model step and a direct tool step should finish on
-    #   the tool result without another model call.
     assert {:ok, %{messages: messages}} =
              ReturnDirectAgent.invoke(%{messages: [Message.user("finish now")]},
                recursion_limit: 2
@@ -918,6 +945,40 @@ defmodule BeamWeaver.Agent.DSLBehaviorTest do
 
     assert_receive {:step_limit_model_call, [:user]}
     refute Enum.any?(messages, &match?(%Message{role: :tool}, &1))
+  end
+
+  test "a tool call that leaves no steps to answer after it ends with the apology" do
+    # The tools take one step and the next model call another, so two steps
+    # are not enough; with three, the second model call gives the apology.
+    assert {:ok, %{messages: messages}} = LoopingAgent.invoke(%{messages: [Message.user("echo")]}, recursion_limit: 2)
+    assert [:user, :assistant] = Enum.map(messages, & &1.role)
+    assert List.last(messages).content == "Sorry, need more steps to process this request."
+
+    assert {:ok, %{messages: messages}} = LoopingAgent.invoke(%{messages: [Message.user("echo")]}, recursion_limit: 3)
+    assert [:user, :assistant, :tool, :assistant] = Enum.map(messages, & &1.role)
+    assert List.last(messages).content == "Sorry, need more steps to process this request."
+  end
+
+  test "middleware steps count too, so a loop with middleware ends with the apology" do
+    # before_model runs first, so the model step has `limit - 1` steps left.
+    # A tool round takes after_model, tools, before_model and the model, and
+    # the answer after it after_model and after_agent: the tools only run
+    # when 7 steps are left.
+    for limit <- 4..7 do
+      assert {:ok, %{messages: messages}} =
+               LoopingMiddlewareAgent.invoke(%{messages: [Message.user("echo")]}, recursion_limit: limit)
+
+      assert [:user, :assistant] = Enum.map(messages, & &1.role)
+      assert List.last(messages).content == "Sorry, need more steps to process this request."
+    end
+
+    refute_received {:unexpected_step_limit_tool, _value}
+
+    assert {:ok, %{messages: messages}} =
+             LoopingMiddlewareAgent.invoke(%{messages: [Message.user("echo")]}, recursion_limit: 8)
+
+    assert [:user, :assistant, :tool, :assistant] = Enum.map(messages, & &1.role)
+    assert List.last(messages).content == "Sorry, need more steps to process this request."
   end
 
   test "validate_tools reprompts on invalid generated-loop tool calls before execution" do
@@ -1002,7 +1063,7 @@ defmodule BeamWeaver.Agent.DSLBehaviorTest do
     assert_receive {:mixed_structured_model_call, [:user, :assistant, :tool], tool_names}
     assert tool_names == ["regular_tool"]
 
-    assert_receive {:mixed_structured_model_call, [:user, :assistant, :tool, :assistant], tool_names}
+    assert_receive {:mixed_structured_model_call, [:user, :assistant, :tool, :assistant, :user], tool_names}
     assert tool_names == ["answer"]
   end
 
@@ -1052,7 +1113,7 @@ defmodule BeamWeaver.Agent.DSLBehaviorTest do
 
     assert_receive {:provider_separate_model, [:user], nil}
     assert_receive {:provider_separate_model, [:user, :assistant, :tool], nil}
-    assert_receive {:provider_separate_model, [:user, :assistant, :tool, :assistant], %{name: "provider_answer"}}
+    assert_receive {:provider_separate_model, [:user, :assistant, :tool, :assistant, :user], %{name: "provider_answer"}}
 
     {:ok, compiled} = BeamWeaver.Agent.compiled_graph(ProviderStructuredSeparateAgent)
     assert Map.has_key?(BeamWeaver.Graph.Compiled.get_graph(compiled).nodes, "structured_response")

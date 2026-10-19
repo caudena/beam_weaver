@@ -3,7 +3,7 @@ defmodule BeamWeaver.Tools.FileSearch do
   Retriever-backed or filesystem-backed file/document search tool.
   """
 
-  @behaviour BeamWeaver.Core.Tool
+  use BeamWeaver.Core.Tool
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Retriever
@@ -65,15 +65,6 @@ defmodule BeamWeaver.Tools.FileSearch do
   end
 
   @impl true
-  def injected(_tool), do: %{}
-
-  @impl true
-  def return_direct(_tool), do: false
-
-  @impl true
-  def response_format(_tool), do: nil
-
-  @impl true
   def output_schema(_tool), do: %{"type" => "array"}
 
   @impl true
@@ -84,9 +75,6 @@ defmodule BeamWeaver.Tools.FileSearch do
     do: %{source: :filesystem}
 
   def metadata(_tool), do: %{source: :retriever}
-
-  @impl true
-  def provider_opts(_tool), do: %{}
 
   @impl true
   def invoke(%__MODULE__{} = tool, input, opts) do

@@ -1,8 +1,6 @@
 defmodule BeamWeaver.Agent.HumanInTheLoopTest do
   use ExUnit.Case, async: true
 
-  # Upstream reference:
-
   alias BeamWeaver.Agent.HITL
   alias BeamWeaver.Agent.Middleware.HumanInTheLoop
   alias BeamWeaver.Agent.Middleware.HumanInTheLoop.Decision
@@ -227,6 +225,52 @@ defmodule BeamWeaver.Agent.HumanInTheLoopTest do
     end
   end
 
+  defmodule RuleMapAgent do
+    use BeamWeaver.Agent
+
+    context_schema do
+      field(:parent, :any, required: true)
+    end
+
+    model(%ReviewModel{
+      parent: :context,
+      tool_calls: [
+        %{id: "call-lookup", name: "lookup", args: %{"query" => "raw"}}
+      ]
+    })
+
+    tools(ReviewAgent.tools())
+    interrupt_on(%{"lookup" => %{description: "Check the lookup"}})
+  end
+
+  defmodule RedirectAgent do
+    use BeamWeaver.Agent
+
+    context_schema do
+      field(:parent, :any, required: true)
+    end
+
+    model(%ReviewModel{
+      parent: :context,
+      tool_calls: [%{id: "call-lookup", name: "lookup", args: %{"query" => "raw"}}]
+    })
+
+    tools(__MODULE__.tools())
+    middleware([{HumanInTheLoop, interrupt_on: %{"lookup" => true}, edit_notice: nil}])
+
+    def tools do
+      [
+        hd(ReviewAgent.tools()),
+        Tool.from_function!(
+          name: "archive_search",
+          description: "Search the order archive",
+          input_schema: %{"type" => "object", "properties" => %{"order_id" => %{"type" => "string"}}},
+          handler: fn %{"order_id" => order_id}, _opts -> "archived:#{order_id}" end
+        )
+      ]
+    end
+  end
+
   defmodule NoCheckpointAgent do
     use BeamWeaver.Agent
 
@@ -279,7 +323,7 @@ defmodule BeamWeaver.Agent.HumanInTheLoopTest do
     assert_receive {:lookup_executed, "raw"}
   end
 
-  test "edit decision preserves tool call ID and validates edited args" do
+  test "an edit keeps the model's call and runs the reviewer's, with a notice" do
     checkpointer = CheckpointETS.new()
     config = thread("hitl-edit")
 
@@ -302,11 +346,17 @@ defmodule BeamWeaver.Agent.HumanInTheLoopTest do
                context: %{parent: self()}
              )
 
-    assert %Message{role: :assistant, tool_calls: [edited_call]} =
+    assert %Message{role: :assistant, tool_calls: [model_call]} =
              Enum.find(messages, &match?(%Message{id: "ai-hitl"}, &1))
 
-    assert edited_call.id == "call-lookup"
-    assert edited_call.args == %{"query" => "edited"}
+    assert model_call.id == "call-lookup"
+    assert model_call.args == %{"query" => "raw"}
+
+    assert %Message{name: "lookup", content: content} =
+             Enum.find(messages, &match?(%Message{role: :tool, tool_call_id: "call-lookup"}, &1))
+
+    assert content =~ ~r/^Note: a human reviewer replaced this tool call before it ran\./
+    assert content =~ ~s(Executed instead: lookup with arguments {"query":"edited"}.\n\nTool response:\nlookup:edited)
     assert_receive {:lookup_executed, "edited"}
   end
 
@@ -335,7 +385,11 @@ defmodule BeamWeaver.Agent.HumanInTheLoopTest do
 
   test "reject and respond create synthetic tool messages and do not execute reviewed tools" do
     for {thread_id, decision, expected_status, expected_content} <- [
-          {"hitl-reject", %{type: "reject", message: "no"}, "error", "no"},
+          {"hitl-reject", %{type: "reject", message: "no"}, "error",
+           "User rejected the tool call for `lookup` with reason: no"},
+          {"hitl-reject-bare", %{type: "reject"}, "error",
+           "User rejected the tool call for `lookup` with id call-lookup. The tool was not executed. " <>
+             "Do not retry this tool call unless the user explicitly requests it."},
           {"hitl-respond", %{type: "respond", message: "human answer"}, "success", "human answer"}
         ] do
       checkpointer = CheckpointETS.new()
@@ -385,7 +439,15 @@ defmodule BeamWeaver.Agent.HumanInTheLoopTest do
              )
 
     assert Enum.any?(messages, &match?(%Message{role: :tool, content: "auto:free"}, &1))
-    assert Enum.any?(messages, &match?(%Message{role: :tool, content: "blocked"}, &1))
+
+    assert Enum.any?(
+             messages,
+             &match?(
+               %Message{role: :tool, content: "User rejected the tool call for `lookup` with reason: blocked"},
+               &1
+             )
+           )
+
     assert_receive {:auto_executed, "free"}
     refute_received {:lookup_executed, "blocked"}
   end
@@ -478,6 +540,74 @@ defmodule BeamWeaver.Agent.HumanInTheLoopTest do
              )
   end
 
+  test "a rule map without allowed_decisions still pauses and allows every decision" do
+    opts = [checkpointer: CheckpointETS.new(), config: thread("hitl-rule-map"), context: %{parent: self()}]
+
+    assert {:interrupted, interrupt} = RuleMapAgent.invoke(%{messages: [Message.user("lookup")]}, opts)
+
+    assert %{
+             action_requests: [%{name: "lookup", description: "Check the lookup"}],
+             review_configs: [%{allowed_decisions: ["approve", "edit", "reject", "respond"]}]
+           } = interrupt.value
+
+    refute_received {:lookup_executed, _query}
+
+    assert {:ok, %{messages: messages}} =
+             RuleMapAgent.resume_review([HITL.decision(:respond, message: "answered")], opts)
+
+    assert Enum.any?(messages, &match?(%Message{role: :tool, content: "answered"}, &1))
+  end
+
+  test "interrupt_on rules that can't be read raise instead of turning review off" do
+    for interrupt_on <- [
+          %{"lookup" => %{allowed_decisions: []}},
+          %{"lookup" => %{allowed_decisions: [:approve, :maybe]}},
+          %{"lookup" => %{"allowed_decisions" => ["approve", "skip"]}},
+          %{"lookup" => "yes"},
+          ["lookup"]
+        ] do
+      assert_raise ArgumentError, fn -> HumanInTheLoop.new(interrupt_on: interrupt_on) end
+    end
+
+    assert %HumanInTheLoop{interrupt_on: %{"lookup" => %{allowed_decisions: [:approve, :reject]}}} =
+             HumanInTheLoop.new(interrupt_on: [lookup: %{"allowed_decisions" => ["approve", "reject"]}])
+  end
+
+  test "edited arguments are checked against the tool's own input schema" do
+    opts = [checkpointer: CheckpointETS.new(), config: thread("hitl-edit-tool-schema"), context: %{parent: self()}]
+
+    assert {:interrupted, _interrupt} = RuleMapAgent.invoke(%{messages: [Message.user("lookup")]}, opts)
+
+    edit = HITL.decision(:edit, edited_action: %{name: "lookup", args: %{"query" => 123}})
+
+    assert {:error, %Error{type: :invalid_human_decision}} = RuleMapAgent.resume_review([edit], opts)
+    refute_received {:lookup_executed, _query}
+
+    edit = HITL.decision(:edit, edited_action: %{name: "lookup", args: %{"query" => "edited"}})
+
+    assert {:ok, %{messages: messages}} = RuleMapAgent.resume_review([edit], opts)
+    assert %Message{role: :assistant, content: "final: " <> answer} = List.last(messages)
+    assert String.ends_with?(answer, "Tool response:\nlookup:edited")
+    assert_receive {:lookup_executed, "edited"}
+  end
+
+  test "a refused decision keeps the review pending, so one valid resume completes the run" do
+    opts = [checkpointer: CheckpointETS.new(), config: thread("hitl-retry-after-refusal"), context: %{parent: self()}]
+
+    assert {:interrupted, interrupt} = ReviewAgent.invoke(%{messages: [Message.user("lookup")]}, opts)
+
+    bad_edit = HITL.decision(:edit, edited_action: %{name: "lookup", args: %{"query" => 123}})
+    assert {:error, %Error{type: :invalid_human_decision}} = ReviewAgent.resume_review([bad_edit], opts)
+
+    assert {:ok, snapshot} = ReviewAgent.get_state(opts)
+    assert [%{id: pending_id}] = snapshot.interrupts
+    assert pending_id == interrupt.id
+
+    assert {:ok, %{messages: messages}} = ReviewAgent.resume_review([HITL.decision(:approve)], opts)
+    assert %Message{role: :assistant, content: "final: lookup:raw"} = List.last(messages)
+    assert_receive {:lookup_executed, "raw"}
+  end
+
   test "HITL requires a checkpointer and pending interrupts are visible in state" do
     assert {:error, %Error{type: :missing_checkpointer}} =
              NoCheckpointAgent.invoke(%{messages: [Message.user("lookup")]},
@@ -546,6 +676,33 @@ defmodule BeamWeaver.Agent.HumanInTheLoopTest do
 
     assert interrupt.value.action_requests |> hd() |> Map.fetch!(:name) == "lookup"
     assert Enum.any?(interrupt.events, &match?(%BeamWeaver.Stream.Envelope{}, &1))
+  end
+
+  # The result answers the model's call, so it keeps that call's name, which
+  # providers such as Gemini match against the call.
+  test "an edit may run another tool, and edit_notice: nil adds no notice" do
+    opts = [checkpointer: CheckpointETS.new(), config: thread("hitl-redirect"), context: %{parent: self()}]
+
+    assert {:interrupted, _interrupt} = RedirectAgent.invoke(%{messages: [Message.user("lookup")]}, opts)
+
+    edit = HITL.decision(:edit, edited_action: %{name: "archive_search", args: %{"order_id" => "A-1"}})
+    assert {:ok, %{messages: messages}} = RedirectAgent.resume_review([edit], opts)
+
+    assert %Message{name: "lookup", content: "archived:A-1"} =
+             Enum.find(messages, &match?(%Message{role: :tool, tool_call_id: "call-lookup"}, &1))
+
+    refute_received {:lookup_executed, _query}
+  end
+
+  test "a turn with nothing to review clears an earlier turn's edits" do
+    middleware = HumanInTheLoop.new(interrupt_on: %{"lookup" => true})
+    edits = %{"call-1" => %{name: "lookup", args: %{"query" => "edited"}}}
+    turn = Message.assistant("", tool_calls: [%{id: "call-1", name: "other", args: %{}}])
+
+    assert %{hitl_edited_tool_calls: %{}} =
+             HumanInTheLoop.after_model(middleware, %{messages: [turn], hitl_edited_tool_calls: edits}, nil)
+
+    assert nil == HumanInTheLoop.after_model(middleware, %{messages: [turn], hitl_edited_tool_calls: %{}}, nil)
   end
 
   defp thread(id), do: %{"configurable" => %{"thread_id" => id}}

@@ -1,9 +1,18 @@
 defmodule BeamWeaver.Core.EmbeddingModel do
-  @moduledoc """
-  Behaviour for embedding model providers.
+  @moduledoc ~S"""
+  Embedding-provider behavior and validated text-to-vector calls.
+
+  `embed_documents/3` returns one vector per input document, except when the
+  model's explicit skip-empty policy excludes empty strings. `embed_query/3`
+  returns one vector. Returned vectors must be nonempty numeric lists.
+
+  Use the same model and dimensions for indexing and querying. Shape validation
+  does not establish semantic relevance, consistent dimensions across every
+  stored record, or index compatibility; those belong to the caller/store.
+  [Retrieval](retrieval.md) demonstrates real embeddings and relevant-source
+  assertions. Fake embeddings are only deterministic test data.
   """
 
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.Error
 
   @type vector :: [number()]
@@ -40,7 +49,7 @@ defmodule BeamWeaver.Core.EmbeddingModel do
 
   def embed_query(model, query, opts) when is_binary(query) do
     with {:ok, vector} <- model.__struct__.embed_query(model, query, opts),
-         :ok <- validate_vector(vector) do
+         :ok <- validate_vectors([vector], 1) do
       {:ok, vector}
     end
   end
@@ -49,39 +58,12 @@ defmodule BeamWeaver.Core.EmbeddingModel do
     do: {:error, Error.new(:invalid_query, "query must be a string")}
 
   @doc """
-  Starts async document embedding.
-  """
-  @spec async_embed_documents(term(), [String.t()], keyword()) :: Async.handle()
-  def async_embed_documents(model, documents, opts \\ []) do
-    Async.run_call(opts, &embed_documents(model, documents, &1))
-  end
-
-  @doc """
-  Starts async query embedding.
-  """
-  @spec async_embed_query(term(), String.t(), keyword()) :: Async.handle()
-  def async_embed_query(model, query, opts \\ []) do
-    Async.run_call(opts, &embed_query(model, query, &1))
-  end
-
-  @doc """
-  Starts an ordered async batch of query embeddings.
-  """
-  @spec async_batch_queries(term(), [String.t()], keyword()) :: [Async.handle()]
-  def async_batch_queries(model, queries, opts \\ []) when is_list(queries) do
-    Async.batch_call(queries, opts, &embed_query(model, &1, &2))
-  end
-
-  @doc """
   Validates returned embedding vectors.
   """
   @spec validate_vectors(term(), non_neg_integer()) :: :ok | {:error, Error.t()}
   def validate_vectors(vectors, expected_count)
       when is_list(vectors) and length(vectors) == expected_count do
-    case Enum.find_value(vectors, &vector_error/1) do
-      nil -> :ok
-      error -> {:error, error}
-    end
+    Enum.find_value(vectors, :ok, &vector_error/1)
   end
 
   def validate_vectors(_vectors, expected_count) do
@@ -105,19 +87,12 @@ defmodule BeamWeaver.Core.EmbeddingModel do
     end
   end
 
-  defp validate_vector(vector) do
-    case vector_error(vector) do
-      nil -> :ok
-      error -> {:error, error}
-    end
-  end
-
   defp vector_error(vector) when is_list(vector) and vector != [] do
     if Enum.all?(vector, &is_number/1),
       do: nil,
-      else: Error.new(:invalid_embedding, "embedding vectors must contain only numbers")
+      else: {:error, Error.new(:invalid_embedding, "embedding vectors must contain only numbers")}
   end
 
   defp vector_error(_vector),
-    do: Error.new(:invalid_embedding, "embedding vector must be a non-empty list")
+    do: {:error, Error.new(:invalid_embedding, "embedding vector must be a non-empty list")}
 end

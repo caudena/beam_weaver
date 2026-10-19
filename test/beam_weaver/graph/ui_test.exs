@@ -36,23 +36,15 @@ defmodule BeamWeaver.Graph.UITest do
 
     assert {:ok, events} = Compiled.stream_events(graph, %{})
 
-    assert Enum.any?(events, fn
-             %Envelope{event: %Events.Custom{payload: %{type: :ui, id: "ui-1", name: "Panel"}}} ->
-               true
+    assert Enum.any?(
+             events,
+             &match?(%Envelope{event: %Events.Custom{payload: %{type: :ui, id: "ui-1", name: "Panel"}}}, &1)
+           )
 
-             _other ->
-               false
-           end)
-
-    assert Enum.any?(events, fn
-             %Envelope{
-               event: %Events.GraphValue{value: %{ui: [%{id: "ui-1", name: "Panel"}]}}
-             } ->
-               true
-
-             _other ->
-               false
-           end)
+    assert Enum.any?(
+             events,
+             &match?(%Envelope{event: %Events.GraphValue{value: %{ui: [%{id: "ui-1", name: "Panel"}]}}}, &1)
+           )
   end
 
   test "runtime delete_ui_message streams removal events" do
@@ -68,9 +60,6 @@ defmodule BeamWeaver.Graph.UITest do
 
     assert {:ok, events} = Compiled.stream_events(graph, %{})
 
-    assert Enum.any?(events, fn
-             %Envelope{event: %Events.Custom{payload: %{type: :remove_ui, id: "ui-1"}}} -> true
-             _other -> false
-           end)
+    assert Enum.any?(events, &match?(%Envelope{event: %Events.Custom{payload: %{type: :remove_ui, id: "ui-1"}}}, &1))
   end
 end

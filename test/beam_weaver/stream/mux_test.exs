@@ -31,6 +31,15 @@ defmodule BeamWeaver.StreamMuxTest do
     assert Enum.all?(events, &(&1.namespace == [:agent]))
   end
 
+  test "a finished stream leaves nothing in the caller's mailbox" do
+    events =
+      Stream.mux(model: fn emit -> emit.(Stream.event(:token, "hello")) end)
+      |> Enum.to_list()
+
+    assert [_start, %Envelope{event: %Events.Token{text: "hello"}}, _stop] = events
+    refute_received _any
+  end
+
   test "mux producers inherit the active trace context" do
     on_exit(fn -> Context.clear() end)
 
@@ -116,15 +125,17 @@ defmodule BeamWeaver.StreamMuxTest do
              end
            end}
         ],
+        # The timeout is far beyond the heartbeat interval, so heartbeats flow
+        # before it fires even when the scheduler is slow.
         heartbeat: 10,
-        timeout: 60,
-        cancel_timeout: 100
+        timeout: 1_000,
+        cancel_timeout: 5_000
       )
-      |> Enum.take(12)
+      |> Enum.to_list()
 
     assert Enum.any?(events, &match?(%Envelope{event: %Events.Debug{payload: %{type: :heartbeat}}}, &1))
-    assert Enum.any?(events, &match?(%Envelope{event: %Events.Error{error: %{type: :stream_timeout}}}, &1))
-    assert_receive :producer_cancelled, 500
+    assert %Envelope{event: %Events.Error{error: %{type: :stream_timeout}}} = List.last(events)
+    assert_receive :producer_cancelled
   end
 
   test "early halt cancels unresolved producer tasks" do
@@ -143,19 +154,19 @@ defmodule BeamWeaver.StreamMuxTest do
         heartbeat: 50
       )
 
-    events = Enum.take(stream, 4)
-
+    # Heartbeats may interleave with the producer events; take events until both
+    # producers have reported, then halt the stream.
     pids =
-      Enum.flat_map(events, fn
+      stream
+      |> Elixir.Stream.flat_map(fn
         %Envelope{event: %Events.Custom{payload: {:producer_pid, pid}}} -> [pid]
         _event -> []
       end)
+      |> Enum.take(2)
 
-    assert length(pids) == 2
-    refs = Enum.map(pids, &Process.monitor/1)
-
-    for ref <- refs do
-      assert_receive {:DOWN, ^ref, :process, _pid, _reason}, 500
+    for pid <- pids do
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}
     end
 
     refute_receive {:beam_weaver_mux_item, _pid, _item}, 50
@@ -214,7 +225,7 @@ defmodule BeamWeaver.StreamMuxTest do
 
     task = Task.async(fn -> Enum.take(stream, 2) end)
 
-    assert_receive {:producer_pid, producer_pid}, 500
+    assert_receive {:producer_pid, producer_pid}
     assert producer_pid in Task.Supervisor.children(supervisor)
 
     send(producer_pid, :release)
@@ -222,55 +233,36 @@ defmodule BeamWeaver.StreamMuxTest do
     assert [
              %Envelope{event: %Events.Debug{payload: %{type: :producer_start}}},
              %Envelope{event: %Events.Custom{payload: :done}}
-           ] = Task.await(task, 1_000)
+           ] = Task.await(task, 5_000)
   end
 
   test "drop_newest backpressure policy reports dropped producer events" do
-    parent = self()
-
-    stream =
+    events =
       Stream.mux(
-        [
-          {:sink, :fast,
-           fn sink ->
-             for index <- 1..8 do
-               result = Sink.emit(sink, Stream.event(:custom, {:overflow, index}))
-               send(parent, {:emit_result, result})
-             end
-
-             :ok
-           end}
-        ],
+        [overflowing_producer(self())],
         max_buffer: 0,
         overflow: :drop_newest
       )
+      |> Enum.to_list()
 
-    Enum.to_list(stream)
-    assert_receive {:emit_result, {:dropped, :newest}}, 200
+    assert_receive {:emit_result, {:dropped, :newest}}
+
+    assert Enum.any?(
+             events,
+             &match?(%Envelope{event: %Events.Debug{payload: %{type: :backpressure_drop, dropped: :newest}}}, &1)
+           )
   end
 
   test "drop_oldest backpressure policy drops newest when buffer cannot hold any items" do
-    parent = self()
-
     stream =
       Stream.mux(
-        [
-          {:sink, :fast,
-           fn sink ->
-             for index <- 1..8 do
-               result = Sink.emit(sink, Stream.event(:custom, {:overflow, index}))
-               send(parent, {:emit_result, result})
-             end
-
-             :ok
-           end}
-        ],
+        [overflowing_producer(self())],
         max_buffer: 0,
         overflow: :drop_oldest
       )
 
     Enum.to_list(stream)
-    assert_receive {:emit_result, {:dropped, :newest}}, 200
+    assert_receive {:emit_result, {:dropped, :newest}}
     refute_receive {:emit_result, {:error, %{type: :stream_backpressure}}}, 50
   end
 
@@ -303,21 +295,9 @@ defmodule BeamWeaver.StreamMuxTest do
   end
 
   test "error backpressure policy reports a typed stream error to the producer" do
-    parent = self()
-
     stream =
       Stream.mux(
-        [
-          {:sink, :fast,
-           fn sink ->
-             for index <- 1..8 do
-               result = Sink.emit(sink, Stream.event(:custom, {:overflow, index}))
-               send(parent, {:emit_result, result})
-             end
-
-             :ok
-           end}
-        ],
+        [overflowing_producer(self())],
         max_buffer: 0,
         overflow: :error
       )
@@ -342,5 +322,16 @@ defmodule BeamWeaver.StreamMuxTest do
              _event ->
                false
            end)
+  end
+
+  defp overflowing_producer(parent) do
+    {:sink, :fast,
+     fn sink ->
+       for index <- 1..8 do
+         send(parent, {:emit_result, Sink.emit(sink, Stream.event(:custom, {:overflow, index}))})
+       end
+
+       :ok
+     end}
   end
 end

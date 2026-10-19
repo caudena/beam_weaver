@@ -3,18 +3,23 @@ defmodule BeamWeaver.TextSplitter.Documents do
 
   alias BeamWeaver.Core.Document
   alias BeamWeaver.Core.Error
-  alias BeamWeaver.DocumentLike
   alias BeamWeaver.TextSplitter.Shared
+  alias BeamWeaver.Transport
+  alias BeamWeaver.Transport.URLPolicy
+
+  # `split_url/3` follows redirects unless the caller's policy says otherwise;
+  # every hop must pass the same policy.
+  @url_policy_defaults [follow_redirects?: true]
 
   @spec stream_text(term(), String.t() | Enumerable.t()) ::
           {:ok, Enumerable.t()} | {:error, Error.t()}
   def stream_text(splitter, texts) do
+    texts = if is_binary(texts), do: [texts], else: texts
+
     with :ok <- validate(splitter) do
       {:ok,
-       texts
-       |> text_stream()
-       |> Stream.flat_map(fn
-         text when is_binary(text) -> split_text(splitter, text)
+       Stream.flat_map(texts, fn
+         text when is_binary(text) -> BeamWeaver.TextSplitter.split_text(splitter, text)
          value -> raise ArgumentError, "expected text, got: #{inspect(value)}"
        end)}
     end
@@ -26,8 +31,8 @@ defmodule BeamWeaver.TextSplitter.Documents do
     with :ok <- validate(splitter) do
       stream =
         Stream.flat_map(documents, fn value ->
-          case DocumentLike.to_document(value) do
-            {:ok, document} -> split_document(splitter, document)
+          case Document.from(value) do
+            {:ok, document} -> splitter |> split_document(document) |> with_chunk_ids(document)
             {:error, error} -> raise ArgumentError, error.message
           end
         end)
@@ -38,19 +43,11 @@ defmodule BeamWeaver.TextSplitter.Documents do
     exception -> {:error, Error.new(:text_splitter_error, Exception.message(exception))}
   end
 
-  def transform_documents(splitter, documents, _opts \\ []),
-    do: split_documents(splitter, documents)
-
   @spec split_file(term(), Path.t(), keyword()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
-  def split_file(splitter, path, opts \\ []) do
+  def split_file(splitter, path, opts) do
     case File.read(path) do
       {:ok, content} ->
-        metadata =
-          opts
-          |> Keyword.get(:metadata, %{})
-          |> Map.put_new(:source, path)
-
-        split_documents(splitter, [Document.new!(content, metadata: metadata)])
+        split_source(splitter, content, path, opts)
 
       {:error, reason} ->
         {:error,
@@ -62,31 +59,23 @@ defmodule BeamWeaver.TextSplitter.Documents do
   end
 
   @spec split_url(term(), String.t(), keyword()) :: {:ok, Enumerable.t()} | {:error, Error.t()}
-  def split_url(splitter, url, opts \\ []) do
-    fetcher = Keyword.get(opts, :fetcher, &default_url_fetcher/1)
+  def split_url(splitter, url, opts) do
+    policy = url_policy(Keyword.get(opts, :url_policy))
 
-    case fetcher.(url) do
-      {:ok, content} ->
-        metadata =
-          opts
-          |> Keyword.get(:metadata, %{})
-          |> Map.put_new(:source, url)
-
-        split_documents(splitter, [Document.new!(content, metadata: metadata)])
-
-      {:error, %Error{} = error} ->
-        {:error, error}
-
-      {:error, reason} ->
-        {:error,
-         Error.new(:text_splitter_error, "failed to fetch split URL", %{
-           url: url,
-           reason: inspect(reason)
-         })}
+    # The checks that need no DNS run first, so a refused URL never reaches a
+    # fetcher.
+    with {:ok, _url} <- URLPolicy.validate(url, %{policy | resolve?: false}),
+         {:ok, content} <- fetch_url(url, policy, Keyword.get(opts, :fetcher)) do
+      split_source(splitter, content, url, opts)
     end
   end
 
-  def create_documents(splitter, texts, opts \\ []) do
+  defp split_source(splitter, content, source, opts) do
+    metadata = opts |> Keyword.get(:metadata, %{}) |> Map.put_new(:source, source)
+    split_documents(splitter, [Document.new!(content, metadata: metadata)])
+  end
+
+  def create_documents(splitter, texts, opts) do
     metadata = Keyword.get(opts, :metadata, %{})
 
     texts
@@ -117,43 +106,72 @@ defmodule BeamWeaver.TextSplitter.Documents do
   def validate(_splitter),
     do: {:error, Error.new(:invalid_text_splitter, "expected a BeamWeaver text splitter")}
 
-  defp split_document(%{__struct__: BeamWeaver.TextSplitter} = splitter, %Document{} = document),
-    do: Shared.split_document(splitter, document)
+  defp split_document(%BeamWeaver.TextSplitter{} = splitter, document), do: Shared.split_document(splitter, document)
+  defp split_document(%module{} = splitter, document), do: module.split_document(splitter, document)
 
-  defp split_document(%module{} = splitter, %Document{} = document) do
-    if function_exported?(module, :split_document, 2),
-      do: module.split_document(splitter, document),
-      else: raise(ArgumentError, "expected a BeamWeaver text splitter")
+  # The chunks of a document with an id get ids derived from it ("refunds:0",
+  # "refunds:1", ...), so storing them keeps every chunk, and the document's id
+  # as "parent_id", so each chunk names the document it came from.
+  # A chunk split again keeps the parent id it already has.
+  defp with_chunk_ids(chunks, %Document{id: nil}), do: chunks
+
+  defp with_chunk_ids(chunks, %Document{id: id}) do
+    chunks
+    |> Enum.with_index()
+    |> Enum.map(fn {chunk, index} ->
+      %{chunk | id: "#{id}:#{index}", metadata: Map.put_new(chunk.metadata, "parent_id", id)}
+    end)
   end
 
-  defp split_text(%{__struct__: BeamWeaver.TextSplitter} = splitter, text),
-    do: Shared.split_text(splitter, text)
+  def metadata_for_index(metadata, index) when is_list(metadata), do: Enum.at(metadata, index, %{})
+  def metadata_for_index(metadata, _index), do: metadata
 
-  defp split_text(%module{} = splitter, text), do: module.split_text(splitter, text)
+  defp url_policy(nil), do: url_policy([])
 
-  defp text_stream(text) when is_binary(text), do: [text]
-  defp text_stream(texts), do: texts
+  defp url_policy(opts) when is_list(opts),
+    do: @url_policy_defaults |> Keyword.merge(opts) |> URLPolicy.new() |> pin()
 
-  defp metadata_for_index(metadata, index) when is_list(metadata),
-    do: Enum.at(metadata, index, %{})
+  defp url_policy(%URLPolicy{} = policy), do: pin(policy)
 
-  defp metadata_for_index(metadata, _index), do: metadata
+  defp url_policy(other) do
+    raise ArgumentError, "expected :url_policy to be a keyword list or a URLPolicy, got: #{inspect(other)}"
+  end
 
-  defp default_url_fetcher(url) do
-    :inets.start()
-    :ssl.start()
+  # Resolve the host and connect to the address that passed the check, so a
+  # name can't resolve to a public address for the check and a private one
+  # for the request.
+  defp pin(policy), do: %{policy | resolve?: true, pin_resolved?: true}
 
-    request = {String.to_charlist(url), []}
+  defp fetch_url(url, policy, nil) do
+    request = Transport.Request.new(method: :get, url: url)
 
-    case :httpc.request(:get, request, [], body_format: :binary) do
-      {:ok, {{_http, status, _reason}, _headers, body}} when status in 200..299 ->
+    case Transport.Safe.request(request, url_policy: policy) do
+      {:ok, %Transport.Response{status: status, body: body}} when status in 200..299 ->
         {:ok, body}
 
-      {:ok, {{_http, status, reason}, _headers, _body}} ->
-        {:error, {status, to_string(reason)}}
+      {:ok, %Transport.Response{status: status}} ->
+        {:error, Error.new(:text_splitter_error, "failed to fetch split URL", %{url: url, status: status})}
 
-      {:error, reason} ->
-        {:error, reason}
+      # For a refused redirect, `details.url` is the redirect's target.
+      {:error, %Transport.Error{} = error} ->
+        {:error, Error.new(error.type, error.message, Map.put_new(error.details, :url, url))}
+    end
+  end
+
+  defp fetch_url(url, _policy, fetcher) when is_function(fetcher, 1) do
+    case fetcher.(url) do
+      {:ok, content} when is_binary(content) ->
+        {:ok, content}
+
+      {:error, %Error{} = error} ->
+        {:error, error}
+
+      other ->
+        {:error,
+         Error.new(:text_splitter_error, "failed to fetch split URL", %{
+           url: url,
+           reason: inspect(other)
+         })}
     end
   end
 end

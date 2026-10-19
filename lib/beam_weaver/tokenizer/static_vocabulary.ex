@@ -9,6 +9,7 @@ defmodule BeamWeaver.Tokenizer.StaticVocabulary do
   @behaviour BeamWeaver.Tokenizer
 
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Result
 
   defstruct vocabulary: %{}, unknown_token: nil, split: :whitespace
 
@@ -16,29 +17,13 @@ defmodule BeamWeaver.Tokenizer.StaticVocabulary do
   def encode(%__MODULE__{} = tokenizer, text, _opts) when is_binary(text) do
     tokenizer
     |> split_text(text)
-    |> Enum.reduce_while({:ok, []}, fn token, {:ok, ids} ->
-      case token_id(tokenizer, token) do
-        {:ok, id} -> {:cont, {:ok, [id | ids]}}
-        {:error, %Error{} = error} -> {:halt, {:error, error}}
-      end
-    end)
-    |> case do
-      {:ok, ids} -> {:ok, Enum.reverse(ids)}
-      error -> error
-    end
+    |> Result.traverse(&token_id(tokenizer, &1))
   end
 
   @impl true
   def decode(%__MODULE__{} = tokenizer, ids, _opts) when is_list(ids) do
-    reverse =
-      Map.new(tokenizer.vocabulary, fn {token, id} -> {id, token} end)
-
-    tokens =
-      Enum.map(ids, fn id ->
-        Map.get(reverse, id, to_string(id))
-      end)
-
-    {:ok, Enum.join(tokens)}
+    reverse = Map.new(tokenizer.vocabulary, fn {token, id} -> {id, token} end)
+    {:ok, Enum.map_join(ids, &Map.get(reverse, &1, to_string(&1)))}
   end
 
   @impl true
@@ -59,11 +44,8 @@ defmodule BeamWeaver.Tokenizer.StaticVocabulary do
     |> Enum.map(fn [token | _captures] -> token end)
   end
 
-  defp split_text(%__MODULE__{split: :whitespace}, text) do
-    ~r/\S+\s*/u
-    |> Regex.scan(text)
-    |> Enum.map(fn [token | _captures] -> token end)
-  end
+  defp split_text(%__MODULE__{split: :whitespace} = tokenizer, text),
+    do: split_text(%{tokenizer | split: ~r/\S+\s*/u}, text)
 
   defp split_text(%__MODULE__{split: split}, text) when is_function(split, 1), do: split.(text)
 

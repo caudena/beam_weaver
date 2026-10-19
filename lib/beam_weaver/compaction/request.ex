@@ -15,8 +15,11 @@ defmodule BeamWeaver.Compaction.Request do
   carried as policy data; this pure value cannot enforce a callback's runtime.
   """
 
+  import BeamWeaver.Compaction.Canonical, only: [hash?: 1]
+
   alias BeamWeaver.Compaction.{InputEvent, Policy, RehydrationState, Semantic, State}
   alias BeamWeaver.Core.Error
+  alias BeamWeaver.Result
 
   @enforce_keys [
     :request_id,
@@ -58,26 +61,22 @@ defmodule BeamWeaver.Compaction.Request do
   def new(%__MODULE__{} = request), do: validate(request)
 
   def new(%{} = attrs) do
-    {:ok, struct!(__MODULE__, attrs)}
-    |> then(fn {:ok, request} -> validate(request) end)
+    __MODULE__ |> struct!(attrs) |> validate()
   rescue
-    _error -> {:error, Error.new(:invalid_compaction_request, "required compaction request fields are missing")}
+    error in [ArgumentError, KeyError] ->
+      {:error,
+       Error.new(:invalid_compaction_request, "required compaction request fields are missing", %{
+         reason: Exception.message(error)
+       })}
   end
 
   def new(_attrs), do: {:error, Error.new(:invalid_compaction_request, "compaction request must be a map")}
-
-  @doc "Returns the inclusive first and last source chat sequence."
-  @spec source_range(t()) :: {pos_integer(), pos_integer()}
-  def source_range(%__MODULE__{events: events}) do
-    {List.first(events).chat_seq, List.last(events).chat_seq}
-  end
 
   defp validate(%__MODULE__{} = request) do
     with :ok <- ids(request),
          :ok <- trigger(request),
          :ok <- hashes(request),
          {:ok, policy} <- Policy.new(request.policy),
-         true <- policy.mode in [:portable, :native],
          true <- request.trigger != :auto or policy.enabled,
          true <- focus?(request.focus),
          {:ok, rehydration} <- RehydrationState.new(request.rehydration_state),
@@ -88,9 +87,9 @@ defmodule BeamWeaver.Compaction.Request do
          true <- is_binary(request.rendered_request),
          true <- is_function(request.render, 2),
          true <- is_function(request.summarize, 1),
-         true <- non_negative_integer?(request.requested_max_output_tokens),
+         true <- is_integer(request.requested_max_output_tokens) and request.requested_max_output_tokens >= 0,
          true <- is_boolean(request.structural_pressure),
-         true <- accounting?(request.accounting) do
+         true <- is_map(request.accounting) do
       {:ok,
        %{
          request
@@ -117,7 +116,7 @@ defmodule BeamWeaver.Compaction.Request do
       request.provider_connection_id
     ]
 
-    if Enum.all?(values, &id?/1) and nullable_id?(request.parent_checkpoint_id),
+    if Enum.all?(values, &InputEvent.id?/1) and nullable_id?(request.parent_checkpoint_id),
       do: :ok,
       else: invalid("compaction request identities are invalid")
   end
@@ -135,40 +134,23 @@ defmodule BeamWeaver.Compaction.Request do
   end
 
   defp events(values, request) when is_list(values) and values != [] and length(values) <= 10_000 do
-    Enum.reduce_while(values, {:ok, []}, fn value, {:ok, acc} ->
-      case InputEvent.new(value) do
-        {:ok, event} -> {:cont, {:ok, [event | acc]}}
-        {:error, %Error{}} = error -> {:halt, error}
-      end
-    end)
-    |> case do
-      {:ok, reversed} ->
-        events = Enum.reverse(reversed)
-
-        if ordered_lane?(events, request),
-          do: {:ok, events},
-          else: invalid("compaction events are not one ordered lane")
-
-      error ->
-        error
+    with {:ok, events} <- Result.traverse(values, &InputEvent.new/1) do
+      if ordered_lane?(events, request),
+        do: {:ok, events},
+        else: invalid("compaction events are not one ordered lane")
     end
   end
 
   defp events(_values, _request), do: invalid("compaction event sequence is empty or oversized")
 
   defp ordered_lane?(events, request) do
-    {ordinals, unique_ids} =
-      Enum.reduce(events, {[], MapSet.new()}, fn event, {ordinals, ids} ->
-        {[event.lane_event_ordinal | ordinals], MapSet.put(ids, event.event_id)}
-      end)
-
-    ordinals = Enum.reverse(ordinals)
+    ordinals = Enum.map(events, & &1.lane_event_ordinal)
 
     Enum.all?(events, fn event ->
       event.run_agent_id == request.run_agent_id and
         event.checkpoint_namespace == request.checkpoint_namespace
     end) and ordinals == Enum.sort(ordinals) and length(Enum.uniq(ordinals)) == length(events) and
-      MapSet.size(unique_ids) == length(events)
+      length(Enum.uniq_by(events, & &1.event_id)) == length(events)
   end
 
   defp active_ids(ids, events) when is_list(ids) do
@@ -182,13 +164,9 @@ defmodule BeamWeaver.Compaction.Request do
   defp active_ids(_ids, _events), do: invalid("active input event IDs are invalid")
   defp previous_semantic(nil), do: {:ok, nil}
   defp previous_semantic(value), do: Semantic.new(value)
-  defp id?(value), do: is_binary(value) and byte_size(value) in 1..200
   defp nullable_id?(nil), do: true
-  defp nullable_id?(value), do: id?(value)
-  defp hash?(value), do: is_binary(value) and value =~ ~r/\A[0-9a-f]{64}\z/
+  defp nullable_id?(value), do: InputEvent.id?(value)
   defp focus?(nil), do: true
   defp focus?(value), do: is_binary(value) and String.valid?(value) and byte_size(value) <= 2_000
-  defp non_negative_integer?(value), do: is_integer(value) and value >= 0
-  defp accounting?(value), do: is_map(value)
   defp invalid(message, details \\ %{}), do: {:error, Error.new(:invalid_compaction_request, message, details)}
 end

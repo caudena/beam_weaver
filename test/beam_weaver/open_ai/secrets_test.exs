@@ -1,12 +1,12 @@
 defmodule BeamWeaver.OpenAI.SecretsTest do
   use ExUnit.Case, async: false
 
+  alias BeamWeaver.Agent.Middleware.OpenAIModeration
   alias BeamWeaver.OpenAI
   alias BeamWeaver.OpenAI.ChatCompletionsModel
   alias BeamWeaver.OpenAI.ChatModel
   alias BeamWeaver.OpenAI.Client
   alias BeamWeaver.OpenAI.EmbeddingModel
-  alias BeamWeaver.OpenAI.ModerationMiddleware
   alias BeamWeaver.OpenAI.ResponsesModel
   alias BeamWeaver.Transport.Redactor
 
@@ -22,7 +22,7 @@ defmodule BeamWeaver.OpenAI.SecretsTest do
       %ResponsesModel{api_key: "sk-secret-responses"},
       %ChatCompletionsModel{api_key: "sk-secret-completions"},
       %EmbeddingModel{api_key: "sk-secret-embedding"},
-      ModerationMiddleware.new(api_key: "sk-secret-moderation")
+      OpenAIModeration.new(api_key: "sk-secret-moderation")
     ]
 
     for struct <- structs do
@@ -51,11 +51,13 @@ defmodule BeamWeaver.OpenAI.SecretsTest do
       api_key: fn ->
         send(parent, :resolved_api_key)
         "sk-lazy-secret"
-      end
+      end,
+      transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+      transport_opts: [parent: parent]
     }
 
-    request = Client.request(client, %{"model" => "gpt-5.4-mini", "input" => []})
-
+    assert {:ok, _body} = Client.responses(client, %{"model" => "gpt-5.4-mini", "input" => []})
+    assert_received {:fake_transport_request, request}
     assert {"authorization", "Bearer sk-lazy-secret"} in request.headers
     assert_received :resolved_api_key
 

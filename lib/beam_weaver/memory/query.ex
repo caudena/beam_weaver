@@ -1,7 +1,12 @@
 defmodule BeamWeaver.Memory.Query do
   @moduledoc false
 
+  alias BeamWeaver.Memory.GetOp
+  alias BeamWeaver.Memory.ListNamespacesOp
+  alias BeamWeaver.Memory.MatchCondition
+  alias BeamWeaver.Memory.PutOp
   alias BeamWeaver.Memory.SearchItem
+  alias BeamWeaver.Memory.SearchOp
 
   @reserved_root "beam_weaver"
 
@@ -11,18 +16,25 @@ defmodule BeamWeaver.Memory.Query do
   def normalize_namespace(namespace), do: [to_string(namespace)]
 
   def validate_namespace(namespace) do
-    cond do
-      namespace == [] ->
-        {:error, {:invalid_namespace, "namespace cannot be empty"}}
+    with :ok <- validate_batch_namespace(namespace) do
+      if List.first(namespace) == @reserved_root,
+        do: {:error, {:invalid_namespace, "namespace cannot start with beam_weaver"}},
+        else: :ok
+    end
+  end
 
-      Enum.any?(namespace, &(&1 == "")) ->
+  # Batch operations may also use the reserved root.
+  def validate_batch_namespace([]), do: {:error, {:invalid_namespace, "namespace cannot be empty"}}
+  def validate_batch_namespace(namespace), do: validate_prefix(namespace)
+
+  # A search or listing prefix; `[]` matches every namespace.
+  def validate_prefix(prefix) do
+    cond do
+      Enum.any?(prefix, &(&1 == "")) ->
         {:error, {:invalid_namespace, "namespace parts cannot be empty"}}
 
-      Enum.any?(namespace, &String.contains?(&1, ".")) ->
+      Enum.any?(prefix, &String.contains?(&1, ".")) ->
         {:error, {:invalid_namespace, "namespace parts cannot contain dots"}}
-
-      List.first(namespace) == @reserved_root ->
-        {:error, {:invalid_namespace, "namespace cannot start with beam_weaver"}}
 
       true ->
         :ok
@@ -76,7 +88,10 @@ defmodule BeamWeaver.Memory.Query do
     offset = Keyword.get(opts, :offset, 0)
 
     namespaces
-    |> Enum.filter(&(namespace_path_match?(&1, prefix, :prefix) and namespace_path_match?(&1, suffix, :suffix)))
+    |> Enum.filter(
+      &(wildcard_match?(Enum.take(&1, length(prefix)), prefix) and
+          wildcard_match?(Enum.take(&1, -length(suffix)), suffix))
+    )
     |> Enum.map(&truncate_namespace(&1, max_depth))
     |> Enum.uniq()
     |> Enum.sort()
@@ -84,27 +99,7 @@ defmodule BeamWeaver.Memory.Query do
     |> Enum.take(limit)
   end
 
-  def namespace_prefix?(_namespace, []), do: true
-
-  def namespace_prefix?(namespace, prefix) do
-    length(namespace) >= length(prefix) and Enum.take(namespace, length(prefix)) == prefix
-  end
-
-  def namespace_path_match?(_namespace, [], _type), do: true
-
-  def namespace_path_match?(namespace, path, :prefix) do
-    length(namespace) >= length(path) and
-      namespace
-      |> Enum.take(length(path))
-      |> wildcard_match?(path)
-  end
-
-  def namespace_path_match?(namespace, path, :suffix) do
-    length(namespace) >= length(path) and
-      namespace
-      |> Enum.take(-length(path))
-      |> wildcard_match?(path)
-  end
+  def namespace_prefix?(namespace, prefix), do: List.starts_with?(namespace, prefix)
 
   def matches_filter?(_item, filter) when filter in [nil, %{}], do: true
 
@@ -159,65 +154,119 @@ defmodule BeamWeaver.Memory.Query do
   def expired?(%{expires_at: expires_at}),
     do: DateTime.compare(DateTime.utc_now(), expires_at) != :lt
 
-  def expired?(_item), do: false
+  # The stores' `:refresh_ttl` option. `nil` is the default, `false`.
+  def refresh_ttl_option!(refresh_ttl) when is_boolean(refresh_ttl), do: refresh_ttl
+  def refresh_ttl_option!(nil), do: false
 
-  def refresh_expiry(item, nil), do: item
-  def refresh_expiry(item, ttl_minutes), do: Map.put(item, :expires_at, expires_at(ttl_minutes))
+  def refresh_ttl_option!(other),
+    do: raise(ArgumentError, "expected :refresh_ttl to be a boolean, got: #{inspect(other)}")
 
   def expires_at(nil), do: nil
-  def expires_at(:not_provided), do: nil
 
   def expires_at(ttl_minutes) when is_number(ttl_minutes) do
     milliseconds = max(round(ttl_minutes * 60_000), 1)
     DateTime.add(DateTime.utc_now(), milliseconds, :millisecond)
   end
 
-  defp wildcard_match?(values, pattern) do
-    Enum.zip(values, pattern)
-    |> Enum.all?(fn
-      {_value, "*"} -> true
-      {value, value} -> true
-      _other -> false
+  def refresh_ttl?(_store, refresh_ttl) when is_boolean(refresh_ttl), do: refresh_ttl
+  def refresh_ttl?(store, _default), do: store.refresh_ttl
+
+  def prune_cutoff(opts) do
+    case Keyword.get(opts, :older_than) do
+      %DateTime{} = cutoff ->
+        cutoff
+
+      _other ->
+        if is_integer(Keyword.get(opts, :max_age_ms)),
+          do: DateTime.add(DateTime.utc_now(), -Keyword.fetch!(opts, :max_age_ms), :millisecond)
+    end
+  end
+
+  def batch(%module{} = store, ops, get_item) do
+    Enum.map(ops, fn
+      %GetOp{} = op ->
+        case get_item.(op.namespace, op.key, refresh_ttl?(store, op.refresh_ttl)) do
+          {:ok, item} -> item
+          :error -> nil
+          {:error, error} -> {:error, error}
+        end
+
+      %SearchOp{} = op ->
+        module.search(store, op.namespace,
+          filter: op.filter,
+          limit: op.limit,
+          offset: op.offset,
+          query: op.query,
+          refresh_ttl: op.refresh_ttl
+        )
+
+      %PutOp{namespace: namespace, key: key, value: nil} ->
+        with :ok <- module.delete(store, namespace, key), do: nil
+
+      %PutOp{} = op ->
+        with {:ok, _item} <-
+               module.put(store, op.namespace, op.key, op.value, metadata: op.metadata, index: op.index, ttl: op.ttl),
+             do: nil
+
+      %ListNamespacesOp{} = op ->
+        module.list_namespaces(store, list_namespace_opts(op))
     end)
+  end
+
+  defp list_namespace_opts(%ListNamespacesOp{} = op) do
+    {prefix, suffix} =
+      Enum.reduce(op.match_conditions || [], {[], []}, fn
+        %MatchCondition{type: type, path: path}, {_prefix, suffix} when type in [:prefix, "prefix"] -> {path, suffix}
+        %MatchCondition{type: type, path: path}, {prefix, _suffix} when type in [:suffix, "suffix"] -> {prefix, path}
+        _other, acc -> acc
+      end)
+
+    [prefix: prefix, suffix: suffix, max_depth: op.max_depth, limit: op.limit, offset: op.offset]
+  end
+
+  # Whether the parts of a namespace match a pattern's, where "*" matches any
+  # part. A namespace shorter than the pattern doesn't match.
+  defp wildcard_match?(values, pattern) do
+    length(values) == length(pattern) and
+      Enum.all?(Enum.zip(values, pattern), fn {value, part} -> part == "*" or value === part end)
   end
 
   defp truncate_namespace(namespace, nil), do: namespace
   defp truncate_namespace(namespace, max_depth), do: Enum.take(namespace, max_depth)
 
-  defp value_at(map, key) when is_map(map) do
-    key = to_string(key)
-
-    cond do
-      String.contains?(key, ".") ->
-        nested_value_at(map, String.split(key, "."))
-
-      Map.has_key?(map, key) ->
-        Map.fetch!(map, key)
-
-      Enum.any?(Map.keys(map), &(to_string(&1) == key)) ->
-        map[Enum.find(Map.keys(map), &(to_string(&1) == key))]
-
-      true ->
-        :missing
-    end
-  end
+  defp value_at(value, key), do: nested_value_at(value, String.split(to_string(key), "."))
 
   defp nested_value_at(value, []), do: value
 
   defp nested_value_at(map, [key | rest]) when is_map(map) do
-    cond do
-      Map.has_key?(map, key) ->
-        nested_value_at(Map.fetch!(map, key), rest)
-
-      Enum.any?(Map.keys(map), &(to_string(&1) == key)) ->
-        nested_value_at(map[Enum.find(Map.keys(map), &(to_string(&1) == key))], rest)
-
-      true ->
-        :missing
+    case fetch_key(map, key) do
+      {:ok, value} -> nested_value_at(value, rest)
+      :error -> :missing
     end
   end
 
   defp nested_value_at(_value, _path), do: :missing
+
+  # A struct has the fields of its JSON form, as the Postgres store keeps it,
+  # and none when it has no JSON form.
+  defp fetch_key(%_{} = struct, key) do
+    with {:ok, json} <- BeamWeaver.JSON.encode(struct),
+         %{} = map <- BeamWeaver.JSON.decode!(json) do
+      fetch_key(map, key)
+    else
+      _other -> :error
+    end
+  end
+
+  # The value under `key`, or else under the first key whose string is `key`.
+  defp fetch_key(map, key) do
+    with :error <- Map.fetch(map, key) do
+      case Enum.find_value(Map.keys(map), &(to_string(&1) == key and {:ok, &1})) do
+        {:ok, map_key} -> {:ok, map[map_key]}
+        nil -> :error
+      end
+    end
+  end
 
   defp compare(:missing, _expected), do: false
 
@@ -252,7 +301,8 @@ defmodule BeamWeaver.Memory.Query do
   end
 
   def tokenize_path(tokens) when is_list(tokens) do
-    normalize_token_list(tokens)
+    normalized = Enum.map(tokens, &normalize_token/1)
+    if :error in normalized, do: :error, else: {:ok, Enum.map(normalized, fn {:ok, token} -> token end)}
   end
 
   defp do_tokenize([], tokens, current), do: {:ok, finalize_token(tokens, current)}
@@ -261,7 +311,7 @@ defmodule BeamWeaver.Memory.Query do
     do: do_tokenize(rest, finalize_token(tokens, current), "")
 
   defp do_tokenize(["[" | rest], tokens, current) do
-    with {inside, rest} when inside != nil <- take_until(rest, "]"),
+    with {inside, ["]" | rest]} <- Enum.split_while(rest, &(&1 != "]")),
          {:ok, token} <- inside |> Enum.join() |> bracket_token() do
       do_tokenize(rest, [token | finalize_token(tokens, current)], "")
     else
@@ -270,7 +320,7 @@ defmodule BeamWeaver.Memory.Query do
   end
 
   defp do_tokenize(["{" | rest], tokens, current) do
-    with {inside, rest} when inside != nil <- take_until(rest, "}"),
+    with {inside, ["}" | rest]} <- Enum.split_while(rest, &(&1 != "}")),
          options when options != [] <-
            inside |> Enum.join() |> String.split(",", trim: true) |> Enum.map(&String.trim/1),
          true <- Enum.all?(options, &(&1 != "")) do
@@ -287,14 +337,6 @@ defmodule BeamWeaver.Memory.Query do
   defp finalize_token(tokens, "*"), do: [:wildcard | tokens]
   defp finalize_token(tokens, current), do: [{:key, current} | tokens]
 
-  defp take_until(chars, terminator), do: do_take_until(chars, terminator, [])
-
-  defp do_take_until([], _terminator, _acc), do: {nil, []}
-  defp do_take_until([terminator | rest], terminator, acc), do: {Enum.reverse(acc), rest}
-
-  defp do_take_until([char | rest], terminator, acc),
-    do: do_take_until(rest, terminator, [char | acc])
-
   defp bracket_token("*"), do: {:ok, :wildcard}
 
   defp bracket_token(value) do
@@ -304,23 +346,8 @@ defmodule BeamWeaver.Memory.Query do
     end
   end
 
-  defp normalize_path(path) when path in ["", "$"], do: {:ok, []}
-  defp normalize_path(path) when is_binary(path), do: tokenize_path(path)
-  defp normalize_path(tokens) when is_list(tokens), do: tokenize_path(tokens)
+  defp normalize_path(path) when is_binary(path) or is_list(path), do: tokenize_path(path)
   defp normalize_path(_path), do: :error
-
-  defp normalize_token_list(tokens) do
-    Enum.reduce_while(tokens, {:ok, []}, fn token, {:ok, acc} ->
-      case normalize_token(token) do
-        {:ok, normalized} -> {:cont, {:ok, [normalized | acc]}}
-        :error -> {:halt, :error}
-      end
-    end)
-    |> case do
-      {:ok, normalized} -> {:ok, Enum.reverse(normalized)}
-      :error -> :error
-    end
-  end
 
   defp normalize_token({:key, key}) when is_binary(key), do: {:ok, {:key, key}}
   defp normalize_token({:index, index}) when is_integer(index), do: {:ok, {:index, index}}
@@ -391,15 +418,9 @@ defmodule BeamWeaver.Memory.Query do
   end
 
   defp extract_key(map, key) when is_map(map) do
-    cond do
-      Map.has_key?(map, key) ->
-        [Map.fetch!(map, key)]
-
-      Enum.any?(Map.keys(map), &(to_string(&1) == key)) ->
-        [map[Enum.find(Map.keys(map), &(to_string(&1) == key))]]
-
-      true ->
-        []
+    case fetch_key(map, key) do
+      {:ok, value} -> [value]
+      :error -> []
     end
   end
 
@@ -425,8 +446,6 @@ defmodule BeamWeaver.Memory.Query do
   defp string_values(value) when is_integer(value), do: [Integer.to_string(value)]
   defp string_values(value) when is_float(value), do: [Float.to_string(value)]
   defp string_values(value) when is_boolean(value), do: [to_string(value)]
-  defp string_values(value) when is_map(value) and map_size(value) == 0, do: [json_text(value)]
-  defp string_values(value) when is_list(value) and value == [], do: [json_text(value)]
   defp string_values(value) when is_map(value) or is_list(value), do: [json_text(value)]
 
   defp string_values(value) do
@@ -436,20 +455,9 @@ defmodule BeamWeaver.Memory.Query do
     end
   end
 
-  defp query_texts(item) do
-    [
-      Map.get(item, :value),
-      Map.get(item, :metadata, %{}) || %{}
-    ]
-    |> Enum.flat_map(&string_values/1)
-  end
+  defp query_texts(item), do: Enum.flat_map([item.value, item.metadata || %{}], &string_values/1)
 
-  defp json_text(value) do
-    value
-    |> json_search_value()
-    |> sort_json_value()
-    |> BeamWeaver.JSON.encode!()
-  end
+  defp json_text(value), do: value |> json_search_value() |> BeamWeaver.JSON.encode!()
 
   defp json_search_value(%_struct{} = value) do
     case BeamWeaver.JSON.encode(value) do
@@ -492,14 +500,4 @@ defmodule BeamWeaver.Memory.Query do
     Protocol.UndefinedError -> :error
     ArgumentError -> :error
   end
-
-  defp sort_json_value(map) when is_map(map) do
-    map
-    |> Enum.sort_by(fn {key, _value} -> to_string(key) end)
-    |> Enum.map(fn {key, value} -> {to_string(key), sort_json_value(value)} end)
-    |> Map.new()
-  end
-
-  defp sort_json_value(list) when is_list(list), do: Enum.map(list, &sort_json_value/1)
-  defp sort_json_value(value), do: value
 end

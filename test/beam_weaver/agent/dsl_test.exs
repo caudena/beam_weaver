@@ -1,27 +1,10 @@
 defmodule BeamWeaver.Agent.DSLTest do
   use ExUnit.Case, async: true
 
-  alias BeamWeaver.Agent
-  alias BeamWeaver.Agent.Server
   alias BeamWeaver.Core.ChatModel
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
   alias BeamWeaver.Models.FakeChatModel
-
-  defmodule GreetingAgent do
-    use BeamWeaver.Agent
-
-    reducer(:messages, fn existing, update -> existing ++ List.wrap(update) end)
-    node(:greet, &__MODULE__.greet/2)
-    edge(BeamWeaver.Graph.start(), :greet)
-    edge(:greet, BeamWeaver.Graph.end_node())
-
-    def greet(state, runtime) do
-      greeting = Map.get(runtime.context || %{}, :greeting, "hello")
-      existing = Map.get(state, :messages, [])
-      %{messages: existing ++ ["#{greeting}, #{state.name}"], done: true}
-    end
-  end
 
   defmodule ToolCallingModel do
     @behaviour ChatModel
@@ -83,15 +66,6 @@ defmodule BeamWeaver.Agent.DSLTest do
     def model, do: %ToolCallingModel{timeout: 1_000}
   end
 
-  defmodule ExplicitToolTimeoutAgent do
-    use BeamWeaver.Agent
-
-    model(__MODULE__.model(), timeout: 30_000, tool_timeout: 120_000)
-    tools(CalculatorAgent.tools())
-
-    def model, do: %ToolCallingModel{timeout: 1_000}
-  end
-
   defmodule MiddlewareTimeoutAgent do
     use BeamWeaver.Agent
 
@@ -143,43 +117,32 @@ defmodule BeamWeaver.Agent.DSLTest do
     prompt_caching(scope: "ai_report", version: "v2")
   end
 
-  test "agent modules invoke through the generated graph" do
-    assert {:ok, %{messages: ["hi, Ada"], done: true}} =
-             GreetingAgent.invoke(%{name: "Ada"}, context: %{greeting: "hi"})
-  end
-
-  test "agent modules can be supervised and called through the server" do
-    pid = start_supervised!({GreetingAgent, []})
-
-    assert {:ok, %{messages: ["hello, Grace"], done: true}} =
-             Server.invoke(pid, %{name: "Grace"})
-  end
-
-  test "duplicate DSL node names fail at compile time" do
+  test "an agent module without a model doesn't compile, and points to graph modules" do
     source = """
-    defmodule DuplicateAgent do
+    defmodule ModellessAgent do
       use BeamWeaver.Agent
-      node :same, fn state -> state end
-      node :same, fn state -> state end
-      edge BeamWeaver.Graph.start(), :same
+
+      def graph, do: BeamWeaver.Graph.new()
     end
     """
 
-    assert_raise CompileError, ~r/duplicate BeamWeaver agent node names/, fn ->
-      Code.compile_string(source)
-    end
+    error = assert_raise CompileError, fn -> Code.compile_string(source) end
+    assert Exception.message(error) =~ "ModellessAgent declares no model"
+    assert Exception.message(error) =~ "use BeamWeaver.Graph"
   end
 
-  test "DSL agents must declare a start edge" do
-    source = """
-    defmodule NoEntrypointAgent do
-      use BeamWeaver.Agent
-      node :only, fn state -> state end
-    end
-    """
+  test "graph declarations in an agent module point to graph modules" do
+    for declaration <- ["graph do\n  node :only, fn state -> state end\nend", "node :only, fn state -> state end"] do
+      source = """
+      defmodule GraphDeclaringAgent do
+        use BeamWeaver.Agent
+        model "fake:chat"
+        #{declaration}
+      end
+      """
 
-    assert_raise CompileError, ~r/must define an edge from Graph.start/, fn ->
-      Code.compile_string(source)
+      error = assert_raise CompileError, fn -> Code.compile_string(source) end
+      assert Exception.message(error) =~ "graph modules `use BeamWeaver.Graph`"
     end
   end
 
@@ -209,13 +172,6 @@ defmodule BeamWeaver.Agent.DSLTest do
     assert tools_node.fun.timeout == :infinity
   end
 
-  test "model/tools DSL supports an explicit tool timeout" do
-    tools_node = ExplicitToolTimeoutAgent.graph().nodes["tools"]
-
-    assert tools_node.timeout == 120_000
-    assert tools_node.fun.timeout == 120_000
-  end
-
   test "model/tools DSL timeout option overrides the generated model node timeout" do
     assert ExplicitTimeoutAgent.graph().nodes["model"].timeout == 30_000
   end
@@ -229,27 +185,6 @@ defmodule BeamWeaver.Agent.DSLTest do
              %{messages: [Message.assistant("{}")], structured_response: %{"ok" => true}},
              :model
            ) == :end
-  end
-
-  test "runtime agent build uses model timeout for the generated model node" do
-    assert {:ok, agent} =
-             Agent.build(
-               model: %ToolCallingModel{timeout: 22_000},
-               tools: []
-             )
-
-    assert agent.compiled.graph.nodes["model"].timeout == 22_000
-  end
-
-  test "runtime agent build model_opts timeout overrides the model node timeout" do
-    assert {:ok, agent} =
-             Agent.build(
-               model: %ToolCallingModel{timeout: 1_000},
-               model_opts: [timeout: 45_000],
-               tools: []
-             )
-
-    assert agent.compiled.graph.nodes["model"].timeout == 45_000
   end
 
   test "agent invocation forwards explicit runtime model opts without leaking internal overrides" do
@@ -293,7 +228,7 @@ defmodule BeamWeaver.Agent.DSLTest do
   end
 
   test "prompt_caching DSL passes provider-aware settings into middleware" do
-    spec =
+    {:ok, spec} =
       PromptCachingSettingsAgent.__beam_weaver_agent_spec__()
       |> BeamWeaver.Agent.Capabilities.apply()
 
@@ -305,18 +240,17 @@ defmodule BeamWeaver.Agent.DSLTest do
     assert middleware.version == "v2"
   end
 
-  test "model/tools DSL cannot be mixed with manual graph nodes" do
+  test "an agent module can't define graph/0" do
     source = """
-    defmodule MixedAgent do
+    defmodule GraphDefiningAgent do
       use BeamWeaver.Agent
-      model :some_model
-      node :manual, fn state -> state end
-      edge BeamWeaver.Graph.start(), :manual
+      model "fake:chat"
+      def graph, do: BeamWeaver.Graph.new()
     end
     """
 
-    assert_raise CompileError, ~r/model\/tools DSL builds its own graph/, fn ->
-      Code.compile_string(source)
-    end
+    error = assert_raise CompileError, fn -> Code.compile_string(source) end
+    assert Exception.message(error) =~ "GraphDefiningAgent defines graph/0"
+    assert Exception.message(error) =~ "use BeamWeaver.Graph"
   end
 end

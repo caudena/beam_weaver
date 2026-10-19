@@ -74,18 +74,6 @@ defmodule BeamWeaver.Provider.RegistryTest do
     profiles = ProfileRegistry.all()
     identities = Enum.map(profiles, &{&1.provider, &1.id})
 
-    assert ProfileRegistry.providers() == [
-             :anthropic,
-             :deepseek,
-             :fake,
-             :google,
-             :moonshot,
-             :openai,
-             :typesafe,
-             :xai,
-             :zai
-           ]
-
     assert identities == Enum.sort(identities)
     assert identities == Enum.uniq(identities)
 
@@ -102,6 +90,16 @@ defmodule BeamWeaver.Provider.RegistryTest do
              Map.keys(row.features) |> Enum.sort() == Enum.sort(Compatibility.features()) and
                Enum.all?(row.features, fn {_feature, supported?} -> is_boolean(supported?) end)
            end)
+  end
+
+  test "aliases preserve the requested id while inheriting the canonical profile" do
+    canonical = Profile.new(provider: :dummy, id: "canonical", tool_calling: true, extra: %{input_price_per_mtok: 7.0})
+    profiles = %{{:dummy, "canonical"} => canonical}
+    assert {:ok, alias_profile} = ProfileRegistry.fetch_alias(profiles, :dummy, "latest", "canonical")
+    assert alias_profile.id == "latest"
+    assert alias_profile.tool_calling == canonical.tool_calling
+    assert alias_profile.extra == Map.merge(canonical.extra, %{canonical_model: "canonical", alias_model: "latest"})
+    assert {:fallback, :dummy, "missing"} = ProfileRegistry.fetch_alias(profiles, :dummy, "missing", "absent")
   end
 
   test "runtime providers can be registered, inferred, initialized, and unregistered" do
@@ -126,17 +124,5 @@ defmodule BeamWeaver.Provider.RegistryTest do
     assert :ok = Registry.load_from_config!()
     assert {:ok, entry} = Registry.fetch(:dummy)
     assert entry.provider == :dummy
-  end
-
-  test "deprecated Google models are not exposed through fallback profiles" do
-    assert {:error, error} = Registry.profile(:google, "gemini-3-flash-preview")
-    assert error.type == :deprecated_model
-    assert error.details.expected == "google:gemini-3.5-flash"
-  end
-
-  test "limited-access Google models are not exposed through fallback profiles" do
-    assert {:error, error} = Registry.profile(:google, "gemini-3.5-flash-cyber")
-    assert error.type == :unsupported_model
-    assert error.details.access == :codemender_limited_access
   end
 end

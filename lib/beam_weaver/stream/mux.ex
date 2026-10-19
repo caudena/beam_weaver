@@ -37,22 +37,9 @@ defmodule BeamWeaver.Stream.Mux do
   end
 
   def new(opts \\ []) do
-    policy =
-      opts
-      |> Keyword.take([
-        :max_buffer,
-        :overflow,
-        :emit_timeout,
-        :timeout,
-        :producer_supervisor,
-        :cancel_timeout,
-        :heartbeat
-      ])
-      |> Policy.new()
-
     %__MODULE__{
       producers: Keyword.get(opts, :producers, []),
-      policy: policy,
+      policy: Policy.new(opts),
       metadata: Keyword.get(opts, :metadata, %{}),
       namespace: Keyword.get(opts, :namespace, []),
       run_id: Keyword.get(opts, :run_id),
@@ -78,10 +65,10 @@ defmodule BeamWeaver.Stream.Mux do
     owner = self()
     trace_context = Tracing.capture_context()
 
-    {tasks, queue, queue_size} =
+    state =
       mux.producers
       |> Enum.with_index()
-      |> Enum.reduce({[], :queue.new(), 0}, fn {producer, index}, {tasks, queue, size} ->
+      |> Enum.reduce(%State{mux: mux}, fn {producer, index}, state ->
         spec = normalize_producer(producer, index)
         token = make_ref()
 
@@ -94,33 +81,21 @@ defmodule BeamWeaver.Stream.Mux do
           namespace: mux.namespace
         }
 
-        task = start_task(mux, spec, sink, trace_context)
+        task =
+          Tracing.async(fn -> run_producer(spec, sink) end,
+            context: trace_context,
+            supervisor: mux.policy.producer_supervisor
+          )
 
-        task_info =
-          {task.pid,
-           %{
-             task: task,
-             name: spec.name,
-             token: token,
-             sink: sink,
-             started_at: System.monotonic_time(:millisecond)
-           }}
+        task_info = %{task: task, name: spec.name, token: token, started_at: System.monotonic_time(:millisecond)}
 
-        {queue, size} = queue_in(queue, size, debug_event(mux, spec.name, :producer_start))
-
-        {[task_info | tasks], queue, size}
+        queue_in(
+          %{state | tasks: Map.put(state.tasks, task.pid, task_info)},
+          debug_event(mux, spec.name, :producer_start)
+        )
       end)
 
-    %State{
-      mux: mux,
-      tasks: Map.new(tasks),
-      queue: queue,
-      queue_size: queue_size,
-      blocked: :queue.new(),
-      heartbeat_sent?: false,
-      timeout_deadline: timeout_deadline(mux.policy.timeout),
-      done?: false
-    }
+    %{state | timeout_deadline: timeout_deadline(mux.policy.timeout)}
   end
 
   defp next(%{done?: true} = state), do: {:halt, state}
@@ -136,20 +111,9 @@ defmodule BeamWeaver.Stream.Mux do
       {:halt, %{state | done?: true}}
     else
       receive do
-        {:beam_weaver_mux_emit, token, ref, pid, name, item} ->
-          state =
-            if task_token?(state.tasks, pid, token) do
-              enqueue_item(state, ref, pid, name, item, %{})
-            else
-              send(pid, {:beam_weaver_mux_ack, ref, {:error, cancelled_error()}})
-              state
-            end
-
-          next(state)
-
         {:beam_weaver_mux_emit, token, ref, pid, name, item, emit_opts} ->
           state =
-            if task_token?(state.tasks, pid, token) do
+            if task_token?(state.tasks, token) do
               enqueue_item(state, ref, pid, name, item, emit_opts)
             else
               send(pid, {:beam_weaver_mux_ack, ref, {:error, cancelled_error()}})
@@ -158,30 +122,14 @@ defmodule BeamWeaver.Stream.Mux do
 
           next(state)
 
-        {:beam_weaver_mux_done, pid, :ok} ->
-          {event, state} = finish_task(state, pid, :ok)
+        {:beam_weaver_mux_done, pid, result} ->
+          {event, state} = finish_task(state, pid, result)
           {[event], state}
 
-        {:beam_weaver_mux_done, pid, {:error, error}} ->
-          {event, state} = finish_task(state, pid, {:error, error})
-          {[event], state}
-
-        {:DOWN, ref, :process, pid, reason} ->
-          case pop_task_by_ref(state, ref, pid) do
-            {nil, new_state} ->
-              {[], new_state}
-
-            {task_info, new_state} ->
-              event =
-                BWStream.envelope(%Events.Error{error: normalize_exit(reason)},
-                  run_id: mux.run_id,
-                  graph: mux.graph,
-                  node: task_info.name,
-                  namespace: mux.namespace,
-                  metadata: mux.metadata
-                )
-
-              {[event], new_state}
+        {:DOWN, _ref, :process, pid, reason} ->
+          case Map.pop(state.tasks, pid) do
+            {nil, _tasks} -> {[], state}
+            {task_info, tasks} -> {[error_event(mux, task_info.name, normalize_exit(reason))], %{state | tasks: tasks}}
           end
       after
         receive_timeout(state) ->
@@ -220,13 +168,6 @@ defmodule BeamWeaver.Stream.Mux do
     |> maybe_append_debug(event, mux.policy)
   end
 
-  defp handle_overflow(%{mux: mux} = state, ref, pid, name, _item)
-       when mux.policy.overflow == :drop_newest do
-    send(pid, {:beam_weaver_mux_ack, ref, {:dropped, :newest}})
-    event = debug_event(mux, name, :backpressure_drop, %{dropped: :newest})
-    maybe_append_debug(state, event, mux.policy)
-  end
-
   defp handle_overflow(%{mux: mux, queue_size: size} = state, ref, pid, name, item)
        when mux.policy.overflow == :drop_oldest and size > 0 do
     max_buffer = mux.policy.max_buffer
@@ -241,7 +182,7 @@ defmodule BeamWeaver.Stream.Mux do
   end
 
   defp handle_overflow(%{mux: mux} = state, ref, pid, name, _item)
-       when mux.policy.overflow == :drop_oldest do
+       when mux.policy.overflow in [:drop_newest, :drop_oldest] do
     send(pid, {:beam_weaver_mux_ack, ref, {:dropped, :newest}})
     event = debug_event(mux, name, :backpressure_drop, %{dropped: :newest})
     maybe_append_debug(state, event, mux.policy)
@@ -255,57 +196,47 @@ defmodule BeamWeaver.Stream.Mux do
   end
 
   defp release_blocked(%{blocked: blocked, mux: mux} = state) do
-    cond do
-      not queue_room?(state, mux.policy) ->
-        state
-
-      :queue.is_empty(blocked) ->
-        state
-
-      true ->
-        {{:value, {ref, pid, _name, item}}, blocked} = :queue.out(blocked)
+    case queue_room?(state, mux.policy) && :queue.out(blocked) do
+      {{:value, {ref, pid, _name, item}}, blocked} ->
         send(pid, {:beam_weaver_mux_ack, ref, :ok})
+        queue_in(%{state | blocked: blocked}, item)
 
+      _no_room_or_none_blocked ->
         state
-        |> Map.put(:blocked, blocked)
-        |> queue_in(item)
     end
   end
 
-  defp maybe_append_debug(state, event, %{max_buffer: 0}), do: queue_in(state, event)
+  defp maybe_append_debug(%{queue_size: size} = state, event, %{max_buffer: max}) when max == 0 or size < max,
+    do: queue_in(state, event)
 
-  defp maybe_append_debug(%{queue_size: size} = state, _event, %{max_buffer: max})
-       when size >= max, do: state
-
-  defp maybe_append_debug(state, event, _policy), do: queue_in(state, event)
+  defp maybe_append_debug(state, _event, _policy), do: state
 
   defp handle_timeout(%{mux: mux} = state) do
-    cond do
-      timeout_expired?(state) ->
-        stream_timeout(state)
-
-      heartbeat_enabled?(mux) ->
-        {[debug_event(mux, nil, :heartbeat, mux.policy.heartbeat.payload)], %{state | heartbeat_sent?: true}}
-
-      true ->
-        stream_timeout(state)
+    if heartbeat_interval(mux) != :infinity and not timeout_expired?(state) do
+      {[debug_event(mux, nil, :heartbeat, mux.policy.heartbeat.payload)], %{state | heartbeat_sent?: true}}
+    else
+      event = envelope(mux, %Events.Error{error: Error.new(:stream_timeout, "stream producer timed out")})
+      cleanup(state)
+      {[event], %{state | tasks: %{}, done?: true}}
     end
   end
 
-  defp stream_timeout(%{mux: mux} = state) do
-    event =
-      envelope(mux, %Events.Error{
-        error: Error.new(:stream_timeout, "stream producer timed out")
-      })
+  # A producer task replies once it returns, right after its done message.
+  # Take that reply so it doesn't stay in the caller's mailbox.
+  defp await_task_reply(%Task{ref: ref}) do
+    receive do
+      {^ref, _reply} -> :ok
+    after
+      1_000 -> :ok
+    end
 
-    cleanup(state)
-    {[event], %{state | tasks: %{}, done?: true}}
+    Process.demonitor(ref, [:flush])
   end
 
   defp finish_task(%{mux: mux} = state, pid, result) do
     {task_info, tasks} = Map.pop(state.tasks, pid)
 
-    if task_info, do: Process.demonitor(task_info.task.ref, [:flush])
+    if task_info, do: await_task_reply(task_info.task)
 
     event =
       case result do
@@ -316,15 +247,8 @@ defmodule BeamWeaver.Stream.Mux do
     state = %{state | tasks: tasks} |> release_blocked()
 
     if heartbeat_due_on_finish?(mux, task_info, state) do
-      heartbeat =
-        debug_event(mux, task_info.name, :heartbeat, mux.policy.heartbeat.payload)
-
-      state =
-        state
-        |> queue_in(event)
-        |> Map.put(:heartbeat_sent?, true)
-
-      {heartbeat, state}
+      heartbeat = debug_event(mux, task_info.name, :heartbeat, mux.policy.heartbeat.payload)
+      {heartbeat, %{queue_in(state, event) | heartbeat_sent?: true}}
     else
       {event, state}
     end
@@ -341,42 +265,17 @@ defmodule BeamWeaver.Stream.Mux do
 
   defp heartbeat_due_on_finish?(_mux, _task_info, _state), do: false
 
-  defp pop_task_by_ref(state, ref, pid) do
-    case Map.pop(state.tasks, pid) do
-      {nil, tasks} ->
-        task =
-          Enum.find_value(tasks, fn {task_pid, %{task: task} = info} ->
-            if task.ref == ref, do: {task_pid, info}, else: nil
-          end)
-
-        case task do
-          nil -> {nil, state}
-          {task_pid, info} -> {info, %{state | tasks: Map.delete(tasks, task_pid)}}
-        end
-
-      {info, tasks} ->
-        {info, %{state | tasks: tasks}}
-    end
-  end
-
   defp queue_room?(%{queue_size: size}, %{max_buffer: max}), do: size < max
 
-  defp queue_in(queue, size, item), do: {:queue.in(item, queue), size + 1}
-
-  defp queue_in(%{queue: queue, queue_size: size} = state, item) do
-    {queue, size} = queue_in(queue, size, item)
-    %{state | queue: queue, queue_size: size}
-  end
+  defp queue_in(%{queue: queue, queue_size: size} = state, item),
+    do: %{state | queue: :queue.in(item, queue), queue_size: size + 1}
 
   defp queue_out(%{queue: queue, queue_size: size} = state) do
     {{:value, item}, queue} = :queue.out(queue)
-    {item, %{state | queue: queue, queue_size: max(size - 1, 0)}}
+    {item, %{state | queue: queue, queue_size: size - 1}}
   end
 
-  defp queue_drop_oldest(%{queue: queue, queue_size: size} = state) when size > 0 do
-    {{:value, _item}, queue} = :queue.out(queue)
-    %{state | queue: queue, queue_size: size - 1}
-  end
+  defp queue_drop_oldest(state), do: state |> queue_out() |> elem(1)
 
   defp queue_trim_to(%{queue_size: size} = state, max_size) when size > max_size do
     state
@@ -386,39 +285,16 @@ defmodule BeamWeaver.Stream.Mux do
 
   defp queue_trim_to(state, _max_size), do: state
 
-  defp start_task(%__MODULE__{policy: %{producer_supervisor: nil}}, spec, sink, trace_context) do
-    Task.async(fn -> Tracing.attach_context(trace_context, fn -> run_producer(spec, sink) end) end)
-  end
-
-  defp start_task(%__MODULE__{policy: %{producer_supervisor: supervisor}}, spec, sink, trace_context) do
-    Task.Supervisor.async_nolink(supervisor, fn ->
-      Tracing.attach_context(trace_context, fn -> run_producer(spec, sink) end)
-    end)
-  end
-
   defp run_producer(spec, %Sink{} = sink) do
     result =
-      try do
+      BWStream.run_producer(fn ->
         case spec.mode do
           :sink -> spec.fun.(sink)
           :emit_fun -> spec.fun.(fn item -> Sink.emit(sink, item) end)
         end
-      rescue
-        exception ->
-          {:error,
-           Error.new(:stream_error, Exception.message(exception), %{
-             exception: inspect(exception.__struct__)
-           })}
-      catch
-        kind, reason ->
-          {:error,
-           Error.new(:stream_error, "stream producer exited", %{
-             kind: kind,
-             reason: inspect(reason)
-           })}
-      end
+      end)
 
-    send(sink.owner, {:beam_weaver_mux_done, self(), normalize_result(result)})
+    send(sink.owner, {:beam_weaver_mux_done, self(), BWStream.producer_result(result)})
   end
 
   defp normalize_producer({:sink, name, fun}, _index) when is_function(fun, 1),
@@ -476,15 +352,6 @@ defmodule BeamWeaver.Stream.Mux do
     )
   end
 
-  defp normalize_result(result) when result in [:ok, nil], do: :ok
-  defp normalize_result({:ok, _result}), do: :ok
-  defp normalize_result({:error, %Error{} = error}), do: {:error, error}
-
-  defp normalize_result({:error, reason}),
-    do: {:error, Error.new(:stream_error, "stream producer failed", %{reason: inspect(reason)})}
-
-  defp normalize_result(_result), do: :ok
-
   defp normalize_exit(:normal), do: cancelled_error()
 
   defp normalize_exit(reason),
@@ -492,11 +359,8 @@ defmodule BeamWeaver.Stream.Mux do
 
   defp cancelled_error, do: Error.new(:stream_cancelled, "stream producer was cancelled")
 
-  defp receive_timeout(%{mux: mux, timeout_deadline: timeout_deadline}) do
-    mux
-    |> heartbeat_interval()
-    |> min_timeout(remaining_timeout(timeout_deadline))
-  end
+  defp receive_timeout(%{mux: mux, timeout_deadline: timeout_deadline}),
+    do: min(heartbeat_interval(mux), remaining_timeout(timeout_deadline))
 
   defp heartbeat_interval(%__MODULE__{policy: %{heartbeat: %{interval_ms: interval}}})
        when is_integer(interval) and interval > 0,
@@ -514,28 +378,10 @@ defmodule BeamWeaver.Stream.Mux do
   defp remaining_timeout(deadline) when is_integer(deadline),
     do: max(deadline - System.monotonic_time(:millisecond), 0)
 
-  defp min_timeout(:infinity, timeout), do: timeout
-  defp min_timeout(timeout, :infinity), do: timeout
-  defp min_timeout(left, right), do: min(left, right)
-
   defp timeout_expired?(%{timeout_deadline: :infinity}), do: false
 
   defp timeout_expired?(%{timeout_deadline: deadline}) when is_integer(deadline),
     do: deadline <= System.monotonic_time(:millisecond)
 
-  defp heartbeat_enabled?(%__MODULE__{policy: %{heartbeat: %{interval_ms: interval}}})
-       when is_integer(interval) and interval > 0,
-       do: true
-
-  defp heartbeat_enabled?(_mux), do: false
-
-  defp task_token?(tasks, pid, token) do
-    case Map.get(tasks, pid) do
-      %{token: ^token} ->
-        true
-
-      _other ->
-        Enum.any?(tasks, fn {_task_pid, %{token: task_token}} -> task_token == token end)
-    end
-  end
+  defp task_token?(tasks, token), do: Enum.any?(tasks, &match?({_pid, %{token: ^token}}, &1))
 end

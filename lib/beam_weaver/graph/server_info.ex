@@ -1,10 +1,11 @@
 defmodule BeamWeaver.Graph.ServerInfo do
-  @moduledoc """
-  Server-side graph metadata exposed to nodes and tool runtimes.
+  @moduledoc ~S"""
+  Application-supplied server metadata available at graph runtime boundaries.
 
-  This is a native BeamWeaver struct hydrated from graph config. It covers the
-  user-facing LangGraph runtime information without coupling graph execution to
-  remote platform SDK objects.
+  Holds assistant/graph identifiers and an application-authenticated user value.
+  `from_configurable/1` reads those fields from run configuration and returns nil
+  when absent. It does not authenticate or authorize the supplied identity;
+  trusted application code must establish it before starting a run.
   """
 
   defmodule User do
@@ -62,6 +63,8 @@ defmodule BeamWeaver.Graph.ServerInfo do
       |> Map.put_new("permissions", user.permissions)
     end
   end
+
+  import BeamWeaver.MapAccess, only: [get: 2]
 
   defstruct [:assistant_id, :graph_id, :user, metadata: %{}]
 
@@ -125,8 +128,6 @@ defmodule BeamWeaver.Graph.ServerInfo do
   defp normalize_map(%{__struct__: _module} = struct), do: Map.from_struct(struct)
   defp normalize_map(opts) when is_list(opts), do: Map.new(opts)
   defp normalize_map(map) when is_map(map), do: map
-
-  defp get(map, key) when is_map(map), do: Map.get(map, key) || Map.get(map, to_string(key))
 
   defp maybe_to_string(nil), do: nil
   defp maybe_to_string(value), do: to_string(value)

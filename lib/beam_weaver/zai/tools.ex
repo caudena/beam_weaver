@@ -5,7 +5,7 @@ defmodule BeamWeaver.ZAI.Tools do
 
   alias BeamWeaver.OpenAI.ChatCompletions
   alias BeamWeaver.OpenAI.ToolCalling
-  alias BeamWeaver.ZAI.Error
+  alias BeamWeaver.Core.Error
 
   @function_name ~r/^[a-zA-Z0-9_-]{1,64}$/
   @max_tools 128
@@ -20,9 +20,7 @@ defmodule BeamWeaver.ZAI.Tools do
 
   @doc "Converts one tool to a Z.ai Chat Completions declaration."
   @spec to_chat_tool(term()) :: map()
-  def to_chat_tool(%{__struct__: _module} = tool), do: ChatCompletions.Messages.tool_to_openai(tool)
-
-  def to_chat_tool(tool) when is_map(tool) do
+  def to_chat_tool(tool) when is_map(tool) and not is_struct(tool) do
     tool = BeamWeaver.MapShape.stringify_keys(tool)
 
     if is_binary(tool["type"]) and tool["type"] != "function",
@@ -35,36 +33,24 @@ defmodule BeamWeaver.ZAI.Tools do
   @doc false
   @spec validate_chat_tools([map()]) :: :ok | {:error, Error.t()}
   def validate_chat_tools(tools) when is_list(tools) do
-    if length(tools) > @max_tools do
-      {:error,
-       Error.new(:invalid_request, "Z.ai supports at most 128 tools", %{
-         provider: :zai,
-         feature: :tools,
-         count: length(tools),
-         max: @max_tools
-       })}
-    else
-      tools
-      |> Enum.reduce_while(:ok, fn tool, :ok ->
-        case validate_tool(tool) do
-          :ok -> {:cont, :ok}
-          {:error, error} -> {:halt, {:error, error}}
-        end
-      end)
-    end
+    if length(tools) > @max_tools,
+      do:
+        error(:invalid_request, "Z.ai supports at most 128 tools",
+          feature: :tools,
+          count: length(tools),
+          max: @max_tools
+        ),
+      else: Enum.find_value(tools, :ok, fn tool -> with :ok <- validate_tool(tool), do: nil end)
   end
+
+  defp error(type, message, details),
+    do: {:error, Error.new(type, message, Enum.into(details, %{provider: :zai}))}
 
   defp validate_tool(%{"type" => "function"} = tool), do: validate_function_tool(tool)
 
   defp validate_tool(%{"type" => type}) when is_binary(type) and byte_size(type) > 0, do: :ok
 
-  defp validate_tool(tool) do
-    {:error,
-     Error.new(:invalid_request, "Z.ai tool declaration is invalid", %{
-       provider: :zai,
-       tool: inspect(tool)
-     })}
-  end
+  defp validate_tool(tool), do: error(:invalid_request, "Z.ai tool declaration is invalid", tool: inspect(tool))
 
   defp validate_function_tool(tool) do
     function = tool["function"] || %{}
@@ -72,22 +58,13 @@ defmodule BeamWeaver.ZAI.Tools do
 
     cond do
       not is_binary(name) or not Regex.match?(@function_name, name) ->
-        {:error,
-         Error.new(:invalid_request, "Z.ai function tool name is invalid", %{
-           provider: :zai,
-           name: name,
-           pattern: Regex.source(@function_name)
-         })}
+        error(:invalid_request, "Z.ai function tool name is invalid", name: name, pattern: Regex.source(@function_name))
 
       is_map(function["parameters"]) ->
         :ok
 
       true ->
-        {:error,
-         Error.new(:invalid_request, "Z.ai function tools require an input schema", %{
-           provider: :zai,
-           name: name
-         })}
+        error(:invalid_request, "Z.ai function tools require an input schema", name: name)
     end
   end
 end

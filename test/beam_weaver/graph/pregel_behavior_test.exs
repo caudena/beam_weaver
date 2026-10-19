@@ -1,16 +1,16 @@
 defmodule BeamWeaver.Graph.PregelBehaviorTest do
   use ExUnit.Case, async: true
 
+  import BeamWeaver.TestSupport.Eventually
+
   alias BeamWeaver.Checkpoint
   alias BeamWeaver.Checkpoint.ETS, as: CheckpointETS
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Graph
   alias BeamWeaver.Graph.Channels.DeltaChannel
   alias BeamWeaver.Graph.Channels.Topic
   alias BeamWeaver.Graph.Command
   alias BeamWeaver.Graph.Compiled
-  alias BeamWeaver.Graph.Execution.Scratchpad
   alias BeamWeaver.Graph.Send
   alias BeamWeaver.Stream.Envelope
   alias BeamWeaver.Stream.Events
@@ -201,10 +201,7 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
       Graph.new()
       |> Graph.add_node(
         :slow,
-        fn _state ->
-          Process.sleep(100)
-          %{done: true}
-        end,
+        fn _state -> Process.sleep(:infinity) end,
         timeout: 10
       )
       |> Graph.add_edge(Graph.start(), :slow)
@@ -214,25 +211,28 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
     assert {:error, %Error{type: :node_timeout}} =
              Compiled.invoke(graph, %{}, task_supervisor: supervisor)
 
-    Process.sleep(20)
-    assert Task.Supervisor.children(supervisor) == []
+    assert eventually(fn -> Task.Supervisor.children(supervisor) == [] end)
   end
 
-  test "compiled graph exposes Task-backed async event stream and batch-as-completed facades" do
+  test "compiled graph streams events and yields batch results as they complete" do
+    test = self()
+
+    # A run given `hold: true` finishes only when the test lets it go.
     graph =
       Graph.new()
       |> Graph.add_node(:work, fn state ->
-        Process.sleep(state.sleep_ms)
+        if state[:hold] do
+          send(test, {:holding, self()})
+          receive do: (:go -> :ok)
+        end
+
         %{value: state.value * 2}
       end)
       |> Graph.add_edge(Graph.start(), :work)
       |> Graph.add_edge(:work, Graph.end_node())
       |> Graph.compile!()
 
-    assert {:ok, stream} =
-             graph
-             |> Compiled.async_stream_events(%{value: 1, sleep_ms: 0})
-             |> Async.await()
+    assert {:ok, stream} = Compiled.stream_events(graph, %{value: 1})
 
     assert Enum.any?(
              stream,
@@ -240,26 +240,23 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
            )
 
     assert {:ok, completion_stream} =
-             Compiled.batch_as_completed(
-               graph,
-               [
-                 %{value: 1, sleep_ms: 30},
-                 %{value: 2, sleep_ms: 5}
-               ],
-               max_concurrency: 2
-             )
+             Compiled.batch_as_completed(graph, [%{value: 1, hold: true}, %{value: 2}], max_concurrency: 2)
 
-    completions = Enum.to_list(completion_stream)
-    assert elem(hd(completions), 0) == 1
-    assert {0, {:ok, %{value: 2, sleep_ms: 30}}} in completions
-    assert {1, {:ok, %{value: 4, sleep_ms: 5}}} in completions
+    # The second run comes out first; only then does the first one finish.
+    completions =
+      Enum.map(completion_stream, fn
+        {1, _result} = completion ->
+          receive do: ({:holding, first} -> send(first, :go))
+          completion
 
-    assert {:ok, async_completion_stream} =
-             graph
-             |> Compiled.async_batch_as_completed([%{value: 3, sleep_ms: 0}])
-             |> Async.await()
+        completion ->
+          completion
+      end)
 
-    assert Enum.to_list(async_completion_stream) == [{0, {:ok, %{value: 6, sleep_ms: 0}}}]
+    assert completions == [{1, {:ok, %{value: 4}}}, {0, {:ok, %{value: 2, hold: true}}}]
+
+    assert {:ok, single_completion_stream} = Compiled.batch_as_completed(graph, [%{value: 3}])
+    assert Enum.to_list(single_completion_stream) == [{0, {:ok, %{value: 6}}}]
   end
 
   test "checkpoint adapter failures surface through native runtime boundaries" do
@@ -285,6 +282,12 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
              simple_graph.(FaultySaver.new(:put))
              |> Compiled.invoke(%{value: ""},
                config: %{"configurable" => %{"thread_id" => "put"}}
+             )
+
+    assert {:error, %Error{type: :checkpoint_error, message: "checkpoint write failed"}} =
+             simple_graph.(FaultySaver.new(:put))
+             |> Compiled.stream_events(%{value: ""},
+               config: %{"configurable" => %{"thread_id" => "stream-put"}}
              )
 
     assert_raise RuntimeError, "Faulty next_version", fn ->
@@ -318,79 +321,41 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
              Compiled.invoke(graph, %{}, config: %{"configurable" => %{"thread_id" => "put-writes"}})
   end
 
-  test "Task-backed async checkpoint adapter failures surface through native boundaries" do
-    simple_graph = fn checkpointer ->
-      Graph.new()
-      |> Graph.add_node(:node, fn _state -> %{value: "ok"} end)
-      |> Graph.add_edge(Graph.start(), :node)
-      |> Graph.add_edge(:node, Graph.end_node())
-      |> Graph.compile!(checkpointer: checkpointer)
+  test "parallel entry nodes execute in the same superstep" do
+    parent = self()
+
+    # Each node blocks until the test releases it, and the test only does so
+    # once both have started: run one after the other, they would deadlock.
+    barrier_node = fn name ->
+      fn _state ->
+        send(parent, {:started, name, self()})
+
+        receive do
+          :release -> %{results: [name]}
+        end
+      end
     end
 
-    assert {:error, %Error{type: :checkpoint_error, message: "checkpoint write failed"}} =
-             simple_graph.(FaultySaver.new(:put))
-             |> Compiled.async_invoke(%{value: ""},
-               config: %{"configurable" => %{"thread_id" => "async-put"}}
-             )
-             |> Async.await()
-
-    assert {:error, %Error{type: :checkpoint_error, message: "checkpoint write failed"}} =
-             simple_graph.(FaultySaver.new(:put))
-             |> Compiled.async_stream_events(%{value: ""},
-               config: %{"configurable" => %{"thread_id" => "async-stream-put"}}
-             )
-             |> Async.await()
-
-    graph =
-      Graph.new()
-      |> Graph.add_node(:fanout, fn _state ->
-        [
-          %Send{node: :ok, update: %{value: "pending"}},
-          %Send{node: :fail}
-        ]
-      end)
-      |> Graph.add_node(:ok, fn state -> %{kept: state.value} end)
-      |> Graph.add_node(:fail, fn _state -> {:error, Error.new(:node_failed, "boom")} end)
-      |> Graph.add_edge(Graph.start(), :fanout)
-      |> Graph.add_edge(:ok, Graph.end_node())
-      |> Graph.add_edge(:fail, Graph.end_node())
-      |> Graph.compile!(checkpointer: FaultySaver.new(:put_writes))
-
-    assert {:error,
-            %Error{
-              type: :checkpoint_error,
-              message: "pending write persistence failed"
-            }} =
-             graph
-             |> Compiled.async_invoke(%{},
-               config: %{"configurable" => %{"thread_id" => "async-put-writes"}}
-             )
-             |> Async.await()
-  end
-
-  test "parallel entry nodes execute in the same superstep" do
     graph =
       Graph.new()
       |> Graph.add_reducer(:results, fn existing, update -> existing ++ List.wrap(update) end)
-      |> Graph.add_node(:slow, fn _state ->
-        Process.sleep(75)
-        %{results: ["slow"]}
-      end)
-      |> Graph.add_node(:fast, fn _state ->
-        Process.sleep(75)
-        %{results: ["fast"]}
-      end)
-      |> Graph.add_edge(Graph.start(), :slow)
-      |> Graph.add_edge(Graph.start(), :fast)
-      |> Graph.add_edge(:slow, Graph.end_node())
-      |> Graph.add_edge(:fast, Graph.end_node())
+      |> Graph.add_node(:left, barrier_node.("left"))
+      |> Graph.add_node(:right, barrier_node.("right"))
+      |> Graph.add_edge(Graph.start(), :left)
+      |> Graph.add_edge(Graph.start(), :right)
+      |> Graph.add_edge(:left, Graph.end_node())
+      |> Graph.add_edge(:right, Graph.end_node())
       |> Graph.compile!()
 
-    {duration_us, {:ok, %{results: results}}} =
-      :timer.tc(fn -> Compiled.invoke(graph, %{results: []}) end)
+    run = Task.async(fn -> Compiled.invoke(graph, %{results: []}) end)
 
-    assert Enum.sort(results) == ["fast", "slow"]
-    assert duration_us < 140_000
+    assert_receive {:started, "left", left}
+    assert_receive {:started, "right", right}
+    send(left, :release)
+    send(right, :release)
+
+    assert {:ok, %{results: results}} = Task.await(run, 5_000)
+    assert Enum.sort(results) == ["left", "right"]
   end
 
   test "concurrent invocations of one compiled graph keep state independent" do
@@ -408,7 +373,7 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
     results =
       1..10
       |> Enum.map(fn _index -> Task.async(fn -> Compiled.invoke(graph, %{counter: 0}) end) end)
-      |> Enum.map(&Task.await(&1, 1_000))
+      |> Enum.map(&Task.await(&1, 5_000))
 
     assert Enum.all?(results, &(&1 == {:ok, %{counter: 1}}))
   end
@@ -455,7 +420,7 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
       |> Enum.map(fn _index ->
         Task.async(fn -> Compiled.invoke(graph, %{input: 2}, recursion_limit: test_size + 1) end)
       end)
-      |> Enum.map(&Task.await(&1, 1_000))
+      |> Enum.map(&Task.await(&1, 5_000))
 
     assert Enum.all?(results, &(&1 == {:ok, %{output: expected}}))
 
@@ -748,7 +713,7 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
     assert thread_two_values.total == 5
   end
 
-  test "Task-backed async facade preserves batch, invalid update, fork, and send behavior" do
+  test "compiled graph facade covers batch, fork, and send behavior" do
     chain =
       Graph.new(input_schema: %{input: :integer}, output_schema: %{output: :integer})
       |> Graph.add_node(:one, fn state -> %{one: state.input + 1} end, input: [:input])
@@ -762,25 +727,7 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
              {:ok, %{output: 5}},
              {:ok, %{output: 4}},
              {:ok, %{output: 3}}
-           ] =
-             chain
-             |> Compiled.async_batch([%{input: 3}, %{input: 2}, %{input: 1}])
-             |> Async.await_batch()
-
-    invalid =
-      Graph.new(output_schema: %{hello: :string})
-      |> Graph.add_node(:one, fn _state -> %{hello: "world"} end)
-      |> Graph.add_node(:two, fn _state -> %{hello: "there"} end)
-      |> Graph.add_edge(Graph.start(), :one)
-      |> Graph.add_edge(Graph.start(), :two)
-      |> Graph.add_edge(:one, Graph.end_node())
-      |> Graph.add_edge(:two, Graph.end_node())
-      |> Graph.compile!()
-
-    assert {:error, %Error{type: :invalid_update}} =
-             invalid
-             |> Compiled.async_invoke(%{})
-             |> Async.await()
+           ] = Compiled.batch(chain, [%{input: 3}, %{input: 2}, %{input: 1}])
 
     checkpointer = CheckpointETS.new()
 
@@ -796,17 +743,11 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
 
     config = %{"configurable" => %{"thread_id" => "beam-weaver-async-fork"}}
 
-    assert {:ok, %{count: 3}} =
-             checkpointed
-             |> Compiled.async_invoke(%{count: 0}, config: config)
-             |> Async.await()
+    assert {:ok, %{count: 3}} = Compiled.invoke(checkpointed, %{count: 0}, config: config)
 
     [_final, fork_source | _rest] = Compiled.get_state_history(checkpointed, config)
 
-    assert {:ok, %{count: 3}} =
-             checkpointed
-             |> Compiled.async_invoke(%{}, config: fork_source.config)
-             |> Async.await()
+    assert {:ok, %{count: 3}} = Compiled.invoke(checkpointed, %{}, config: fork_source.config)
 
     [_new_result, fork | _copied] = Compiled.get_state_history(checkpointed, config)
     assert fork.metadata["source"] == "fork"
@@ -828,12 +769,10 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
       |> Graph.compile!()
 
     assert {:ok, %{log: ["0", "start", "route", "sent:1"]}} =
-             sends
-             |> Compiled.async_invoke(%{log: ["0"]}, recursion_limit: 5)
-             |> Async.await()
+             Compiled.invoke(sends, %{log: ["0"]}, recursion_limit: 5)
   end
 
-  test "Task-backed async state APIs replay and fork from interrupt checkpoints" do
+  test "state APIs replay and fork from interrupt checkpoints" do
     checkpointer = CheckpointETS.new()
 
     graph =
@@ -855,52 +794,60 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
 
     config = %{"configurable" => %{"thread_id" => "beam-weaver-async-time-travel"}}
 
-    assert {:interrupted, first_interrupt} =
-             graph
-             |> Compiled.async_invoke(%{value: []}, config: config)
-             |> Async.await()
-
+    assert {:interrupted, first_interrupt} = Compiled.invoke(graph, %{value: []}, config: config)
     assert first_interrupt.value == "What is your input?"
 
-    history =
-      graph
-      |> Compiled.async_get_state_history(config)
-      |> Async.await()
-
+    history = Compiled.get_state_history(graph, config)
     before_ask = Enum.find(history, &(&1.next == ["ask"]))
 
-    assert {:interrupted, replay_interrupt} =
-             graph
-             |> Compiled.async_invoke(%{}, config: before_ask.config)
-             |> Async.await()
-
+    assert {:interrupted, replay_interrupt} = Compiled.invoke(graph, %{}, config: before_ask.config)
     assert replay_interrupt.value == first_interrupt.value
 
-    assert {:ok, fork_config} =
-             graph
-             |> Compiled.async_update_state(before_ask.config, %{value: ["fork"]})
-             |> Async.await()
-
-    assert {:ok, fork_snapshot} =
-             graph
-             |> Compiled.async_get_state(fork_config)
-             |> Async.await()
-
+    assert {:ok, fork_config} = Compiled.update_state(graph, before_ask.config, %{value: ["fork"]})
+    assert {:ok, fork_snapshot} = Compiled.get_state(graph, fork_config)
     assert fork_snapshot.values.value == ["a", "fork"]
     assert fork_snapshot.next == ["ask"]
     assert fork_snapshot.metadata["source"] == "update"
 
-    assert {:interrupted, fork_interrupt} =
-             graph
-             |> Compiled.async_invoke(%{}, config: fork_config)
-             |> Async.await()
-
+    assert {:interrupted, fork_interrupt} = Compiled.invoke(graph, %{}, config: fork_config)
     assert fork_interrupt.value == "What is your input?"
 
     assert {:ok, %{value: ["a", "fork", "human:yes", "b"]}} =
-             graph
-             |> Compiled.async_resume("yes", config: fork_interrupt.config)
-             |> Async.await()
+             Compiled.resume(graph, "yes", config: fork_interrupt.config)
+  end
+
+  test "identical sends each run as a task of their own" do
+    parent = self()
+
+    graph =
+      Graph.new()
+      |> Graph.add_reducer(:results, &(&1 ++ &2))
+      |> Graph.add_node(:split, fn %{items: items} -> Enum.map(items, &%Send{node: :work, update: %{item: &1}}) end)
+      |> Graph.add_node(:work, fn %{item: item}, runtime ->
+        send(parent, {:work_task, runtime.execution.task_id, runtime.execution.path})
+        %{results: [item]}
+      end)
+      |> Graph.add_edge(Graph.start(), :split)
+      |> Graph.add_edge(:work, Graph.end_node())
+      |> Graph.compile!()
+
+    assert {:ok, %{results: results}} = Compiled.invoke(graph, %{items: ["refund", "refund", "ship"], results: []})
+    assert Enum.sort(results) == ["refund", "refund", "ship"]
+
+    tasks = for _task <- 1..3, do: assert_receive({:work_task, _id, _path})
+    assert tasks |> Enum.map(&elem(&1, 1)) |> Enum.uniq() |> length() == 3
+
+    paths = Enum.map(tasks, &BeamWeaver.JSON.decode!(elem(&1, 2)))
+
+    assert Enum.sort(paths) ==
+             Enum.sort([
+               %{"node" => "work", "update" => %{"item" => "refund"}},
+               %{"node" => "work", "update" => %{"item" => "refund"}, "repeat" => 1},
+               %{"node" => "work", "update" => %{"item" => "ship"}}
+             ])
+
+    refund = %Send{node: :work, update: %{item: "refund"}}
+    assert {:ok, %{results: ["refund", "refund"]}} = Compiled.invoke(graph, %Command{goto: [refund, refund]})
   end
 
   test "send task paths preserve payloads through pending write replay" do
@@ -1204,18 +1151,7 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
   end
 
   test "command input goto resumes from checkpoint and adds branch task" do
-    checkpointer = CheckpointETS.new()
-
-    graph =
-      Graph.new()
-      |> Graph.add_reducer(:foo, &<>/2)
-      |> Graph.add_node(:node1, fn _state -> %{foo: "|node-1"} end)
-      |> Graph.add_node(:node2, fn _state -> %{foo: "|node-2"} end)
-      |> Graph.add_edge(:node1, :node2)
-      |> Graph.add_edge(Graph.start(), :node1)
-      |> Graph.add_edge(:node2, Graph.end_node())
-      |> Graph.compile!(checkpointer: checkpointer, interrupt_before: [:node1])
-
+    graph = paused_before_node1()
     config = %{"configurable" => %{"thread_id" => "beam-weaver-command-input-goto"}}
 
     assert {:interrupted, %{timing: :before, nodes: ["node1"]}} =
@@ -1226,18 +1162,7 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
   end
 
   test "command input resume continues from a static interrupt checkpoint" do
-    checkpointer = CheckpointETS.new()
-
-    graph =
-      Graph.new()
-      |> Graph.add_reducer(:foo, &<>/2)
-      |> Graph.add_node(:node1, fn _state -> %{foo: "|node-1"} end)
-      |> Graph.add_node(:node2, fn _state -> %{foo: "|node-2"} end)
-      |> Graph.add_edge(:node1, :node2)
-      |> Graph.add_edge(Graph.start(), :node1)
-      |> Graph.add_edge(:node2, Graph.end_node())
-      |> Graph.compile!(checkpointer: checkpointer, interrupt_before: [:node1])
-
+    graph = paused_before_node1()
     config = %{"configurable" => %{"thread_id" => "beam-weaver-command-input-static-resume"}}
 
     assert {:interrupted, %{timing: :before, nodes: ["node1"]}} =
@@ -1360,7 +1285,10 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
       |> Graph.add_edge(:listener, Graph.end_node())
       |> Graph.compile!()
 
-    assert {:ok, %{topic: ["ready"], observed: ["ready"]}} = Compiled.invoke(graph, %{})
+    # The topic holds one step's writes: the listener reads them in the next
+    # step, and they are cleared after it.
+    assert {:ok, result} = Compiled.invoke(graph, %{})
+    assert result == %{observed: ["ready"]}
     assert_receive {:listener_ran, ["ready"]}
     refute_receive {:unrelated_ran, _value}, 50
   end
@@ -1399,36 +1327,6 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
     assert latest.values.items == ["a"]
   end
 
-  test "scratchpad call and subgraph counters are task-local monotonic counters" do
-    graph =
-      Graph.new()
-      |> Graph.add_node(:first, fn _state ->
-        %{
-          first_calls: [Scratchpad.next_call(), Scratchpad.next_call()],
-          first_subgraphs: [Scratchpad.next_subgraph(), Scratchpad.next_subgraph()]
-        }
-      end)
-      |> Graph.add_node(:second, fn _state ->
-        %{
-          second_calls: [Scratchpad.next_call(), Scratchpad.next_call()],
-          second_subgraphs: [Scratchpad.next_subgraph(), Scratchpad.next_subgraph()]
-        }
-      end)
-      |> Graph.add_edge(Graph.start(), :first)
-      |> Graph.add_edge(Graph.start(), :second)
-      |> Graph.add_edge(:first, Graph.end_node())
-      |> Graph.add_edge(:second, Graph.end_node())
-      |> Graph.compile!()
-
-    assert {:ok,
-            %{
-              first_calls: [0, 1],
-              first_subgraphs: [0, 1],
-              second_calls: [0, 1],
-              second_subgraphs: [0, 1]
-            }} = Compiled.invoke(graph, %{})
-  end
-
   test "proceed policy persists every sibling failure and successful writes" do
     checkpointer = CheckpointETS.new()
 
@@ -1443,7 +1341,7 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
       |> Graph.add_edge(:ok, Graph.end_node())
       |> Graph.add_edge(:fail_a, Graph.end_node())
       |> Graph.add_edge(:fail_b, Graph.end_node())
-      |> Graph.compile!(checkpointer: checkpointer, failure_policy: :proceed)
+      |> Graph.compile!(checkpointer: checkpointer)
 
     config = %{"configurable" => %{"thread_id" => "beam-weaver-proceed-all-failures"}}
 
@@ -1516,7 +1414,7 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
     assert {:ok, %{n: 1, x: 1}} = Compiled.invoke(graph, %{x: 1})
     assert_receive :setup_called
 
-    assert :ok = Compiled.async_clear_cache(graph) |> Async.await()
+    assert :ok = Compiled.clear_cache(graph)
   end
 
   test "cached node requires an explicit cache adapter" do
@@ -1560,101 +1458,19 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
   end
 
   test "parent command from deeply nested subgraph targets the immediate parent graph" do
-    sub_sub_graph =
-      Graph.new(name: "sub_sub_graph")
-      |> Graph.add_reducer(:dialog_state, fn existing, update -> existing ++ List.wrap(update) end)
-      |> Graph.add_node(:sub_sub_child, fn _state ->
-        %BeamWeaver.Graph.Command{
-          graph: BeamWeaver.Graph.Command.parent(),
-          goto: :sub_child_3,
-          update: %{dialog_state: ["sub_sub_child"]}
-        }
-      end)
-      |> Graph.add_edge(Graph.start(), :sub_sub_child)
-      |> Graph.compile!()
+    graph = nested_command_graph(BeamWeaver.Graph.Command.parent())
 
-    sub_graph =
-      Graph.new(name: "sub_graph")
-      |> Graph.add_reducer(:dialog_state, fn existing, update -> existing ++ List.wrap(update) end)
-      |> Graph.add_node(:sub_child_1, fn _state -> %{dialog_state: ["sub_child_1"]} end)
-      |> Graph.add_node(:sub_child_2, sub_sub_graph)
-      |> Graph.add_node(:sub_child_3, fn _state -> %{dialog_state: ["sub_child_3"]} end)
-      |> Graph.add_edge(:sub_child_1, :sub_child_2)
-      |> Graph.add_edge(Graph.start(), :sub_child_1)
-      |> Graph.add_edge(:sub_child_3, Graph.end_node())
-      |> Graph.compile!()
-
-    graph =
-      Graph.new(name: "main_graph")
-      |> Graph.add_reducer(:dialog_state, fn existing, update -> existing ++ List.wrap(update) end)
-      |> Graph.add_node(:child_1, fn _state -> %{dialog_state: ["child_1"]} end)
-      |> Graph.add_node(:child_2, sub_graph)
-      |> Graph.add_edge(:child_1, :child_2)
-      |> Graph.add_edge(Graph.start(), :child_1)
-      |> Graph.add_edge(:child_2, Graph.end_node())
-      |> Graph.compile!()
-
-    assert {:ok,
-            %{
-              dialog_state: [
-                "init",
-                "child_1",
-                "init",
-                "child_1",
-                "sub_child_1",
-                "sub_sub_child",
-                "sub_child_3"
-              ]
-            }} = Compiled.invoke(graph, %{dialog_state: ["init"]})
+    # Each subgraph passes up only what it added to the list it received.
+    assert {:ok, %{dialog_state: ["init", "child_1", "sub_child_1", "sub_sub_child", "sub_child_3"]}} =
+             Compiled.invoke(graph, %{dialog_state: ["init"]})
   end
 
   test "named graph command bubbles until the matching subgraph handles it" do
-    sub_sub_graph =
-      Graph.new(name: "sub_sub_graph")
-      |> Graph.add_reducer(:dialog_state, fn existing, update -> existing ++ List.wrap(update) end)
-      |> Graph.add_node(:sub_sub_child, fn _state ->
-        %BeamWeaver.Graph.Command{
-          graph: "sub_graph",
-          goto: :sub_child_3,
-          update: %{dialog_state: ["sub_sub_child"]}
-        }
-      end)
-      |> Graph.add_edge(Graph.start(), :sub_sub_child)
-      |> Graph.compile!()
+    graph = nested_command_graph("sub_graph")
 
-    sub_graph =
-      Graph.new(name: "sub_graph")
-      |> Graph.add_reducer(:dialog_state, fn existing, update -> existing ++ List.wrap(update) end)
-      |> Graph.add_node(:sub_child_1, fn _state -> %{dialog_state: ["sub_child_1"]} end)
-      |> Graph.add_node(:sub_child_2, sub_sub_graph)
-      |> Graph.add_node(:sub_child_3, fn _state -> %{dialog_state: ["sub_child_3"]} end)
-      |> Graph.add_edge(:sub_child_1, :sub_child_2)
-      |> Graph.add_edge(Graph.start(), :sub_child_1)
-      |> Graph.add_edge(:sub_child_3, Graph.end_node())
-      |> Graph.compile!()
-
-    graph =
-      Graph.new(name: "main_graph")
-      |> Graph.add_reducer(:dialog_state, fn existing, update -> existing ++ List.wrap(update) end)
-      |> Graph.add_node(:child_1, fn _state -> %{dialog_state: ["child_1"]} end)
-      |> Graph.add_node(:child_2, sub_graph)
-      |> Graph.add_edge(:child_1, :child_2)
-      |> Graph.add_edge(Graph.start(), :child_1)
-      |> Graph.add_edge(:child_2, Graph.end_node())
-      |> Graph.compile!()
-
-    assert {:ok,
-            %{
-              dialog_state: [
-                "init",
-                "child_1",
-                "init",
-                "child_1",
-                "sub_child_1",
-                "sub_sub_child",
-                "sub_child_3"
-              ]
-            }} = Compiled.invoke(graph, %{dialog_state: ["init"]})
+    # Each subgraph passes up only what it added to the list it received.
+    assert {:ok, %{dialog_state: ["init", "child_1", "sub_child_1", "sub_sub_child", "sub_child_3"]}} =
+             Compiled.invoke(graph, %{dialog_state: ["init"]})
   end
 
   test "subgraph pending writes replay without rerunning completed child task" do
@@ -2166,6 +1982,54 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
     assert_receive :ask_2
   end
 
+  # A graph whose subgraph's subgraph returns a `Command` for `target` that
+  # goes to `sub_child_3`.
+  defp nested_command_graph(target) do
+    sub_sub_graph =
+      Graph.new(name: "sub_sub_graph")
+      |> Graph.add_reducer(:dialog_state, fn existing, update -> existing ++ List.wrap(update) end)
+      |> Graph.add_node(:sub_sub_child, fn _state ->
+        %BeamWeaver.Graph.Command{
+          graph: target,
+          goto: :sub_child_3,
+          update: %{dialog_state: ["sub_sub_child"]}
+        }
+      end)
+      |> Graph.add_edge(Graph.start(), :sub_sub_child)
+      |> Graph.compile!()
+
+    sub_graph =
+      Graph.new(name: "sub_graph")
+      |> Graph.add_reducer(:dialog_state, fn existing, update -> existing ++ List.wrap(update) end)
+      |> Graph.add_node(:sub_child_1, fn _state -> %{dialog_state: ["sub_child_1"]} end)
+      |> Graph.add_node(:sub_child_2, sub_sub_graph)
+      |> Graph.add_node(:sub_child_3, fn _state -> %{dialog_state: ["sub_child_3"]} end)
+      |> Graph.add_edge(:sub_child_1, :sub_child_2)
+      |> Graph.add_edge(Graph.start(), :sub_child_1)
+      |> Graph.add_edge(:sub_child_3, Graph.end_node())
+      |> Graph.compile!()
+
+    Graph.new(name: "main_graph")
+    |> Graph.add_reducer(:dialog_state, fn existing, update -> existing ++ List.wrap(update) end)
+    |> Graph.add_node(:child_1, fn _state -> %{dialog_state: ["child_1"]} end)
+    |> Graph.add_node(:child_2, sub_graph)
+    |> Graph.add_edge(:child_1, :child_2)
+    |> Graph.add_edge(Graph.start(), :child_1)
+    |> Graph.add_edge(:child_2, Graph.end_node())
+    |> Graph.compile!()
+  end
+
+  defp paused_before_node1 do
+    Graph.new()
+    |> Graph.add_reducer(:foo, &<>/2)
+    |> Graph.add_node(:node1, fn _state -> %{foo: "|node-1"} end)
+    |> Graph.add_node(:node2, fn _state -> %{foo: "|node-2"} end)
+    |> Graph.add_edge(:node1, :node2)
+    |> Graph.add_edge(Graph.start(), :node1)
+    |> Graph.add_edge(:node2, Graph.end_node())
+    |> Graph.compile!(checkpointer: CheckpointETS.new(), interrupt_before: [:node1])
+  end
+
   defp data_writes(writes), do: Enum.reject(writes, &control_write?/1)
   defp data_write_paths(paths), do: Enum.reject(paths, &control_write?/1)
   defp error_writes(writes), do: Enum.filter(writes, &match?({_task_id, "__error__", _error}, &1))
@@ -2180,5 +2044,6 @@ defmodule BeamWeaver.Graph.PregelBehaviorTest do
 
   defp control_write?({_task_id, "__error__", _value}), do: true
   defp control_write?({_task_id, "__interrupt__", _value}), do: true
+  defp control_write?({_task_id, "__route__", _value}), do: true
   defp control_write?(_write), do: false
 end

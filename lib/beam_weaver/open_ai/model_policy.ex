@@ -1,12 +1,5 @@
 defmodule BeamWeaver.OpenAI.ModelPolicy do
-  @moduledoc """
-  OpenAI model-family request policy.
-
-  LangChain keeps several of these rules inside the ChatOpenAI constructor and
-  payload builder. BeamWeaver keeps them as pure policy helpers so request
-  builders, initializers, and tests can share the same behavior without
-  exposing Python client internals.
-  """
+  @moduledoc false
 
   @doc """
   Returns the constructor default temperature for a model when the caller did
@@ -48,25 +41,6 @@ defmodule BeamWeaver.OpenAI.ModelPolicy do
 
   def completion_tokens_field_model?(_model), do: false
 
-  @doc """
-  Returns whether a model should prefer the Responses API when callers have not
-  explicitly selected an API.
-  """
-  @spec prefers_responses_api?(String.t() | nil) :: boolean()
-  def prefers_responses_api?(model) when is_binary(model) do
-    normalized = String.downcase(model)
-
-    gpt6?(normalized) or String.starts_with?(normalized, "gpt-5.6") or
-      normalized in ["gpt-5.5-pro", "gpt-5.4-pro"]
-  end
-
-  def prefers_responses_api?(_model), do: false
-
-  @doc false
-  @spec astra?(String.t() | nil) :: boolean()
-  def astra?(model) when is_binary(model), do: String.downcase(model) == "gpt-6-astra"
-  def astra?(_model), do: false
-
   @doc false
   def responses_tools_only?(model) when is_binary(model),
     do: String.downcase(model) in ["gpt-6-astra", "gpt-6.1-sol"]
@@ -89,19 +63,67 @@ defmodule BeamWeaver.OpenAI.ModelPolicy do
   def none_reasoning?(reasoning), do: reasoning_effort(reasoning) == "none"
 
   @doc false
-  @spec reasoning_effort_supported?(String.t() | nil, term()) :: boolean()
-  def reasoning_effort_supported?(model, reasoning) do
-    cond do
-      responses_tools_only?(model) ->
-        reasoning_effort(reasoning) in [nil, "low", "medium", "high", "xhigh", "max"]
+  def validate_gpt6_effort(model, reasoning, requested_effort) do
+    supported =
+      cond do
+        responses_tools_only?(model) -> [:low, :medium, :high, :xhigh, :max]
+        gpt6_sol_or_luna?(model) -> [:none, :low, :medium, :high, :xhigh, :max]
+        true -> nil
+      end
 
-      gpt6_sol_or_luna?(model) ->
-        reasoning_effort(reasoning) in [nil, "none", "low", "medium", "high", "xhigh", "max"]
-
-      true ->
-        true
+    if is_nil(supported) or reasoning_effort(reasoning) in [nil | Enum.map(supported, &Atom.to_string/1)] do
+      :ok
+    else
+      {:error,
+       BeamWeaver.Core.Error.new(:invalid_model_option, "GPT-6 reasoning effort is not supported by this model", %{
+         model: model,
+         reasoning_effort: requested_effort,
+         supported: supported
+       })}
     end
   end
+
+  @doc false
+  def validate_gpt6_sampling(model, reasoning, params) do
+    if params != [] and gpt6_sol_or_luna?(model) and not none_reasoning?(reasoning) do
+      {:error,
+       BeamWeaver.Core.Error.new(:invalid_model_option, "GPT-6 sampling controls require reasoning effort none", %{
+         model: model,
+         params: params,
+         expected_reasoning_effort: :none
+       })}
+    else
+      :ok
+    end
+  end
+
+  @doc false
+  # Checks a reasoning effort against the model profile's list of efforts, on
+  # OpenAI and xAI models whose profile has one.
+  @spec validate_reasoning_effort(BeamWeaver.Models.Profile.t() | nil, term()) ::
+          :ok | {:error, BeamWeaver.Core.Error.t()}
+  def validate_reasoning_effort(
+        %{provider: provider, reasoning_effort_levels: [_ | _] = efforts} = profile,
+        reasoning
+      )
+      when provider in [:openai, :xai] do
+    effort = reasoning_effort(reasoning)
+
+    if is_nil(effort) or effort in Enum.map(efforts, &to_string/1) do
+      :ok
+    else
+      {:error,
+       BeamWeaver.Core.Error.new(:unsupported_model_param, "#{profile.id} does not take reasoning effort #{effort}", %{
+         provider: provider,
+         model: profile.id,
+         params: [:reasoning_effort],
+         value: effort,
+         supported: efforts
+       })}
+    end
+  end
+
+  def validate_reasoning_effort(_profile, _reasoning), do: :ok
 
   defp o1_model?(model) when is_binary(model) do
     model
@@ -119,8 +141,10 @@ defmodule BeamWeaver.OpenAI.ModelPolicy do
 
   defp restricted_temperature_model?(_model), do: false
 
+  defp reasoning_effort(%{"effort" => nil}), do: nil
   defp reasoning_effort(%{"effort" => effort}) when is_atom(effort), do: Atom.to_string(effort)
   defp reasoning_effort(%{"effort" => effort}) when is_binary(effort), do: effort
+  defp reasoning_effort(%{effort: nil}), do: nil
   defp reasoning_effort(%{effort: effort}) when is_atom(effort), do: Atom.to_string(effort)
   defp reasoning_effort(%{effort: effort}) when is_binary(effort), do: effort
   defp reasoning_effort(nil), do: nil

@@ -1,14 +1,22 @@
 defmodule BeamWeaver.OpenAI.EmbeddingModel do
-  @moduledoc """
-  OpenAI embeddings implementation for the first non-Azure provider surface.
+  @moduledoc ~S"""
+  OpenAI text embeddings through the embedding-model contract.
+
+  Use `BeamWeaver.Models.init_embeddings/2`, then
+  `BeamWeaver.Core.EmbeddingModel.embed_documents/3` or `embed_query/3`.
+  Configure actual credentials; construction alone performs no request.
+  Optional dimensions must be supported by the selected model and match the
+  index and query vectors. See [Retrieval](retrieval.md).
   """
+
+  use BeamWeaver.Provider.RedactedInspect
 
   @behaviour BeamWeaver.Core.EmbeddingModel
 
   alias BeamWeaver.Models.ParamPolicy
   alias BeamWeaver.OpenAI.Client
-  alias BeamWeaver.OpenAI.Error
   alias BeamWeaver.Provider.EmbeddingRuntime
+  alias BeamWeaver.Provider.OpenAICompatibleClient, as: Compat
   alias BeamWeaver.Provider.Options
 
   @default_model "text-embedding-3-small"
@@ -56,41 +64,25 @@ defmodule BeamWeaver.OpenAI.EmbeddingModel do
           timeout: non_neg_integer()
         }
 
-  @impl true
-  def embed_documents(%__MODULE__{} = model, documents, opts \\ []) when is_list(documents) do
-    embed_fun = fn input, call_opts -> embed_input(model, input, call_opts) end
-    EmbeddingRuntime.embed_documents(model, documents, opts, embed_fun, runtime_error_opts())
-  end
-
   @doc """
-  Starts async document embedding.
+  Builds an embeddings model from keyword options: the struct's fields, plus
+  `:base_url` (the API root) as an alternative to the full `:endpoint`.
+  `BeamWeaver.OpenAI.embedding_model/1` also reads the key and base URL from
+  `config :beam_weaver, :openai`.
   """
-  @spec async_embed_documents(t(), [String.t()], keyword()) :: BeamWeaver.Core.Async.handle()
-  def async_embed_documents(%__MODULE__{} = model, documents, opts \\ []) do
-    EmbeddingRuntime.async_embed_documents(model, documents, opts, &embed_documents/3)
+  @spec new(keyword() | map()) :: t()
+  def new(opts \\ []) do
+    opts = if is_map(opts), do: Map.to_list(opts), else: opts
+    struct!(__MODULE__, Compat.expand_base_url(opts, endpoint: "embeddings"))
   end
 
   @impl true
-  def embed_query(%__MODULE__{} = model, query, opts \\ []) when is_binary(query) do
-    embed_fun = fn input, call_opts -> embed_input(model, input, call_opts) end
-    EmbeddingRuntime.embed_query(model, query, opts, embed_fun, runtime_error_opts())
-  end
+  def embed_documents(%__MODULE__{} = model, documents, opts \\ []) when is_list(documents),
+    do: EmbeddingRuntime.embed_documents(model, documents, opts, &embed_input(model, &1, &2))
 
-  @doc """
-  Starts async query embedding.
-  """
-  @spec async_embed_query(t(), String.t(), keyword()) :: BeamWeaver.Core.Async.handle()
-  def async_embed_query(%__MODULE__{} = model, query, opts \\ []) do
-    EmbeddingRuntime.async_embed_query(model, query, opts, &embed_query/3)
-  end
-
-  @doc """
-  Starts an ordered async batch of query embeddings.
-  """
-  @spec async_batch_queries(t(), [String.t()], keyword()) :: [BeamWeaver.Core.Async.handle()]
-  def async_batch_queries(%__MODULE__{} = model, queries, opts \\ []) when is_list(queries) do
-    EmbeddingRuntime.async_batch_queries(model, queries, opts, &embed_query/3)
-  end
+  @impl true
+  def embed_query(%__MODULE__{} = model, query, opts \\ []) when is_binary(query),
+    do: EmbeddingRuntime.embed_query(model, query, opts, &embed_input(model, &1, &2), runtime_error_opts())
 
   @doc """
   Builds the OpenAI embeddings request body.
@@ -114,9 +106,8 @@ defmodule BeamWeaver.OpenAI.EmbeddingModel do
     body = request_body(model, input, opts)
 
     with :ok <- validate_request_params(model, opts),
-         {:ok, response} <- Client.post_json(client(model), model.endpoint, body, opts) do
-      embeddings_from_response(response)
-    end
+         {:ok, response} <- Client.post_json(client(model), model.endpoint, body, opts),
+         do: EmbeddingRuntime.embeddings_from_response(response, runtime_error_opts())
   end
 
   defp validate_request_params(%__MODULE__{} = model, opts) do
@@ -126,27 +117,11 @@ defmodule BeamWeaver.OpenAI.EmbeddingModel do
       |> Map.take([:dimensions, :encoding_format, :user])
       |> Map.merge(Map.take(Map.new(opts), [:dimensions, :encoding_format, :extra_body, :model, :user]))
 
-    ParamPolicy.validate(
-      model.profile,
-      params,
-      Keyword.get(opts, :param_policy, model.param_policy),
-      metadata: %{}
-    )
+    ParamPolicy.validate(model.profile, params, Keyword.get(opts, :param_policy, model.param_policy))
   end
 
-  defp embeddings_from_response(response),
-    do: EmbeddingRuntime.embeddings_from_response(response, runtime_error_opts())
+  defp client(%__MODULE__{} = model),
+    do: struct(Client, Map.take(model, ~w(api_key organization project transport transport_opts timeout)a))
 
-  defp client(%__MODULE__{} = model) do
-    %Client{
-      api_key: model.api_key,
-      organization: model.organization,
-      project: model.project,
-      transport: model.transport,
-      transport_opts: model.transport_opts,
-      timeout: model.timeout
-    }
-  end
-
-  defp runtime_error_opts, do: [error_module: Error, provider_name: "OpenAI"]
+  defp runtime_error_opts, do: [provider_name: "OpenAI"]
 end

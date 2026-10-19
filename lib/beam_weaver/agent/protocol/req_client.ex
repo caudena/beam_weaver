@@ -1,11 +1,20 @@
 defmodule BeamWeaver.Agent.Protocol.ReqClient do
-  @moduledoc "Req-backed Agent Protocol client used by async DeepAgents subagents."
+  @moduledoc """
+  Req-backed Agent Protocol client used by async subagents.
+
+  Starting and updating a task send the `parent:` reference as the run's
+  `metadata`: the `subagent_name` and, when the parent has a thread, its
+  `parent_thread_id`, merged with the metadata already in the body. Trace ids
+  stay in this application.
+  """
 
   @behaviour BeamWeaver.Agent.Protocol.Client
 
+  alias BeamWeaver.MapShape
+
   @impl true
   def start_task(subagent, payload, opts) do
-    request(:post, subagent, "/runs", Keyword.put(opts, :json, payload))
+    request(:post, subagent, "/runs", Keyword.put(opts, :json, put_parent(payload, opts[:parent])))
   end
 
   @impl true
@@ -15,7 +24,8 @@ defmodule BeamWeaver.Agent.Protocol.ReqClient do
 
   @impl true
   def update_task(subagent, task_id, message, opts) do
-    request(:post, subagent, "/runs/#{path_segment(task_id)}/input", Keyword.put(opts, :json, %{message: message}))
+    body = put_parent(%{message: message}, opts[:parent])
+    request(:post, subagent, "/runs/#{path_segment(task_id)}/input", Keyword.put(opts, :json, body))
   end
 
   @impl true
@@ -23,14 +33,13 @@ defmodule BeamWeaver.Agent.Protocol.ReqClient do
     request(:post, subagent, "/runs/#{path_segment(task_id)}/cancel", opts)
   end
 
-  defp request(method, subagent, path, opts)
-
   defp request(method, %{url: url, headers: headers}, path, opts)
        when is_binary(url) do
     {request_fun, opts} = Keyword.pop(opts, :request_fun, &Req.request/1)
 
     request_opts =
       opts
+      |> Keyword.delete(:parent)
       |> Keyword.put(:method, method)
       |> Keyword.put(:url, endpoint(url, path))
       |> Keyword.put(:headers, headers || %{})
@@ -48,6 +57,15 @@ defmodule BeamWeaver.Agent.Protocol.ReqClient do
   end
 
   defp request(_method, _subagent, _path, _opts), do: {:error, :missing_url}
+
+  defp put_parent(body, nil), do: body
+
+  defp put_parent(body, parent) do
+    metadata =
+      MapShape.reject_nil_values(%{subagent_name: parent[:subagent_name], parent_thread_id: parent[:thread_id]})
+
+    Map.update(body, :metadata, metadata, &Map.merge(&1, metadata))
+  end
 
   defp endpoint(url, path), do: String.trim_trailing(url, "/") <> path
 

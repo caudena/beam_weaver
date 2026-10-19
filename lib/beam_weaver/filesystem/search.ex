@@ -1,7 +1,6 @@
 defmodule BeamWeaver.Filesystem.Search do
   @moduledoc false
 
-  alias BeamWeaver.Filesystem
   alias BeamWeaver.Filesystem.FileDataUtils
   alias BeamWeaver.Filesystem.FileInfo
   alias BeamWeaver.Filesystem.GrepMatch
@@ -10,124 +9,73 @@ defmodule BeamWeaver.Filesystem.Search do
   def immediate_entries(files, path) do
     prefix = if path == "/", do: "/", else: path <> "/"
 
-    files
-    |> Map.keys()
-    |> Enum.filter(&String.starts_with?(&1, prefix))
-    |> Enum.map(fn file_path ->
+    for file_path <- Map.keys(files), String.starts_with?(file_path, prefix), uniq: true do
       rest = String.replace_prefix(file_path, prefix, "")
       [name | _tail] = String.split(rest, "/", parts: 2)
-      child_path = if path == "/", do: "/" <> name, else: path <> "/" <> name
-      {child_path, String.contains?(rest, "/")}
-    end)
-    |> Enum.uniq()
+      {prefix <> name, String.contains?(rest, "/")}
+    end
     |> Enum.sort_by(&elem(&1, 0))
     |> Enum.map(fn {entry_path, dir?} ->
       %FileInfo{path: entry_path, is_dir: dir?, size: file_size(files[entry_path])}
     end)
   end
 
-  def grep_files(files, pattern, opts \\ []) do
-    base = Keyword.get(opts, :path, "/")
-    glob = Keyword.get(opts, :glob)
-
-    files
-    |> Enum.filter(fn {path, _data} ->
-      Path.under_path?(path, base) and glob_match?(path, glob, base)
-    end)
-    |> Enum.flat_map(fn {path, data} ->
-      data = FileDataUtils.normalize_file_data(data)
-
-      if data && data.encoding == "utf-8" do
-        data.content
-        |> String.split("\n")
-        |> Enum.with_index(1)
-        |> Enum.flat_map(fn {line, line_number} ->
-          if String.contains?(line, pattern),
-            do: [%GrepMatch{path: path, line: line_number, text: line}],
-            else: []
-        end)
-      else
-        []
-      end
-    end)
-  end
-
-  def grep_matches_from_files(files, pattern, opts \\ []),
-    do: %Filesystem.GrepResult{matches: grep_files(files, pattern, opts)}
-
-  def glob_files(files, pattern, opts \\ []) do
+  def grep_files(files, pattern, opts) do
     base = Keyword.get(opts, :path, "/")
 
-    files
-    |> Map.keys()
-    |> Enum.filter(fn path ->
-      Path.under_path?(path, base) and wildcard_match?(Path.relative(path, base), pattern)
-    end)
-    |> Enum.sort()
-    |> Enum.map(fn path -> %FileInfo{path: path, is_dir: false, size: file_size(files[path])} end)
+    with {:ok, glob_match?} <- search_matcher(opts |> Keyword.get(:glob) |> Path.grep_pattern()) do
+      matches =
+        for {path, data} <- files,
+            Path.under_path?(path, base) and (path == base or glob_match?.(Path.relative(path, base))),
+            %{encoding: "utf-8", content: content} <- [FileDataUtils.normalize_file_data(data)],
+            {line, line_number} <- content |> String.split("\n") |> Enum.with_index(1),
+            String.contains?(line, pattern),
+            do: %GrepMatch{path: path, line: line_number, text: line}
+
+      {:ok, matches}
+    end
   end
 
-  def wildcard_match?(_value, nil), do: true
-  def wildcard_match?(value, ""), do: value == ""
+  def glob_files(files, pattern, opts) do
+    base = Keyword.get(opts, :path, "/")
 
-  def wildcard_match?(value, pattern) when is_binary(value) and is_binary(pattern) do
-    regex =
-      pattern
-      |> Regex.escape()
-      |> String.replace("\\*\\*", ".*")
-      |> String.replace("\\*", "[^/]*")
-      |> String.replace("\\?", "[^/]")
-      |> then(&("^" <> &1 <> "$"))
-
-    Regex.match?(Regex.compile!(regex), value)
+    with {:ok, pattern_match?} <- pattern |> Path.search_pattern() |> search_matcher() do
+      {:ok,
+       files
+       |> Map.keys()
+       |> Enum.filter(&(Path.under_path?(&1, base) and pattern_match?.(Path.relative(&1, base))))
+       |> Enum.sort()
+       |> Enum.map(fn path -> %FileInfo{path: path, is_dir: false, size: file_size(files[path])} end)}
+    end
   end
 
-  def build_grep_results_dict(matches) do
-    Enum.reduce(matches || [], %{}, fn
-      %GrepMatch{path: path, line: line, text: text}, acc ->
-        Map.update(acc, path, [{line, text}], &(&1 ++ [{line, text}]))
+  defp search_matcher(nil), do: {:ok, fn _relative -> true end}
+  defp search_matcher(pattern), do: Path.glob_matcher(pattern)
 
-      %{path: path, line: line, text: text}, acc ->
-        Map.update(acc, path, [{line, text}], &(&1 ++ [{line, text}]))
+  # Permission rules keep their own wildcards: `*`, `?` and `**`, without
+  # the classes and alternatives of search patterns.
+  def wildcard_match?(value, pattern) when is_binary(value), do: matcher(pattern).(value)
 
-      %{"path" => path, "line" => line, "text" => text}, acc ->
-        Map.update(acc, path, [{line, text}], &(&1 ++ [{line, text}]))
-    end)
+  defp matcher(nil), do: fn _value -> true end
+  defp matcher(""), do: &(&1 == "")
+
+  defp matcher(pattern) when is_binary(pattern) do
+    regex = wildcard_regex(pattern)
+    &Regex.match?(regex, &1)
   end
 
-  def format_grep_matches(matches, output_mode \\ :files_with_matches) do
-    matches
-    |> build_grep_results_dict()
-    |> format_grep_results(output_mode)
+  # `**/` matches zero or more directories, so `**/*.md` also matches a
+  # top-level `a.md`; `**` elsewhere matches anything, `*` and `?` stay within
+  # one path segment.
+  defp wildcard_regex(pattern) do
+    pattern
+    |> Regex.escape()
+    |> String.replace("\\*\\*/", "(?:.*/)?")
+    |> String.replace("\\*\\*", ".*")
+    |> String.replace("\\*", "[^/]*")
+    |> String.replace("\\?", "[^/]")
+    |> then(&Regex.compile!("^" <> &1 <> "$"))
   end
-
-  def format_grep_results(results, output_mode \\ :files_with_matches)
-
-  def format_grep_results(results, _output_mode) when map_size(results) == 0,
-    do: "No matches found"
-
-  def format_grep_results(results, output_mode)
-      when output_mode in [:files_with_matches, "files_with_matches"] do
-    results |> Map.keys() |> Enum.sort() |> Enum.join("\n")
-  end
-
-  def format_grep_results(results, output_mode) when output_mode in [:count, "count"] do
-    results
-    |> Enum.sort_by(fn {path, _matches} -> path end)
-    |> Enum.map_join("\n", fn {path, matches} -> "#{path}: #{length(matches)}" end)
-  end
-
-  def format_grep_results(results, _output_mode) do
-    results
-    |> Enum.sort_by(fn {path, _matches} -> path end)
-    |> Enum.flat_map(fn {path, matches} ->
-      [path <> ":" | Enum.map(matches, fn {line, text} -> "  #{line}: #{text}" end)]
-    end)
-    |> Enum.join("\n")
-  end
-
-  defp glob_match?(_path, nil, _base), do: true
-  defp glob_match?(path, glob, base), do: wildcard_match?(Path.relative(path, base), glob)
 
   defp file_size(nil), do: nil
 

@@ -1,7 +1,6 @@
 defmodule BeamWeaver.StreamLifecycleTest do
   use ExUnit.Case, async: true
 
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Graph
   alias BeamWeaver.Graph.Compiled
@@ -100,13 +99,32 @@ defmodule BeamWeaver.StreamLifecycleTest do
                &1
              )
            )
+  end
 
-    assert {:ok, async_events} =
-             graph
-             |> Compiled.async_stream_events(%{value: "x", items: []})
-             |> Async.await()
+  test "a subgraph that fails in a real graph ends its lifecycle :failed, in its namespace" do
+    check =
+      Graph.new(name: "CheckGraph")
+      |> Graph.add_node(:check_amount, fn _state -> {:error, "the amount must be positive"} end)
+      |> Graph.add_edge(Graph.start(), :check_amount)
+      |> Graph.add_edge(:check_amount, Graph.end_node())
+      |> Graph.compile!()
 
-    assert length(Lifecycle.from_events(async_events)) == length(lifecycle)
+    graph =
+      Graph.new(name: "OuterGraph")
+      |> Graph.add_node(:check, check)
+      |> Graph.add_edge(Graph.start(), :check)
+      |> Graph.add_edge(:check, Graph.end_node())
+      |> Graph.compile!()
+
+    assert {:ok, events} = Compiled.stream_events(graph, %{value: "x"}, live: true)
+
+    assert [
+             %Envelope{namespace: ["check"], event: %Events.Lifecycle{status: :started}},
+             %Envelope{
+               namespace: ["check"],
+               event: %Events.Lifecycle{status: :failed, namespace: ["check"], error: "the amount must be positive"}
+             }
+           ] = events |> Enum.to_list() |> Lifecycle.from_events()
   end
 
   defp task(kind, namespace, node, task_id, opts \\ []) do

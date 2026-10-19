@@ -1,51 +1,31 @@
 defmodule BeamWeaver.Core.ContentBlock.Normalizer do
   @moduledoc false
 
+  import BeamWeaver.MapAccess, only: [get: 2]
+
   alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.MapShape
 
-  @known_map_types %{
-    "custom_tool_call" => :custom_tool_call,
-    "custom_tool_call_output" => :custom_tool_call_output,
-    "code_interpreter_call" => :code_interpreter_call,
-    "file_search_call" => :file_search_call,
-    "function_call" => :function_call,
-    "guard_content" => :guard_content,
-    "image_generation_call" => :image_generation_call,
-    "json" => :json,
-    "mcp_approval_request" => :mcp_approval_request,
-    "mcp_call" => :mcp_call,
-    "mcp_list_tools" => :mcp_list_tools,
-    "media" => :media,
-    "refusal" => :refusal,
-    "server_tool_result" => :server_tool_result,
-    "shell_call" => :shell_call,
-    "shell_call_output" => :shell_call_output,
-    "text_block" => :text_block,
-    "text_block_delta" => :text_block_delta,
-    "tool_search_call" => :tool_search_call,
-    "tool_search_output" => :tool_search_output,
-    "tool_call" => :tool_call,
-    "tool_call_chunk" => :tool_call_chunk,
-    "tool_use" => :tool_use,
-    "web_search_call" => :web_search_call,
-    "server_tool_call" => :server_tool_call,
-    "server_tool_call_chunk" => :server_tool_call_chunk
-  }
+  @known_map_types ~w(custom_tool_call custom_tool_call_output code_interpreter_call file_search_call function_call
+                      guard_content image_generation_call json mcp_approval_request mcp_call mcp_list_tools media
+                      refusal server_tool_result shell_call shell_call_output text_block text_block_delta
+                      tool_search_call tool_search_output tool_call tool_call_chunk tool_use web_search_call
+                      server_tool_call server_tool_call_chunk)a
+  @known_map_type_names Map.new(@known_map_types, &{Atom.to_string(&1), &1})
 
-  @spec from_map(map()) :: {:ok, term()}
+  @spec from_map(map()) :: {:ok, term()} | {:error, BeamWeaver.Core.Error.t()}
   def from_map(map) do
-    type = ContentBlock.get(map, :type)
+    type = get(map, :type)
 
     cond do
-      provider_image_bytes?(map) ->
-        {:ok, provider_image_bytes_block(map)}
+      image = provider_image_bytes_block(map) ->
+        {:ok, image}
 
-      data_uri?(ContentBlock.get(map, :url)) ->
-        ContentBlock.from_data_uri(ContentBlock.get(map, :url), metadata(map))
+      match?("data:" <> _rest, get(map, :url)) ->
+        ContentBlock.from_data_uri(get(map, :url), metadata(map))
 
-      data_uri?(ContentBlock.get(map, :data_uri)) ->
-        ContentBlock.from_data_uri(ContentBlock.get(map, :data_uri), metadata(map))
+      match?("data:" <> _rest, get(map, :data_uri)) ->
+        ContentBlock.from_data_uri(get(map, :data_uri), metadata(map))
 
       type in [:text, "text", "input_text", "output_text"] ->
         {:ok, text_block(map)}
@@ -54,19 +34,19 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
         {:ok,
          %{
            type: :"text-plain",
-           text: ContentBlock.get(map, :text),
-           raw_provider_block: ContentBlock.get(map, :raw_provider_block)
+           text: get(map, :text),
+           raw_provider_block: get(map, :raw_provider_block)
          }
          |> MapShape.reject_nil_values()}
 
       type in [:plain_text, "plain_text"] ->
-        {:ok, ContentBlock.plain_text(ContentBlock.get(map, :text) || "", metadata(map))}
+        {:ok, ContentBlock.plain_text(get(map, :text) || "", metadata(map))}
 
-      is_nil(type) and is_binary(ContentBlock.get(map, :text)) ->
-        {:ok, ContentBlock.text(ContentBlock.get(map, :text), metadata(map))}
+      is_nil(type) and is_binary(get(map, :text)) ->
+        {:ok, ContentBlock.text(get(map, :text), metadata(map))}
 
-      is_nil(type) and is_binary(ContentBlock.get(map, :content)) ->
-        {:ok, ContentBlock.text(ContentBlock.get(map, :content), metadata(map))}
+      is_nil(type) and is_binary(get(map, :content)) ->
+        {:ok, ContentBlock.text(get(map, :content), metadata(map))}
 
       type in [:image_url, "image_url", :input_image, "input_image"] ->
         {:ok, image_url_block(map)}
@@ -78,17 +58,10 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
         {:ok, audio_block(map)}
 
       type in [:video, "video"] ->
-        {:ok,
-         ContentBlock.video(%{
-           url: ContentBlock.get(map, :url),
-           file_id: ContentBlock.get(map, :file_id),
-           data: ContentBlock.get(map, :data) || ContentBlock.get(map, :base64),
-           mime_type: ContentBlock.get(map, :mime_type) || ContentBlock.get(map, :format),
-           metadata: metadata(map)
-         })}
+        {:ok, ContentBlock.video(media_fields(map))}
 
-      type in [:file, "file"] ->
-        {:ok, file_block(map)}
+      type in [:file, "file", :file_url, "file_url"] ->
+        file_block(map)
 
       type in [:reasoning, "reasoning"] ->
         {:ok, reasoning_block(map)}
@@ -96,45 +69,48 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
       type in [:citation, "citation"] ->
         {:ok,
          ContentBlock.citation(%{
-           url: ContentBlock.get(map, :url),
-           title: ContentBlock.get(map, :title),
-           text: ContentBlock.get(map, :text),
-           start_index: ContentBlock.get(map, :start_index),
-           end_index: ContentBlock.get(map, :end_index),
+           url: get(map, :url),
+           title: get(map, :title),
+           text: get(map, :text),
+           start_index: get(map, :start_index),
+           end_index: get(map, :end_index),
            metadata: metadata(map)
          })}
 
       type in [:tool_result, "tool_result"] ->
         {:ok,
          ContentBlock.tool_result(%{
-           tool_call_id:
-             ContentBlock.get(map, :tool_call_id) || ContentBlock.get(map, :tool_use_id) ||
-               ContentBlock.get(map, :id),
-           content: project_nested_content(ContentBlock.get(map, :content)),
-           artifact: ContentBlock.get(map, :artifact),
+           tool_call_id: get(map, :tool_call_id) || get(map, :tool_use_id) || get(map, :id),
+           content: project_nested_content(get(map, :content)),
+           artifact: get(map, :artifact),
            metadata: metadata(map)
          })}
 
-      known_map_type?(type) ->
-        {:ok, normalize_known_map_block(map, type)}
+      known_type = known_map_type(type) ->
+        {:ok, normalize_known_map_block(map, known_type)}
 
       true ->
         {:ok, ContentBlock.unknown(to_string(type || "unknown"), map, metadata(map))}
     end
   end
 
-  defp data_uri?("data:" <> _rest), do: true
-  defp data_uri?(_value), do: false
+  defp metadata(map), do: get(map, :metadata) || %{}
 
-  defp metadata(map), do: ContentBlock.get(map, :metadata) || %{}
+  defp media_fields(map) do
+    %{
+      url: get(map, :url),
+      file_id: get(map, :file_id),
+      data: get(map, :data) || get(map, :base64),
+      mime_type: get(map, :mime_type) || get(map, :format),
+      metadata: metadata(map)
+    }
+  end
 
-  defp known_map_type?(type) when is_atom(type), do: type in Map.values(@known_map_types)
-  defp known_map_type?(type) when is_binary(type), do: Map.has_key?(@known_map_types, type)
-  defp known_map_type?(_type), do: false
+  defp known_map_type(type) when is_atom(type), do: if(type in @known_map_types, do: type)
+  defp known_map_type(type) when is_binary(type), do: Map.get(@known_map_type_names, type)
+  defp known_map_type(_type), do: nil
 
   defp normalize_known_map_block(map, type) do
-    type = normalize_type(type)
-
     case type do
       :function_call -> function_call_block(map)
       :tool_call -> tool_call_block(map, :tool_call)
@@ -153,145 +129,170 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
     end
   end
 
-  defp normalize_type(type) when is_atom(type), do: type
-  defp normalize_type(type) when is_binary(type), do: Map.fetch!(@known_map_types, type)
-
   defp text_block(map) do
     %{
       type: :text,
-      id: ContentBlock.get(map, :id),
-      index: ContentBlock.get(map, :index),
-      text: ContentBlock.get(map, :text) || ContentBlock.get(map, :content) || "",
-      phase: ContentBlock.get(map, :phase),
-      annotations: ContentBlock.get(map, :annotations),
-      cache_control: ContentBlock.get(map, :cache_control),
+      id: get(map, :id),
+      index: get(map, :index),
+      text: get(map, :text) || get(map, :content) || "",
+      phase: get(map, :phase),
+      annotations: get(map, :annotations),
+      cache_control: get(map, :cache_control),
       thought_signature: thought_signature(map),
       metadata: non_empty_metadata(map),
-      raw_provider_block: ContentBlock.get(map, :raw_provider_block)
+      raw_provider_block: get(map, :raw_provider_block)
     }
     |> MapShape.reject_nil_values()
   end
 
   defp image_url_block(map) do
-    image_url = ContentBlock.get(map, :image_url)
+    image_url = get(map, :image_url)
 
     {url, detail} =
       cond do
         is_map(image_url) ->
-          {ContentBlock.get(image_url, :url), ContentBlock.get(image_url, :detail)}
+          {get(image_url, :url), get(image_url, :detail)}
 
         is_binary(image_url) ->
-          {image_url, ContentBlock.get(map, :detail)}
+          {image_url, get(map, :detail)}
 
         true ->
-          {ContentBlock.get(map, :url), ContentBlock.get(map, :detail)}
+          {get(map, :url), get(map, :detail)}
       end
 
-    ContentBlock.image(%{
-      url: url,
-      file_id: ContentBlock.get(map, :file_id),
-      data: ContentBlock.get(map, :data) || ContentBlock.get(map, :base64),
-      mime_type: ContentBlock.get(map, :mime_type) || ContentBlock.get(map, :format),
-      metadata: put_metadata_detail(metadata(map), detail)
-    })
+    ContentBlock.image(%{media_fields(map) | url: url, metadata: put_metadata_detail(metadata(map), detail)})
   end
 
   defp image_block(map) do
-    source = ContentBlock.get(map, :source)
-
-    {data, mime_type} =
-      cond do
-        is_map(source) ->
-          {ContentBlock.get(source, :data), ContentBlock.get(source, :media_type)}
-
-        ContentBlock.get(map, :source_type) == "base64" ->
-          {ContentBlock.get(map, :data), ContentBlock.get(map, :mime_type)}
-
-        true ->
-          {ContentBlock.get(map, :data) || ContentBlock.get(map, :base64),
-           ContentBlock.get(map, :mime_type) || ContentBlock.get(map, :format)}
-      end
-
-    ContentBlock.image(%{
-      url: ContentBlock.get(map, :url),
-      file_id: ContentBlock.get(map, :file_id),
-      data: data,
-      mime_type: mime_type,
-      metadata: metadata(map)
-    })
-  end
-
-  defp audio_block(map) do
-    input_audio = ContentBlock.get(map, :input_audio)
-
-    if is_map(ContentBlock.get(map, :audio)) or is_binary(ContentBlock.get(map, :audio)) do
-      %{
-        type: :audio,
-        id: ContentBlock.get(map, :id),
-        audio: ContentBlock.get(map, :audio),
-        raw_provider_block: ContentBlock.get(map, :raw_provider_block)
-      }
-      |> MapShape.reject_nil_values()
-    else
-      {data, mime_type} =
-        if is_map(input_audio) do
-          {ContentBlock.get(input_audio, :data),
-           ContentBlock.get(input_audio, :mime_type) || ContentBlock.get(input_audio, :format)}
-        else
-          {ContentBlock.get(map, :data) || ContentBlock.get(map, :base64),
-           ContentBlock.get(map, :mime_type) || ContentBlock.get(map, :format)}
-        end
-
-      ContentBlock.audio(%{
-        url: ContentBlock.get(map, :url),
-        file_id: ContentBlock.get(map, :file_id),
-        data: data,
-        mime_type: mime_type,
-        metadata: metadata(map)
-      })
+    case get(map, :source) do
+      %{} = source -> source_image_block(map, source)
+      _other -> plain_image_block(map)
     end
   end
 
-  defp file_block(map) do
-    file = ContentBlock.get(map, :file)
-
-    {file_id, data, filename} =
-      if is_map(file) do
-        {ContentBlock.get(file, :file_id), ContentBlock.get(file, :file_data) || ContentBlock.get(file, :data),
-         ContentBlock.get(file, :filename)}
-      else
-        {ContentBlock.get(map, :file_id), ContentBlock.get(map, :data) || ContentBlock.get(map, :base64),
-         ContentBlock.get(map, :filename)}
+  # An Anthropic-style image names its source: base64 data, a URL or an
+  # uploaded file. One that lacks what its source needs stays an unknown
+  # block instead of becoming an empty image.
+  defp source_image_block(map, source) do
+    fields =
+      case get(source, :type) do
+        type when type in [:url, "url"] -> %{url: get(source, :url)}
+        type when type in [:file, "file"] -> %{file_id: get(source, :file_id)}
+        type when type in [nil, :base64, "base64"] -> base64_source(source)
+        _other -> %{}
       end
 
-    ContentBlock.file(%{
-      file_id: file_id,
-      filename: filename,
-      url: ContentBlock.get(map, :url),
-      data: data,
-      mime_type: ContentBlock.get(map, :mime_type),
-      metadata: metadata(map)
-    })
+    if Enum.any?(Map.values(fields), &is_binary/1),
+      do: ContentBlock.image(Map.put(fields, :metadata, metadata(map))),
+      else: ContentBlock.unknown("image", map, metadata(map))
   end
 
-  defp reasoning_block(map) do
-    reasoning = ContentBlock.get(map, :reasoning) || ContentBlock.get(map, :text)
-    metadata = put_metadata_thought_signature(metadata(map), thought_signature(map))
+  defp base64_source(source) do
+    case {get(source, :data), get(source, :media_type)} do
+      {data, mime_type} when is_binary(data) and is_binary(mime_type) -> %{data: data, mime_type: mime_type}
+      _other -> %{}
+    end
+  end
 
-    if is_binary(reasoning) and is_nil(ContentBlock.get(map, :id)) and
-         is_nil(ContentBlock.get(map, :summary)) and is_nil(ContentBlock.get(map, :status)) and
-         is_nil(ContentBlock.get(map, :raw_provider_block)) do
+  defp plain_image_block(map) do
+    if get(map, :source_type) == "base64",
+      do: ContentBlock.image(%{media_fields(map) | data: get(map, :data), mime_type: get(map, :mime_type)}),
+      else: ContentBlock.image(media_fields(map))
+  end
+
+  defp audio_block(map) do
+    input_audio = get(map, :input_audio)
+
+    if is_map(get(map, :audio)) or is_binary(get(map, :audio)) do
+      %{
+        type: :audio,
+        id: get(map, :id),
+        audio: get(map, :audio),
+        raw_provider_block: get(map, :raw_provider_block)
+      }
+      |> MapShape.reject_nil_values()
+    else
+      fields = media_fields(map)
+
+      ContentBlock.audio(
+        if is_map(input_audio),
+          do: %{
+            fields
+            | data: get(input_audio, :data),
+              mime_type: get(input_audio, :mime_type) || get(input_audio, :format)
+          },
+          else: fields
+      )
+    end
+  end
+
+  # The file can sit in a nested `file` map, as in OpenAI Chat Completions and
+  # Z.ai parts: `%{"type" => "file", "file" => %{"file_url" => url}}`, or
+  # `"file_id"`, or `"file_data"` with a data URL. Z.ai's older part is
+  # `%{"type" => "file_url", "file_url" => %{"url" => url}}`. A data URL where
+  # a URL goes is the file's data.
+  defp file_block(map) do
+    source =
+      case get(map, :file) do
+        file when is_map(file) -> file
+        _missing -> map
+      end
+
+    data = get(source, :file_data) || get(source, :data) || get(source, :base64)
+
+    url = url_value(get(source, :url) || get(source, :file_url) || get(map, :url))
+
+    {data, url} = if is_nil(data) and match?("data:" <> _rest, url), do: {url, nil}, else: {data, url}
+
+    with {:ok, data, data_mime_type} <- file_data(data) do
+      {:ok,
+       ContentBlock.file(%{
+         file_id: get(source, :file_id),
+         filename: get(source, :filename),
+         url: url,
+         data: data,
+         mime_type: get(map, :mime_type) || get(source, :mime_type) || data_mime_type,
+         metadata: metadata(map)
+       })}
+    end
+  end
+
+  # File data is base64; a data URL gives its payload and media type.
+  defp file_data("data:" <> _rest = uri) do
+    with {:ok, %{media_type: media_type, encoding: encoding, data: data}} <- ContentBlock.parse_data_uri(uri) do
+      {:ok, if(encoding == :base64, do: data, else: Base.encode64(data)), media_type}
+    end
+  end
+
+  defp file_data(data), do: {:ok, data, nil}
+
+  defp url_value(url) when is_binary(url), do: url
+  defp url_value(%{} = value), do: get(value, :url)
+  defp url_value(_value), do: nil
+
+  defp reasoning_block(map) do
+    reasoning = get(map, :reasoning) || get(map, :text)
+    signature = thought_signature(map)
+
+    metadata =
+      if is_binary(signature) and signature != "",
+        do: Map.put(metadata(map), :thought_signature, signature),
+        else: metadata(map)
+
+    if is_binary(reasoning) and is_nil(get(map, :id)) and
+         is_nil(get(map, :summary)) and is_nil(get(map, :status)) and
+         is_nil(get(map, :raw_provider_block)) do
       ContentBlock.reasoning(reasoning, metadata)
     else
       %{
         type: :reasoning,
-        id: ContentBlock.get(map, :id),
+        id: get(map, :id),
         reasoning: reasoning,
-        summary: ContentBlock.get(map, :summary),
-        status: ContentBlock.get(map, :status),
-        encrypted_content: ContentBlock.get(map, :encrypted_content),
-        thought_signature: thought_signature(map),
-        raw_provider_block: ContentBlock.get(map, :raw_provider_block)
+        summary: get(map, :summary),
+        status: get(map, :status),
+        encrypted_content: get(map, :encrypted_content),
+        thought_signature: signature,
+        raw_provider_block: get(map, :raw_provider_block)
       }
       |> MapShape.reject_nil_values()
     end
@@ -300,14 +301,14 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
   defp function_call_block(map) do
     %{
       type: :function_call,
-      id: ContentBlock.get(map, :id),
-      provider_id: ContentBlock.get(map, :provider_id),
-      call_id: ContentBlock.get(map, :call_id),
-      name: ContentBlock.get(map, :name),
-      arguments: ContentBlock.get(map, :arguments) || ContentBlock.get(map, :args),
-      status: ContentBlock.get(map, :status),
+      id: get(map, :id),
+      provider_id: get(map, :provider_id),
+      call_id: get(map, :call_id),
+      name: get(map, :name),
+      arguments: get(map, :arguments) || get(map, :args),
+      status: get(map, :status),
       thought_signature: thought_signature(map),
-      raw_provider_block: ContentBlock.get(map, :raw_provider_block)
+      raw_provider_block: get(map, :raw_provider_block)
     }
     |> MapShape.reject_nil_values()
   end
@@ -315,14 +316,14 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
   defp tool_call_block(map, type) do
     %{
       type: type,
-      id: ContentBlock.get(map, :id),
-      provider_id: ContentBlock.get(map, :provider_id),
-      call_id: ContentBlock.get(map, :call_id),
-      name: ContentBlock.get(map, :name),
-      args: ContentBlock.get(map, :input) || ContentBlock.get(map, :args),
-      arguments: ContentBlock.get(map, :arguments),
+      id: get(map, :id),
+      provider_id: get(map, :provider_id),
+      call_id: get(map, :call_id),
+      name: get(map, :name),
+      args: get(map, :input) || get(map, :args),
+      arguments: get(map, :arguments),
       thought_signature: thought_signature(map),
-      raw_provider_block: ContentBlock.get(map, :raw_provider_block)
+      raw_provider_block: get(map, :raw_provider_block)
     }
     |> MapShape.reject_nil_values()
   end
@@ -330,11 +331,11 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
   defp tool_call_chunk_block(map) do
     %{
       type: :tool_call_chunk,
-      id: ContentBlock.get(map, :id),
-      index: ContentBlock.get(map, :index),
-      name: ContentBlock.get(map, :name),
-      args: ContentBlock.get(map, :args) || ContentBlock.get(map, :arguments),
-      tool_call_id: ContentBlock.get(map, :tool_call_id)
+      id: get(map, :id),
+      index: get(map, :index),
+      name: get(map, :name),
+      args: get(map, :args) || get(map, :arguments),
+      tool_call_id: get(map, :tool_call_id)
     }
     |> MapShape.reject_nil_values()
   end
@@ -342,10 +343,10 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
   defp server_tool_call_block(map) do
     %{
       type: :server_tool_call,
-      id: ContentBlock.get(map, :id),
-      name: ContentBlock.get(map, :name),
-      args: ContentBlock.get(map, :args) || %{},
-      raw_provider_block: ContentBlock.get(map, :raw_provider_block)
+      id: get(map, :id),
+      name: get(map, :name),
+      args: get(map, :args) || %{},
+      raw_provider_block: get(map, :raw_provider_block)
     }
     |> MapShape.reject_nil_values()
   end
@@ -353,10 +354,10 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
   defp server_tool_call_chunk_block(map) do
     %{
       type: :server_tool_call_chunk,
-      id: ContentBlock.get(map, :id),
-      index: ContentBlock.get(map, :index),
-      name: ContentBlock.get(map, :name),
-      args: ContentBlock.get(map, :args)
+      id: get(map, :id),
+      index: get(map, :index),
+      name: get(map, :name),
+      args: get(map, :args)
     }
     |> MapShape.reject_nil_values()
   end
@@ -364,10 +365,10 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
   defp server_tool_result_block(map) do
     %{
       type: :server_tool_result,
-      tool_call_id: ContentBlock.get(map, :tool_call_id) || ContentBlock.get(map, :id),
-      status: ContentBlock.get(map, :status),
-      output: ContentBlock.get(map, :output),
-      raw_provider_block: ContentBlock.get(map, :raw_provider_block)
+      tool_call_id: get(map, :tool_call_id) || get(map, :id),
+      status: get(map, :status),
+      output: get(map, :output),
+      raw_provider_block: get(map, :raw_provider_block)
     }
     |> MapShape.reject_nil_values()
   end
@@ -375,9 +376,9 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
   defp text_block_delta_block(map, type) do
     %{
       type: type,
-      index: ContentBlock.get(map, :index),
-      text: ContentBlock.get(map, :text),
-      raw_provider_block: ContentBlock.get(map, :raw_provider_block)
+      index: get(map, :index),
+      text: get(map, :text),
+      raw_provider_block: get(map, :raw_provider_block)
     }
     |> MapShape.reject_nil_values()
   end
@@ -385,7 +386,7 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
   defp json_block(map) do
     %{
       type: :json,
-      json: ContentBlock.get(map, :json) || ContentBlock.get(map, :data)
+      json: get(map, :json) || get(map, :data)
     }
     |> MapShape.reject_nil_values()
   end
@@ -393,18 +394,18 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
   defp guard_content_block(map) do
     %{
       type: :guard_content,
-      guard_content: project_guard_content(ContentBlock.get(map, :guard_content))
+      guard_content: project_guard_content(get(map, :guard_content))
     }
     |> MapShape.reject_nil_values()
   end
 
   defp media_block(map) do
-    mime_type = ContentBlock.get(map, :mime_type)
-    data = ContentBlock.get(map, :data)
+    mime_type = get(map, :mime_type)
+    data = get(map, :data)
 
     if is_binary(mime_type) and String.starts_with?(mime_type, "image/") do
       ContentBlock.image(%{
-        data: encode_binary_data(data),
+        data: if(is_binary(data), do: Base.encode64(data), else: data),
         mime_type: mime_type,
         metadata: metadata(map)
       })
@@ -416,10 +417,10 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
   defp refusal_block(map) do
     %{
       type: :refusal,
-      id: ContentBlock.get(map, :id),
-      refusal: ContentBlock.get(map, :refusal),
+      id: get(map, :id),
+      refusal: get(map, :refusal),
       metadata: non_empty_metadata(map),
-      raw_provider_block: ContentBlock.get(map, :raw_provider_block)
+      raw_provider_block: get(map, :raw_provider_block)
     }
     |> MapShape.reject_nil_values()
   end
@@ -427,19 +428,19 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
   defp provider_output_block(map, type) do
     %{
       type: type,
-      id: ContentBlock.get(map, :id),
-      status: ContentBlock.get(map, :status),
-      queries: ContentBlock.get(map, :queries),
-      results: ContentBlock.get(map, :results),
-      result: ContentBlock.get(map, :result),
-      action: ContentBlock.get(map, :action),
-      container_id: ContentBlock.get(map, :container_id),
-      tools: ContentBlock.get(map, :tools),
-      execution: ContentBlock.get(map, :execution),
-      output: ContentBlock.get(map, :output),
-      call_id: ContentBlock.get(map, :call_id),
-      name: ContentBlock.get(map, :name),
-      raw_provider_block: ContentBlock.get(map, :raw_provider_block) || raw_provider_block(map)
+      id: get(map, :id),
+      status: get(map, :status),
+      queries: get(map, :queries),
+      results: get(map, :results),
+      result: get(map, :result),
+      action: get(map, :action),
+      container_id: get(map, :container_id),
+      tools: get(map, :tools),
+      execution: get(map, :execution),
+      output: get(map, :output),
+      call_id: get(map, :call_id),
+      name: get(map, :name),
+      raw_provider_block: get(map, :raw_provider_block) || map
     }
     |> MapShape.reject_nil_values()
   end
@@ -451,58 +452,33 @@ defmodule BeamWeaver.Core.ContentBlock.Normalizer do
     end
   end
 
-  defp provider_image_bytes?(map) do
-    image = ContentBlock.get(map, :image)
-    source = if is_map(image), do: ContentBlock.get(image, :source), else: nil
-
-    is_map(source) and is_binary(ContentBlock.get(source, :bytes))
-  end
-
+  # An image given as raw bytes under `image.source.bytes`, or nil.
   defp provider_image_bytes_block(map) do
-    image = ContentBlock.get(map, :image)
-    source = ContentBlock.get(image, :source)
-    format = ContentBlock.get(image, :format) || "jpeg"
-
-    ContentBlock.image(%{
-      data: Base.encode64(ContentBlock.get(source, :bytes)),
-      mime_type: "image/#{format}",
-      metadata: metadata(map)
-    })
+    with %{} = image <- get(map, :image),
+         %{} = source <- get(image, :source),
+         bytes when is_binary(bytes) <- get(source, :bytes) do
+      ContentBlock.image(%{
+        data: Base.encode64(bytes),
+        mime_type: "image/#{get(image, :format) || "jpeg"}",
+        metadata: metadata(map)
+      })
+    else
+      _other -> nil
+    end
   end
 
-  defp raw_provider_block(%{} = map), do: map
+  defp thought_signature(map), do: signature(map) || signature(metadata(map))
 
-  defp thought_signature(map) when is_map(map) do
-    ContentBlock.get(map, :thought_signature) ||
-      Map.get(map, "thoughtSignature") ||
-      Map.get(map, :thoughtSignature) ||
-      metadata_thought_signature(metadata(map))
-  end
+  defp signature(map) when is_map(map),
+    do: get(map, :thought_signature) || Map.get(map, "thoughtSignature") || Map.get(map, :thoughtSignature)
 
-  defp metadata_thought_signature(metadata) when is_map(metadata) do
-    ContentBlock.get(metadata, :thought_signature) ||
-      Map.get(metadata, "thoughtSignature") ||
-      Map.get(metadata, :thoughtSignature)
-  end
-
-  defp metadata_thought_signature(_metadata), do: nil
-
-  defp put_metadata_thought_signature(metadata, nil), do: metadata
-
-  defp put_metadata_thought_signature(metadata, signature) when is_binary(signature) and signature != "" do
-    Map.put(metadata, :thought_signature, signature)
-  end
-
-  defp put_metadata_thought_signature(metadata, _signature), do: metadata
-
-  defp encode_binary_data(data) when is_binary(data), do: Base.encode64(data)
-  defp encode_binary_data(data), do: data
+  defp signature(_value), do: nil
 
   defp project_guard_content(%{} = guard_content) do
     %{
-      text: ContentBlock.get(guard_content, :text),
-      type: ContentBlock.get(guard_content, :type),
-      raw_provider_block: raw_provider_block(guard_content)
+      text: get(guard_content, :text),
+      type: get(guard_content, :type),
+      raw_provider_block: guard_content
     }
     |> MapShape.reject_nil_values()
   end

@@ -21,13 +21,10 @@ defmodule BeamWeaver.Agent.MiddlewareHelpersTest do
   test "offload helpers sanitize ids, preview content, and preserve media blocks" do
     assert Offload.sanitize_tool_call_id("call/1.2\\3") == "call_1_2_3"
 
-    preview =
-      1..12
-      |> Enum.map_join("\n", &"line #{&1}")
-      |> Offload.content_preview(2, 2)
+    {preview, _notes} = 1..12 |> Enum.map_join("\n", &"line #{&1}") |> Offload.preview()
 
     assert preview =~ "     1\tline 1"
-    assert preview =~ "... [8 lines truncated] ..."
+    assert preview =~ "... [2 lines truncated] ..."
     assert preview =~ "    12\tline 12"
 
     message =

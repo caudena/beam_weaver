@@ -50,6 +50,14 @@ defmodule BeamWeaver.Agent.StructuredOutputStrategyTest do
     response_format(StructuredOutput.provider(@schema, strict: true))
   end
 
+  defmodule Ticket do
+    use BeamWeaver.Schema
+
+    title "ticket"
+    field :summary, :string
+    field :priority, :string, enum: ["low", "high"], nullable: true
+  end
+
   test "tool strategy keeps schema specs and optional tool-message content" do
     strategy = StructuredOutput.tool(@person_schema)
 
@@ -584,6 +592,30 @@ defmodule BeamWeaver.Agent.StructuredOutputStrategyTest do
     File.rm_rf(tmp_dir)
   end
 
+  test "provider and tool strategies keep nil in a nullable field's enum" do
+    messages = [Message.user("Triage the ticket.")]
+    provider_opts = StructuredOutput.provider_opts(StructuredOutput.provider(Ticket))
+    tool_opts = [tools: StructuredOutput.setup_tools(StructuredOutput.tool(Ticket))]
+
+    for module <- [
+          BeamWeaver.OpenAI.ChatModel,
+          BeamWeaver.OpenAI.ChatCompletionsModel,
+          BeamWeaver.Anthropic.ChatModel,
+          BeamWeaver.Google.ChatModel,
+          BeamWeaver.XAI.ChatModel,
+          BeamWeaver.XAI.ChatCompletionsModel
+        ],
+        {strategy, opts} <- [provider: provider_opts, tool: tool_opts] do
+      assert {:ok, body} = module.request_body(module.new([]), messages, opts)
+      assert priority_enums(body) == [["low", "high", nil]], "#{inspect(module)} #{strategy}"
+    end
+
+    spec = StructuredOutput.schema_spec(Ticket)
+
+    assert {:ok, %{"priority" => nil}} =
+             BeamWeaver.Agent.StructuredOutput.Validation.parse(spec, %{"summary" => "Refund", "priority" => nil})
+  end
+
   test "a null under a required key passes when the property's type allows null" do
     schema = %{
       "type" => "object",
@@ -615,4 +647,9 @@ defmodule BeamWeaver.Agent.StructuredOutputStrategyTest do
                "count" => nil
              })
   end
+
+  defp priority_enums(%{"properties" => %{"priority" => %{"enum" => enum}}}), do: [enum]
+  defp priority_enums(%{} = map) when not is_struct(map), do: Enum.flat_map(Map.values(map), &priority_enums/1)
+  defp priority_enums(list) when is_list(list), do: Enum.flat_map(list, &priority_enums/1)
+  defp priority_enums(_value), do: []
 end

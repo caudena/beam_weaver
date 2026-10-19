@@ -130,7 +130,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest.InputEchoStructuredModel do
 end
 
 defmodule BeamWeaver.AgentCapabilitiesTest.ChildStateRecorderMiddleware do
-  @behaviour BeamWeaver.Agent.Middleware
+  use BeamWeaver.Agent.Middleware
 
   alias BeamWeaver.Agent.ModelRequest
 
@@ -141,6 +141,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest.ChildStateRecorderMiddleware do
   @impl true
   def name(_middleware), do: :child_state_recorder
 
+  @impl true
   def wrap_model_call(%__MODULE__{parent: parent}, %ModelRequest{state: state} = request, handler) do
     if parent, do: send(parent, {:child_subagent_state, state})
     handler.(request)
@@ -165,6 +166,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
   alias BeamWeaver.Agent.Subagent.AsyncSpec
   alias BeamWeaver.Agent.Subagent.Spec
   alias BeamWeaver.Agent.ToolCallRequest
+  alias BeamWeaver.Agent.ToolNode
   alias BeamWeaver.Checkpoint
   alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Message
@@ -173,6 +175,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
   alias BeamWeaver.Core.ToolRuntime
   alias BeamWeaver.Filesystem
   alias BeamWeaver.Filesystem.Composite
+  alias BeamWeaver.Filesystem.FileDataUtils
   alias BeamWeaver.Filesystem.Local
   alias BeamWeaver.Filesystem.LocalShell
   alias BeamWeaver.Filesystem.Permission
@@ -181,13 +184,10 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
   alias BeamWeaver.Graph
   alias BeamWeaver.Graph.Command
   alias BeamWeaver.Graph.ExecutionInfo
-  alias BeamWeaver.Graph.MessagesReducer
-  alias BeamWeaver.Graph.Nodes.ToolNode
   alias BeamWeaver.Graph.Overwrite
   alias BeamWeaver.Graph.Runtime
   alias BeamWeaver.Models.FakeChatModel
   alias BeamWeaver.Tools.Filesystem, as: FilesystemTools
-  alias BeamWeaver.Tools.Helpers, as: DeepAgentTools
   alias BeamWeaver.Tools.Subagents, as: SubagentTools
   alias BeamWeaver.Tools.Todo, as: TodoTools
 
@@ -267,17 +267,6 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     assert {:ok, _result} = Agent.invoke(agent, %{messages: [%{role: "user", content: "hello"}]})
   end
 
-  test "project version exposes the BeamWeaver package version" do
-    assert is_binary(Mix.Project.config()[:version])
-  end
-
-  test "graph defaults expose base prompt and mandatory-model decision" do
-    assert BeamWeaver.Agent.Defaults.base_agent_prompt() =~ "You are a DeepAgent"
-
-    assert {:error, error} = BeamWeaver.Agent.Defaults.get_default_model()
-    assert error.message =~ "requires a :model option"
-  end
-
   test "model helpers resolve string specs and inspect identifiers" do
     model = %FakeChatModel{response: "done"}
 
@@ -286,41 +275,12 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     assert {:ok, %FakeChatModel{response: "from spec"} = resolved} =
              DeepAgentModels.resolve_model("fake:chat", response: "from spec")
 
-    assert DeepAgentModels.get_model_identifier(%{model_name: "preferred", model: "fallback"}) ==
+    assert BeamWeaver.Models.Identity.identifier(%{model_name: "preferred", model: "fallback"}) ==
              "preferred"
 
-    assert DeepAgentModels.get_model_identifier(%{model: "fallback"}) == "fallback"
-    assert DeepAgentModels.get_model_identifier(resolved) == "chat"
-    assert DeepAgentModels.get_model_provider(resolved) == "fake"
-    assert DeepAgentModels.model_matches_spec(resolved, "fake:chat")
-    refute DeepAgentModels.model_matches_spec(resolved, "openai:gpt-5")
-  end
-
-  test "tool helpers copy supported tools and apply description overrides" do
-    tool =
-      Tool.from_function!(
-        name: "lookup",
-        description: "old",
-        input_schema: %{"type" => "object", "properties" => %{}},
-        handler: fn _input, _opts -> "ok" end
-      )
-
-    map_tool = %{name: "search", description: "old map"}
-    callable = fn -> :ok end
-
-    assert DeepAgentTools.tool_name(tool) == "lookup"
-    assert DeepAgentTools.tool_name(map_tool) == "search"
-    assert DeepAgentTools.tool_name(callable) == nil
-
-    rewritten =
-      DeepAgentTools.apply_tool_description_overrides([tool, map_tool, callable], %{
-        "lookup" => "new",
-        search: "new map"
-      })
-
-    assert [%Tool{description: "new"}, %{description: "new map"}, ^callable] = rewritten
-    assert tool.description == "old"
-    assert map_tool.description == "old map"
+    assert BeamWeaver.Models.Identity.identifier(%{model: "fallback"}) == "fallback"
+    assert BeamWeaver.Models.Identity.identifier(resolved) == "chat"
+    assert BeamWeaver.Models.Identity.provider(resolved) == "fake"
   end
 
   test "built-in deep agent capabilities are composable toolkits" do
@@ -344,7 +304,6 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
              Agent.build(
                model: "fake:chat",
                model_opts: [response: "done"],
-               summarization: false,
                subagents: []
              )
 
@@ -352,31 +311,6 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
 
     assert {:ok, %{messages: [_user, %Message{content: "done"}]}} =
              Agent.invoke(agent, %{messages: [Message.user("hello")]})
-  end
-
-  test "DeepAgents messages reducer assigns ids, deduplicates, and resets on remove-all" do
-    existing = [Message.assistant("hello", id: "existing-1")]
-    follow_up = Message.user("follow-up")
-
-    assert [first, second] = MessagesReducer.delta_reducer(existing, [[follow_up]])
-    assert first.id == "existing-1"
-    assert second.content == "follow-up"
-    assert is_binary(second.id)
-
-    assert [^first, updated] =
-             MessagesReducer.delta_reducer(
-               [first, second],
-               [Message.user("updated", id: second.id)]
-             )
-
-    assert updated.content == "updated"
-    assert updated.id == second.id
-
-    assert [%Message{role: :system, content: "new"}] =
-             MessagesReducer.delta_reducer([first, second], [
-               MessagesReducer.remove_all(),
-               Message.system("new")
-             ])
   end
 
   test "state backend writes, reads, edits, globs, and greps virtual files" do
@@ -405,10 +339,10 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
              State.grep(backend, "thread", state: state)
   end
 
-  test "backend protocol exposes async functions and raw grep formatting" do
+  test "backend protocol exposes reads and raw grep formatting" do
     backend = State.new()
 
-    assert BeamWeaver.Filesystem.Backend.impl_for(backend)
+    assert BeamWeaver.Filesystem.backend?(backend)
 
     assert %Filesystem.WriteResult{files_update: files} =
              Filesystem.write(backend, "/notes/a.txt", "hello\nneedle", state: %{})
@@ -416,65 +350,12 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     state = %{files: files}
 
     assert %Filesystem.ReadResult{file_data: %Filesystem.FileData{content: "hello\nneedle"}} =
-             backend
-             |> Filesystem.async_read("/notes/a.txt", state: state)
-             |> Task.await()
+             Filesystem.read(backend, "/notes/a.txt", state: state)
 
     assert %Filesystem.LsResult{entries: [%Filesystem.FileInfo{path: "/notes"}]} =
-             Filesystem.ls_info(backend, "/", state: state)
+             Filesystem.ls(backend, "/", state: state)
 
     assert Filesystem.grep_raw(backend, "needle", state: state) == "/notes/a.txt:2:needle"
-  end
-
-  test "backend utility helpers expose DeepAgents-compatible formatting and data helpers" do
-    assert BeamWeaver.Filesystem.Utils.empty_content_warning() =~ "empty contents"
-    assert BeamWeaver.Filesystem.Utils.check_empty_content("  ") =~ "empty contents"
-    assert BeamWeaver.Filesystem.Utils.sanitize_tool_call_id("a.b/c\\d") == "a_b_c_d"
-    assert BeamWeaver.Filesystem.Utils.to_posix_path("a\\b") == "a/b"
-    assert BeamWeaver.Filesystem.Utils.validate_path("notes/./a.txt") == "/notes/a.txt"
-
-    assert_raise ArgumentError, ~r/Path traversal not allowed/, fn ->
-      BeamWeaver.Filesystem.Utils.validate_path("../secret")
-    end
-
-    data = BeamWeaver.Filesystem.Utils.create_file_data("hello")
-    assert %Filesystem.FileData{content: "hello", encoding: "utf-8"} = data
-
-    updated = BeamWeaver.Filesystem.Utils.update_file_data(data, "updated")
-    assert updated.content == "updated"
-    assert updated.created_at == data.created_at
-    assert updated.modified_at != nil
-
-    assert BeamWeaver.Filesystem.Utils.slice_read_response(updated, 0, 1) == "updated"
-
-    assert BeamWeaver.Filesystem.Utils.file_data_to_string(%{"content" => ["a", "b"]}) ==
-             "a\nb"
-
-    formatted =
-      BeamWeaver.Filesystem.Utils.format_content_with_line_numbers("abcdef",
-        max_line_length: 3
-      )
-
-    assert formatted == "     1\tabc\n   1.1\tdef"
-
-    matches = [
-      %Filesystem.GrepMatch{path: "/a.txt", line: 1, text: "needle"},
-      %Filesystem.GrepMatch{path: "/a.txt", line: 2, text: "needle again"}
-    ]
-
-    assert BeamWeaver.Filesystem.Utils.format_grep_matches(matches, :count) ==
-             "/a.txt: 2"
-
-    assert %Filesystem.GrepResult{matches: [%Filesystem.GrepMatch{text: "hello"}]} =
-             BeamWeaver.Filesystem.Utils.grep_matches_from_files(
-               %{"/a.txt" => data},
-               "hello"
-             )
-
-    assert BeamWeaver.Filesystem.Utils.truncate_if_too_long(["abcdef", "gh"], 4) == [
-             "abcdef",
-             BeamWeaver.Filesystem.Utils.truncation_guidance()
-           ]
   end
 
   test "store backend persists uploads and supports runtime namespace factories" do
@@ -527,6 +408,75 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
              })
 
     assert %Filesystem.FileData{content: "ship it"} = files["/work/plan.md"]
+  end
+
+  describe "file changes made in one model turn" do
+    test "to different files all apply" do
+      files = %{"/a.md" => "old a\n", "/b.md" => "old b\n"}
+      first = {"edit_file", %{"file_path" => "/a.md", "old_string" => "old a", "new_string" => "new a"}}
+
+      for {second, path, content} <- [
+            {{"edit_file", %{"file_path" => "/b.md", "old_string" => "old b", "new_string" => "new b"}}, "/b.md",
+             "new b\n"},
+            {{"write_file", %{"file_path" => "/c.md", "content" => "new c"}}, "/c.md", "new c"}
+          ] do
+        agent = file_agent([FakeChatModel.tool_calls([first, second]), "Done."])
+
+        assert {:ok, result} = Agent.invoke(agent, %{messages: ["Update the notes."], files: files})
+        assert file_text(result, "/a.md") == "new a\n"
+        assert file_text(result, path) == content
+      end
+    end
+
+    test "to the same file: only the first applies, and the others are refused" do
+      calls = [
+        {"edit_file", %{"file_path" => "/a.md", "old_string" => "old a", "new_string" => "first"}},
+        {"edit_file", %{"file_path" => "/./a.md", "old_string" => "old a", "new_string" => "second"}},
+        {"write_file", %{"file_path" => "/a.md", "content" => "third"}}
+      ]
+
+      agent = file_agent([FakeChatModel.tool_calls(calls), "Done."])
+
+      assert {:ok, result} = Agent.invoke(agent, %{messages: ["Update the notes."], files: %{"/a.md" => "old a\n"}})
+      assert file_text(result, "/a.md") == "first\n"
+
+      assert [edited, refused, refused] =
+               for(%Message{role: :tool} = message <- result.messages, do: Message.text(message))
+
+      assert edited =~ "Edited /a.md"
+      assert refused =~ "parallel file changes to the same path"
+    end
+  end
+
+  test "state backend edits return only the file they change" do
+    files = %{"/a.md" => FileDataUtils.file_data("a"), "/b.md" => FileDataUtils.file_data("b")}
+
+    assert %Filesystem.EditResult{files_update: update} =
+             State.edit(State.new(), "/a.md", "a", "A", state: %{files: files})
+
+    assert Map.keys(update) == ["/a.md"]
+
+    assert %Filesystem.WriteResult{files_update: update} =
+             State.write(State.new(), "/c.md", "c", state: %{files: files})
+
+    assert Map.keys(update) == ["/c.md"]
+  end
+
+  test "tool call normalization gives calls without an id one no other call of the thread has" do
+    reply = Message.assistant("", tool_calls: [%{name: "lookup", args: %{}}, %{name: "lookup", args: %{}}])
+    handler = fn _request -> {:ok, %ModelResponse{messages: [reply]}} end
+    middleware = Middleware.ToolCallNormalization.new()
+
+    ids =
+      for _turn <- 1..2,
+          {:ok, %ModelResponse{messages: [patched]}} =
+            Middleware.ToolCallNormalization.wrap_model_call(middleware, ModelRequest.new([]), handler),
+          call <- patched.tool_calls,
+          do: call.id
+
+    assert length(ids) == 4
+    assert ids == Enum.uniq(ids)
+    assert Enum.all?(ids, &(&1 =~ ~r/^[A-Za-z0-9_-]{1,64}$/))
   end
 
   test "filesystem permissions deny matching operations before backend access" do
@@ -610,7 +560,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
 
   test "filesystem middleware injects filesystem and execution instructions" do
     middleware = Middleware.Filesystem.new(backend: LocalShell.new(root: tmp_root()))
-    request = ModelRequest.new(system_prompt: "base")
+    request = ModelRequest.new(system_prompt: "base", tools: Middleware.Filesystem.tools(middleware))
 
     assert %ModelRequest{system_message: %Message{content: prompt}} =
              Middleware.Filesystem.wrap_model_call(middleware, request, & &1)
@@ -839,7 +789,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
              Middleware.CompactConversation.before_model(middleware, state, %{})
 
     assert {:ok, [summary | recent]} = Overwrite.get(overwrite)
-    assert %Message{role: :user, content: "Conversation summary:\nshort summary"} = summary
+    assert %Message{role: :user, content: "Conversation summary:\nshort summary\n\n" <> _saved_to} = summary
 
     assert [
              %Message{role: :assistant, tool_calls: [%ToolCall{id: "call-1"}]},
@@ -917,15 +867,17 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     assert content =~ "Nothing to compact"
   end
 
-  test "compact conversation middleware injects the compact tool prompt" do
-    middleware = Middleware.CompactConversation.new(model: %FakeChatModel{response: "ok"})
+  test "compact conversation middleware adds a prompt section only when given one" do
     request = ModelRequest.new(system_prompt: "base")
+    middleware = Middleware.CompactConversation.new(model: %FakeChatModel{response: "ok"})
 
-    assert %ModelRequest{system_message: %Message{content: prompt}} =
+    assert %ModelRequest{system_message: %Message{content: "base"}} =
              Middleware.CompactConversation.wrap_model_call(middleware, request, & &1)
 
-    assert prompt =~ "base"
-    assert prompt =~ "compact_conversation"
+    middleware = %{middleware | system_prompt: "Compact between tasks."}
+
+    assert %ModelRequest{system_message: %Message{content: "base\n\nCompact between tasks."}} =
+             Middleware.CompactConversation.wrap_model_call(middleware, request, & &1)
   end
 
   test "prompt caching middleware marks Anthropic system prompt only" do
@@ -1003,10 +955,9 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
                  table: table,
                  parent: self()
                },
-               backend: State.new(),
-               overflow_clip: [keep: {:tokens, 1}],
-               subagents: [],
-               summarization: true
+               filesystem: State.new(),
+               overflow_recovery: [keep: {:tokens, 1}],
+               subagents: []
              )
 
     messages = [
@@ -1036,7 +987,8 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
 
   test "composite backend preserves routed virtual path prefixes in results" do
     files = %{
-      "/note.txt" => %Filesystem.FileData{content: "hello\nneedle", encoding: "utf-8"}
+      "/workspace/note.txt" => %Filesystem.FileData{content: "hello\nneedle", encoding: "utf-8"},
+      "/root.txt" => %Filesystem.FileData{content: "needle at the root", encoding: "utf-8"}
     }
 
     backend =
@@ -1066,7 +1018,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
       )
 
     assert BeamWeaver.Filesystem.Executable.executable?(backend)
-    assert BeamWeaver.Filesystem.ExecutableBackend.impl_for(backend)
+    assert BeamWeaver.Filesystem.Executable.executable?(backend)
 
     assert %BeamWeaver.Filesystem.Executable.ExecuteResult{
              exit_code: 0,
@@ -1096,13 +1048,13 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     refute "execute" in tool_names
   end
 
-  test "filesystem backend blocks symlink escapes and lists missing directories as empty" do
+  test "filesystem backend blocks symlink escapes and reports a missing directory" do
     root = tmp_root()
     outside = tmp_root()
     File.write!(Path.join(outside, "secret.txt"), "secret")
     backend = Local.new(root: root)
 
-    assert %Filesystem.LsResult{entries: []} = Filesystem.ls(backend, "/missing")
+    assert %Filesystem.LsResult{error: "file_not_found"} = Filesystem.ls(backend, "/missing")
 
     case File.ln_s(Path.join(outside, "secret.txt"), Path.join(root, "secret-link.txt")) do
       :ok ->
@@ -1315,6 +1267,13 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
            } = CapabilityProfileConfig.to_capability_profile(config)
   end
 
+  test "materialize_extra_middleware wraps lists and calls zero-arity factories" do
+    assert CapabilityProfile.materialize_extra_middleware(CapabilityProfile.new(middleware: :one)) == [:one]
+
+    factory = CapabilityProfile.new(middleware: fn -> [:built] end)
+    assert CapabilityProfile.materialize_extra_middleware(factory) == [:built]
+  end
+
   test "system prompt config sets the model-visible prompt" do
     assert {:ok, agent} =
              Agent.build(
@@ -1367,7 +1326,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     parent = self()
 
     assert_raise ArgumentError, fn ->
-      ProviderProfile.register_provider_profile("#{provider}:bad:shape", ProviderProfile.new())
+      ProviderProfile.register_provider_profile("#{provider}:", ProviderProfile.new())
     end
 
     assert :ok =
@@ -1483,7 +1442,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
                args: %{"query" => "abcde\n\n... argument truncated at 5 bytes."}
              },
              %ToolCall{
-               id: "call_1",
+               id: "call_" <> _generated,
                name: "raw",
                args: %{"input" => "not j\n\n... argument truncated at 5 bytes."}
              }
@@ -1562,6 +1521,22 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     assert prompt =~ "/project/AGENTS.md\n\nProject memory"
     assert :binary.match(prompt, "/user/AGENTS.md") < :binary.match(prompt, "/project/AGENTS.md")
     assert user_pos == 2
+  end
+
+  test "memory middleware leaves an empty memory file out of the prompt" do
+    files = %{"/AGENTS.md" => %Filesystem.FileData{encoding: "utf-8", content: ""}}
+    middleware = Middleware.Memory.new(backend: State.new(), memory: ["/AGENTS.md"])
+
+    assert %{memory_contents: contents} = Middleware.Memory.before_model(middleware, %{files: files}, %{})
+    assert contents == %{}
+
+    request = ModelRequest.new(state: %{memory_contents: contents})
+
+    assert %ModelRequest{system_message: %Message{content: prompt}} =
+             Middleware.Memory.wrap_model_call(middleware, request, & &1)
+
+    assert prompt =~ "(No memory loaded)"
+    refute prompt =~ "empty contents"
   end
 
   test "memory middleware passes runtime to store-backed namespace factories" do
@@ -1659,9 +1634,20 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     assert prompt =~ "Read `/skills/project/research/SKILL.md`"
   end
 
+  test "skills middleware names a top-level skills folder once" do
+    middleware = Middleware.Skills.new(skills: ["/skills"])
+    request = ModelRequest.new(state: %{skills_metadata: [], skills_load_errors: []})
+
+    assert %ModelRequest{system_message: %Message{content: prompt}} =
+             Middleware.Skills.wrap_model_call(middleware, request, & &1)
+
+    assert prompt =~ "**Skills**: `/skills` (higher priority)"
+    refute prompt =~ "Skills Skills"
+  end
+
   test "task subagent forwards non-private parent state and returns merge command" do
-    middleware =
-      Middleware.Subagents.new(
+    task_tool =
+      task_tool(
         model: %FakeChatModel{response: "child done", parent: self()},
         subagents: [
           %Spec{
@@ -1671,8 +1657,6 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
           }
         ]
       )
-
-    task_tool = middleware |> Middleware.Subagents.tools() |> hd()
 
     parent_state = %{
       messages: [Message.user("parent message")],
@@ -1713,8 +1697,8 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
   end
 
   test "task subagent accepts subagent_type and child agents get DeepAgents base tools" do
-    middleware =
-      Middleware.Subagents.new(
+    task_tool =
+      task_tool(
         model: %FakeChatModel{response: "typed child done", parent: self()},
         summarization: false,
         subagents: [
@@ -1727,8 +1711,6 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
         ]
       )
 
-    task_tool = middleware |> Middleware.Subagents.tools() |> hd()
-
     assert {:ok, %Command{update: %{messages: [%Message{content: "typed child done"}]}}} =
              Tool.invoke(task_tool, %{
                "subagent_type" => "worker",
@@ -1740,14 +1722,14 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     assert_receive {:fake_chat_model_call, _messages, opts}
     tool_names = opts |> Keyword.fetch!(:tools) |> Enum.map(&Tool.name/1)
 
-    assert "write_todos" in tool_names
+    refute "write_todos" in tool_names
     assert "read_file" in tool_names
     assert "write_file" in tool_names
   end
 
   test "task subagent can inherit parent messages without copying them through task input" do
-    middleware =
-      Middleware.Subagents.new(
+    task_tool =
+      task_tool(
         model: %FakeChatModel{response: "child saw context", parent: self()},
         summarization: false,
         compact_conversation: false,
@@ -1762,8 +1744,6 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
         ]
       )
 
-    task_tool = middleware |> Middleware.Subagents.tools() |> hd()
-
     assert {:ok, %Command{update: %{messages: [%Message{content: "child saw context"}]}}} =
              Tool.invoke(task_tool, %{
                "subagent_type" => "worker",
@@ -1774,12 +1754,57 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
 
     assert_receive {:fake_chat_model_call, messages, _opts}
     assert Enum.any?(messages, &match?(%Message{role: :user, content: "parent source context"}, &1))
-    assert Enum.any?(messages, &match?(%Message{role: :user, content: "use the inherited source context"}, &1))
+
+    # The task follows a note that the conversation above is the parent's,
+    # which the subagent continues.
+    assert %Message{role: :user, content: task} = List.last(messages)
+    assert task =~ ~r/^\[The messages above are the conversation so far, which you continue as the subagent/
+    assert String.ends_with?(task, "Your task is below.]\n\nuse the inherited source context")
+  end
+
+  test "the task tool's list marks the subagents that see the parent's conversation" do
+    middleware =
+      Middleware.Subagents.new(
+        model: %FakeChatModel{response: "done"},
+        subagents: [
+          %Spec{name: "worker", description: "Works on the case.", inherit_messages: true},
+          %Spec{name: "researcher", description: "Researches."}
+        ]
+      )
+
+    description = middleware |> Middleware.Subagents.tools() |> hd() |> Map.fetch!(:description)
+
+    assert description =~
+             "- worker: Works on the case. (sees your conversation so far, without tool calls and their results: no need to repeat it in the description)\n"
+
+    assert description =~ "- researcher: Researches.\n"
+    assert description =~ "Each call is stateless, unless the agent's line says it sees your conversation:"
+  end
+
+  test "a subagent that inherits an empty conversation gets the task alone" do
+    task_tool =
+      task_tool(
+        model: %FakeChatModel{response: "done", parent: self()},
+        summarization: false,
+        compact_conversation: false,
+        subagents: [%Spec{name: "worker", description: "Worker", inherit_messages: true, base_middleware: []}]
+      )
+
+    assert {:ok, _command} =
+             Tool.invoke(task_tool, %{
+               "subagent_type" => "worker",
+               "description" => "start fresh",
+               state: %{messages: []},
+               tool_call_id: "call-empty"
+             })
+
+    assert_receive {:fake_chat_model_call, messages, _opts}
+    assert [%Message{role: :user, content: "start fresh"}] = Enum.reject(messages, &(&1.role == :system))
   end
 
   test "inherited subagent messages exclude parent tool protocol messages" do
-    middleware =
-      Middleware.Subagents.new(
+    task_tool =
+      task_tool(
         model: %FakeChatModel{response: "child saw clean context", parent: self()},
         summarization: false,
         compact_conversation: false,
@@ -1793,8 +1818,6 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
           }
         ]
       )
-
-    task_tool = middleware |> Middleware.Subagents.tools() |> hd()
 
     parent_call =
       BeamWeaver.Core.Messages.tool_call(
@@ -1822,10 +1845,10 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     assert Enum.any?(messages, &match?(%Message{role: :user, content: "parent source context"}, &1))
     assert Enum.any?(messages, &match?(%Message{role: :assistant, content: "stable parent answer"}, &1))
 
-    assert Enum.any?(
-             messages,
-             &match?(%Message{role: :user, content: "use inherited context without parent task protocol"}, &1)
-           )
+    assert messages
+           |> List.last()
+           |> Message.text()
+           |> String.ends_with?("use inherited context without parent task protocol")
 
     refute Enum.any?(messages, &match?(%Message{role: :tool}, &1))
 
@@ -1836,8 +1859,8 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
   end
 
   test "captured task subagent stores structured output and returns a compact ack" do
-    middleware =
-      Middleware.Subagents.new(
+    task_tool =
+      task_tool(
         model: %FakeChatModel{
           structured_response: %{"answer" => "42", "facts" => [%{"label" => "budget", "value" => "known"}]},
           profile: %{structured_output: true},
@@ -1846,20 +1869,9 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
         summarization: false,
         compact_conversation: false,
         subagents: [
-          %Spec{
-            name: "worker",
-            description: "Worker",
-            system_prompt: "You are a worker.",
-            response_format: worker_output_schema(),
-            capture_output: :worker_output,
-            execution_mode: :structured_once,
-            base_middleware: [],
-            tools: []
-          }
+          captured_worker()
         ]
       )
-
-    task_tool = middleware |> Middleware.Subagents.tools() |> hd()
 
     assert {:ok, %Command{update: update}} =
              Tool.invoke(task_tool, %{
@@ -1878,7 +1890,9 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
 
     assert [%Message{content: content, metadata: metadata}] = update.messages
 
-    assert content == "{}"
+    assert content ==
+             ~s(The worker subagent finished the task. Its answer was saved as "worker_output" and is not shown here.)
+
     refute content =~ "budget"
     assert metadata.capture_key == "worker_output"
     assert metadata.cache_hit == false
@@ -1891,36 +1905,27 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
   end
 
   test "parallel captured task calls preserve all captured outputs" do
-    middleware =
-      Middleware.Subagents.new(
+    task_tool =
+      task_tool(
         model: %BeamWeaver.AgentCapabilitiesTest.InputEchoStructuredModel{parent: self()},
         summarization: false,
         compact_conversation: false,
         subagents: [
-          %Spec{
+          captured_worker(
             name: "first_worker",
             description: "First worker",
             system_prompt: "You are the first worker.",
-            response_format: worker_output_schema(),
-            capture_output: :first_output,
-            execution_mode: :structured_once,
-            base_middleware: [],
-            tools: []
-          },
-          %Spec{
+            capture_output: :first_output
+          ),
+          captured_worker(
             name: "second_worker",
             description: "Second worker",
             system_prompt: "You are the second worker.",
-            response_format: worker_output_schema(),
-            capture_output: :second_output,
-            execution_mode: :structured_once,
-            base_middleware: [],
-            tools: []
-          }
+            capture_output: :second_output
+          )
         ]
       )
 
-    task_tool = middleware |> Middleware.Subagents.tools() |> hd()
     node = ToolNode.new([task_tool], timeout: 30_000)
 
     first_call =
@@ -1937,15 +1942,16 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
         args: %{"subagent_type" => "second_worker", "description" => "second input"}
       )
 
-    assert %Command{update: update} =
+    # Each task's captured output is its own update, merged by the key's reducer.
+    assert [%Command{update: update} | captured] =
              ToolNode.invoke(%{node | timeout: 30_000}, %{
                messages: [Message.assistant("", tool_calls: [first_call, second_call])]
              })
 
-    assert update.subagent_outputs == %{
-             "first_output" => %{"answer" => "first", "facts" => []},
-             "second_output" => %{"answer" => "second", "facts" => []}
-           }
+    assert Enum.map(captured, & &1.subagent_outputs) == [
+             %{"first_output" => %{"answer" => "first", "facts" => []}},
+             %{"second_output" => %{"answer" => "second", "facts" => []}}
+           ]
 
     assert [
              %Message{content: first_ack, metadata: first_metadata},
@@ -1953,8 +1959,12 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
            ] =
              update.messages
 
-    assert first_ack == "{}"
-    assert second_ack == "{}"
+    assert first_ack ==
+             ~s(The first_worker subagent finished the task. Its answer was saved as "first_output" and is not shown here.)
+
+    assert second_ack ==
+             ~s(The second_worker subagent finished the task. Its answer was saved as "second_output" and is not shown here.)
+
     assert first_metadata.capture_key == "first_output"
     assert second_metadata.capture_key == "second_output"
 
@@ -1963,8 +1973,8 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
   end
 
   test "captured task subagent dedupes repeated calls by input hash" do
-    middleware =
-      Middleware.Subagents.new(
+    task_tool =
+      task_tool(
         model: %FakeChatModel{
           structured_response: %{"answer" => "cached", "facts" => []},
           profile: %{structured_output: true},
@@ -1973,20 +1983,10 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
         summarization: false,
         compact_conversation: false,
         subagents: [
-          %Spec{
-            name: "worker",
-            description: "Worker",
-            system_prompt: "You are a worker.",
-            response_format: worker_output_schema(),
-            capture_output: :worker_output,
-            execution_mode: :structured_once,
-            base_middleware: [],
-            tools: []
-          }
+          captured_worker()
         ]
       )
 
-    task_tool = middleware |> Middleware.Subagents.tools() |> hd()
     args = %{"subagent_type" => "worker", "description" => "same input"}
 
     assert {:ok, %Command{update: first_update}} =
@@ -2006,7 +2006,11 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
                })
              )
 
-    assert [%Message{content: "{}", metadata: metadata}] = second_update.messages
+    assert [%Message{content: content, metadata: metadata}] = second_update.messages
+
+    assert content ==
+             ~s(The worker subagent already finished this task. Its saved answer "worker_output" was reused and is not shown here.)
+
     assert metadata.cache_hit == true
     assert metadata.capture_key == "worker_output"
 
@@ -2014,26 +2018,15 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
   end
 
   test "captured task subagent cache keeps per-input snapshots when capture key is reused" do
-    middleware =
-      Middleware.Subagents.new(
+    task_tool =
+      task_tool(
         model: %BeamWeaver.AgentCapabilitiesTest.InputEchoStructuredModel{parent: self()},
         summarization: false,
         compact_conversation: false,
         subagents: [
-          %Spec{
-            name: "worker",
-            description: "Worker",
-            system_prompt: "You are a worker.",
-            response_format: worker_output_schema(),
-            capture_output: [key: :worker_output, parent_result: :full],
-            execution_mode: :structured_once,
-            base_middleware: [],
-            tools: []
-          }
+          captured_worker(capture_output: [key: :worker_output, parent_result: :full])
         ]
       )
-
-    task_tool = middleware |> Middleware.Subagents.tools() |> hd()
 
     assert {:ok, %Command{update: first_update}} =
              Tool.invoke(task_tool, %{
@@ -2080,29 +2073,18 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
   end
 
   test "task subagent does not inherit captured state restored with string keys" do
-    middleware =
-      Middleware.Subagents.new(
-        model: %FakeChatModel{structured_response: %{"answer" => "ok", "facts" => []}},
+    task_tool =
+      task_tool(
+        model: %FakeChatModel{
+          structured_response: %{"answer" => "ok", "facts" => []},
+          profile: %{structured_output: true}
+        },
         summarization: false,
         compact_conversation: false,
         subagents: [
-          %Spec{
-            name: "worker",
-            description: "Worker",
-            system_prompt: "You are a worker.",
-            response_format: worker_output_schema(),
-            capture_output: :worker_output,
-            execution_mode: :structured_once,
-            base_middleware: [],
-            tools: [],
-            middleware: [
-              {BeamWeaver.AgentCapabilitiesTest.ChildStateRecorderMiddleware, parent: self()}
-            ]
-          }
+          captured_worker(middleware: [{BeamWeaver.AgentCapabilitiesTest.ChildStateRecorderMiddleware, parent: self()}])
         ]
       )
-
-    task_tool = middleware |> Middleware.Subagents.tools() |> hd()
 
     assert {:ok, %Command{}} =
              Tool.invoke(task_tool, %{
@@ -2123,8 +2105,8 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
   end
 
   test "captured task subagent can preserve full parent result when requested" do
-    middleware =
-      Middleware.Subagents.new(
+    task_tool =
+      task_tool(
         model: %FakeChatModel{
           structured_response: %{"answer" => "full", "facts" => []},
           profile: %{structured_output: true}
@@ -2132,20 +2114,9 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
         summarization: false,
         compact_conversation: false,
         subagents: [
-          %Spec{
-            name: "worker",
-            description: "Worker",
-            system_prompt: "You are a worker.",
-            response_format: worker_output_schema(),
-            capture_output: [key: :worker_output, parent_result: :full],
-            execution_mode: :structured_once,
-            base_middleware: [],
-            tools: []
-          }
+          captured_worker(capture_output: [key: :worker_output, parent_result: :full])
         ]
       )
-
-    task_tool = middleware |> Middleware.Subagents.tools() |> hd()
 
     assert {:ok, %Command{update: %{messages: [%Message{content: content}], subagent_outputs: outputs}}} =
              Tool.invoke(task_tool, %{
@@ -2160,20 +2131,8 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
   end
 
   test "research_then_generate runs tool research before one structured generation pass" do
-    lookup =
-      Tool.from_function!(
-        name: "lookup",
-        description: "Lookup deal context.",
-        input_schema: %{
-          "type" => "object",
-          "required" => ["query"],
-          "properties" => %{"query" => %{"type" => "string"}}
-        },
-        handler: fn %{"query" => query}, _opts -> "lookup result for #{query}" end
-      )
-
-    middleware =
-      Middleware.Subagents.new(
+    task_tool =
+      task_tool(
         model: %BeamWeaver.AgentCapabilitiesTest.ResearchThenGenerateModel{parent: self()},
         summarization: false,
         compact_conversation: false,
@@ -2182,7 +2141,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
             name: "worker",
             description: "Worker",
             system_prompt: "You are a worker.",
-            tools: [lookup],
+            tools: [lookup_tool()],
             base_middleware: [:deepagents],
             response_format: BeamWeaver.Agent.StructuredOutput.provider(worker_output_schema()),
             capture_output: :worker_output,
@@ -2190,8 +2149,6 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
           }
         ]
       )
-
-    task_tool = middleware |> Middleware.Subagents.tools() |> hd()
 
     assert {:ok, %Command{update: %{messages: [%Message{content: ack, metadata: metadata}], subagent_outputs: outputs}}} =
              Tool.invoke(task_tool, %{
@@ -2201,13 +2158,15 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
                tool_call_id: "call-research-generate"
              })
 
-    assert ack == "{}"
+    assert ack ==
+             ~s(The worker subagent finished the task. Its answer was saved as "worker_output" and is not shown here.)
+
     assert metadata.capture_key == "worker_output"
     assert outputs["worker_output"] == %{"answer" => "generated", "facts" => []}
 
     assert_receive {:research_then_generate_call, [:system, :user], research_tools, false}
     assert "lookup" in research_tools
-    assert "write_todos" in research_tools
+    refute "write_todos" in research_tools
     assert "read_file" in research_tools
 
     assert_receive {:research_then_generate_call, [:system, :user, :assistant, :tool], research_tools, false}
@@ -2216,20 +2175,8 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
   end
 
   test "research_then_generate generate pass does not inherit parent transcript" do
-    lookup =
-      Tool.from_function!(
-        name: "lookup",
-        description: "Lookup deal context.",
-        input_schema: %{
-          "type" => "object",
-          "required" => ["query"],
-          "properties" => %{"query" => %{"type" => "string"}}
-        },
-        handler: fn %{"query" => query}, _opts -> "lookup result for #{query}" end
-      )
-
-    middleware =
-      Middleware.Subagents.new(
+    task_tool =
+      task_tool(
         model: %BeamWeaver.AgentCapabilitiesTest.ResearchThenGenerateModel{parent: self()},
         summarization: false,
         compact_conversation: false,
@@ -2238,7 +2185,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
             name: "worker",
             description: "Worker",
             system_prompt: "You are a worker.",
-            tools: [lookup],
+            tools: [lookup_tool()],
             response_format: BeamWeaver.Agent.StructuredOutput.provider(worker_output_schema()),
             capture_output: :worker_output,
             execution_mode: :research_then_generate,
@@ -2246,8 +2193,6 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
           }
         ]
       )
-
-    task_tool = middleware |> Middleware.Subagents.tools() |> hd()
 
     assert {:ok, %Command{update: %{subagent_outputs: outputs}}} =
              Tool.invoke(task_tool, %{
@@ -2265,8 +2210,8 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
   end
 
   test "subagent default composition has no implicit filesystem or todo tools" do
-    middleware =
-      Middleware.Subagents.new(
+    task_tool =
+      task_tool(
         model: %FakeChatModel{response: "plain child done", parent: self()},
         summarization: false,
         compact_conversation: false,
@@ -2280,8 +2225,6 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
         ]
       )
 
-    task_tool = middleware |> Middleware.Subagents.tools() |> hd()
-
     assert {:ok, %Command{update: %{messages: [%Message{content: "plain child done"}]}}} =
              Tool.invoke(task_tool, %{
                "subagent_type" => "worker",
@@ -2294,15 +2237,14 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     assert Keyword.fetch!(opts, :tools) == []
   end
 
-  test "task subagent preserves checkpoint config and writes under an isolated namespace" do
+  test "task subagent uses the run's checkpointer and writes under an isolated namespace" do
     checkpointer = Checkpoint.ETS.new()
 
-    middleware =
-      Middleware.Subagents.new(
+    task_tool =
+      task_tool(
         model: %FakeChatModel{response: "checkpointed child done"},
         summarization: false,
         compact_conversation: false,
-        checkpointer: checkpointer,
         subagents: [
           %Spec{
             name: "worker",
@@ -2312,8 +2254,6 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
         ]
       )
 
-    task_tool = middleware |> Middleware.Subagents.tools() |> hd()
-
     assert {:ok, %Command{update: %{messages: [%Message{content: "checkpointed child done"}]}}} =
              Tool.invoke(task_tool, %{
                "subagent_type" => "worker",
@@ -2322,6 +2262,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
                runtime: %{
                  node: "tools",
                  task_id: "tool-node-task",
+                 checkpointer: checkpointer,
                  config: %{
                    "configurable" => %{
                      "thread_id" => "subagent-thread",
@@ -2332,23 +2273,17 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
                tool_call_id: "call-task-checkpoint"
              })
 
-    records = Checkpoint.list(checkpointer, %{"configurable" => %{"thread_id" => "subagent-thread"}})
-    namespaces = Enum.map(records, &get_in(&1.config, ["configurable", "checkpoint_ns"]))
-
-    assert records != []
-    refute "" in namespaces
-    assert Enum.any?(namespaces, &String.contains?(&1, "subagent.worker"))
+    assert_subagent_checkpoints(checkpointer, "subagent-thread")
   end
 
   test "task subagent recovers checkpoint config from tool runtime execution info" do
     checkpointer = Checkpoint.ETS.new()
 
-    middleware =
-      Middleware.Subagents.new(
+    task_tool =
+      task_tool(
         model: %FakeChatModel{response: "checkpointed child done"},
         summarization: false,
         compact_conversation: false,
-        checkpointer: checkpointer,
         subagents: [
           %Spec{
             name: "worker",
@@ -2358,10 +2293,9 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
         ]
       )
 
-    task_tool = middleware |> Middleware.Subagents.tools() |> hd()
-
     tool_runtime = %ToolRuntime{
       config: %{"configurable" => %{}},
+      checkpointer: checkpointer,
       execution_info: %ExecutionInfo{
         thread_id: "subagent-execution-thread",
         checkpoint_ns: "",
@@ -2379,16 +2313,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
                tool_call_id: "call-task-checkpoint"
              })
 
-    records =
-      Checkpoint.list(checkpointer, %{
-        "configurable" => %{"thread_id" => "subagent-execution-thread"}
-      })
-
-    namespaces = Enum.map(records, &get_in(&1.config, ["configurable", "checkpoint_ns"]))
-
-    assert records != []
-    refute "" in namespaces
-    assert Enum.any?(namespaces, &String.contains?(&1, "subagent.worker"))
+    assert_subagent_checkpoints(checkpointer, "subagent-execution-thread")
   end
 
   test "task subagent parent command excludes child string-keyed messages and todos" do
@@ -2409,8 +2334,8 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
       compiled: child_graph
     }
 
-    middleware =
-      Middleware.Subagents.new(
+    task_tool =
+      task_tool(
         model: %FakeChatModel{response: "unused"},
         summarization: false,
         compact_conversation: false,
@@ -2423,7 +2348,6 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
         ]
       )
 
-    task_tool = middleware |> Middleware.Subagents.tools() |> hd()
     node = ToolNode.new([task_tool], timeout: 30_000)
 
     call =
@@ -2448,11 +2372,12 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     assert %{messages: [%Message{name: "task", content: "child result"}]} = update
   end
 
-  test "subagent middleware injects task guidance and available agent names" do
+  test "subagent middleware injects the given task guidance and available agent names" do
     middleware =
       Middleware.Subagents.new(
         model: %FakeChatModel{response: "child done"},
         summarization: false,
+        system_prompt: "Use the `task` tool for research.",
         subagents: [
           %Spec{
             name: "worker",
@@ -2491,97 +2416,48 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
       )
     end
 
-    middleware =
+    new = fn subagent ->
       Middleware.Subagents.new(
         model: %FakeChatModel{response: "child done"},
         summarization: false,
-        subagents: [
-          %{
-            name: "atom-worker",
-            description: "Atom-key worker",
-            system_prompt: "You are a worker."
-          }
-        ]
+        subagents: [subagent]
+      )
+    end
+
+    [task_tool] =
+      Middleware.Subagents.tools(
+        new.(%{name: "atom-worker", description: "Atom-key worker", system_prompt: "You are a worker."})
       )
 
-    [task_tool] = Middleware.Subagents.tools(middleware)
     assert Tool.description(task_tool) =~ "atom-worker: Atom-key worker"
 
     assert_raise ArgumentError,
                  ~r/subagent spec options must use atom keys, got "(name|description|system_prompt)"/,
                  fn ->
-                   Middleware.Subagents.new(
-                     model: %FakeChatModel{response: "child done"},
-                     summarization: false,
-                     subagents: [
-                       %{
-                         "name" => "json-worker",
-                         "description" => "String-key worker",
-                         "system_prompt" => "You are a worker."
-                       }
-                     ]
-                   )
+                   new.(%{
+                     "name" => "json-worker",
+                     "description" => "String-key worker",
+                     "system_prompt" => "You are a worker."
+                   })
                  end
 
+    worker = %Spec{name: "worker", description: "Worker", system_prompt: "You are a worker."}
+
     assert_raise ArgumentError, ~r/unknown subagent execution_mode "structured_once"/, fn ->
-      Middleware.Subagents.new(
-        model: %FakeChatModel{response: "child done"},
-        summarization: false,
-        subagents: [
-          %Spec{
-            name: "worker",
-            description: "Worker",
-            system_prompt: "You are a worker.",
-            execution_mode: "structured_once"
-          }
-        ]
-      )
+      new.(%{worker | execution_mode: "structured_once"})
     end
 
-    assert_raise ArgumentError, ~s/invalid capture_output "worker_output"/, fn ->
-      Middleware.Subagents.new(
-        model: %FakeChatModel{response: "child done"},
-        summarization: false,
-        subagents: [
-          %Spec{
-            name: "worker",
-            description: "Worker",
-            system_prompt: "You are a worker.",
-            capture_output: "worker_output"
-          }
-        ]
-      )
+    assert_raise ArgumentError, ~s/subagent "worker": invalid capture_output "worker_output"/, fn ->
+      new.(%{worker | capture_output: "worker_output"})
     end
 
     assert_raise ArgumentError, ~r/invalid capture_output parent_result "full"/, fn ->
-      Middleware.Subagents.new(
-        model: %FakeChatModel{response: "child done"},
-        summarization: false,
-        subagents: [
-          %Spec{
-            name: "worker",
-            description: "Worker",
-            system_prompt: "You are a worker.",
-            capture_output: [key: :worker_output, parent_result: "full"]
-          }
-        ]
-      )
+      new.(%{worker | capture_output: [key: :worker_output, parent_result: "full"]})
     end
 
-    assert_raise ArgumentError, ~s/base_middleware entries must use atom or module values, got "deepagents"/, fn ->
-      Middleware.Subagents.new(
-        model: %FakeChatModel{response: "child done"},
-        summarization: false,
-        subagents: [
-          %Spec{
-            name: "worker",
-            description: "Worker",
-            system_prompt: "You are a worker.",
-            base_middleware: ["deepagents"]
-          }
-        ]
-      )
-    end
+    assert_raise ArgumentError,
+                 ~s/subagent "worker": base_middleware entries must use atom or module values, got "deepagents"/,
+                 fn -> new.(%{worker | base_middleware: ["deepagents"]}) end
   end
 
   test "async subagent tools update task state through graph commands" do
@@ -2589,27 +2465,11 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
       AsyncSpec.new(%{"name" => "research", "description" => "Research"})
     end
 
-    middleware =
-      Middleware.AsyncSubagents.new(
-        subagents: [
-          %AsyncSpec{
-            name: "research",
-            description: "Research",
-            graph_id: "graph",
-            url: "http://agent"
-          }
-        ]
-      )
-
-    tools = Middleware.AsyncSubagents.tools(middleware)
-    start_tool = Enum.find(tools, &(Tool.name(&1) == "start_async_task"))
-    update_tool = Enum.find(tools, &(Tool.name(&1) == "update_async_task"))
-    cancel_tool = Enum.find(tools, &(Tool.name(&1) == "cancel_async_task"))
-    check_tool = Enum.find(tools, &(Tool.name(&1) == "check_async_task"))
+    tools = async_tools(BeamWeaver.AgentCapabilitiesTest.AsyncClientFake)
 
     assert {:ok, %Command{update: %{async_tasks: tasks}}} =
-             Tool.invoke(start_tool, %{
-               "subagent_type" => "research",
+             Tool.invoke(tools["start_async_task"], %{
+               "subagent_type" => "remote",
                "description" => "Find references",
                state: %{},
                tool_call_id: "call-start"
@@ -2618,7 +2478,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     [task_id] = Map.keys(tasks)
 
     assert {:ok, %Command{update: %{async_tasks: updated}}} =
-             Tool.invoke(update_tool, %{
+             Tool.invoke(tools["update_async_task"], %{
                "task_id" => task_id,
                "message" => "New detail",
                state: %{async_tasks: tasks},
@@ -2628,40 +2488,20 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     assert [%{message: "New detail"}] = updated[task_id].updates
 
     assert {:ok, %Command{update: %{async_tasks: cancelled}}} =
-             Tool.invoke(cancel_tool, %{
+             Tool.invoke(tools["cancel_async_task"], %{
                "task_id" => task_id,
                state: %{async_tasks: updated},
                tool_call_id: "call-cancel"
              })
 
     assert cancelled[task_id].status == "cancelled"
-
-    assert {:ok, encoded} =
-             Tool.invoke(check_tool, %{"task_id" => task_id, state: %{async_tasks: cancelled}})
-
-    assert %{"status" => "cancelled"} = BeamWeaver.JSON.decode!(encoded)
   end
 
   test "async subagent tools can call a minimal Agent Protocol client" do
-    middleware =
-      Middleware.AsyncSubagents.new(
-        subagents: [
-          AsyncSpec.new(
-            name: "remote",
-            description: "Remote",
-            graph_id: "graph",
-            url: "http://agent",
-            client: BeamWeaver.AgentCapabilitiesTest.AsyncClientFake
-          )
-        ]
-      )
-
-    tools = Middleware.AsyncSubagents.tools(middleware)
-    start_tool = Enum.find(tools, &(Tool.name(&1) == "start_async_task"))
-    check_tool = Enum.find(tools, &(Tool.name(&1) == "check_async_task"))
+    tools = async_tools(BeamWeaver.AgentCapabilitiesTest.AsyncClientFake)
 
     assert {:ok, %Command{update: %{async_tasks: %{"remote-run" => task}}}} =
-             Tool.invoke(start_tool, %{
+             Tool.invoke(tools["start_async_task"], %{
                "subagent_type" => "remote",
                "description" => "Find references",
                state: %{},
@@ -2672,7 +2512,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     assert task.remote["assistant_id"] == "graph"
 
     assert {:ok, %Command{update: %{async_tasks: %{"remote-run" => checked}}}} =
-             Tool.invoke(check_tool, %{
+             Tool.invoke(tools["check_async_task"], %{
                "task_id" => "remote-run",
                state: %{async_tasks: %{"remote-run" => task}},
                tool_call_id: "call-check"
@@ -2683,25 +2523,10 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
   end
 
   test "async subagent check extracts final result from thread values" do
-    middleware =
-      Middleware.AsyncSubagents.new(
-        subagents: [
-          AsyncSpec.new(
-            name: "remote",
-            description: "Remote",
-            graph_id: "graph",
-            url: "http://agent",
-            client: BeamWeaver.AgentCapabilitiesTest.AsyncClientThreadFake
-          )
-        ]
-      )
-
-    tools = Middleware.AsyncSubagents.tools(middleware)
-    start_tool = Enum.find(tools, &(Tool.name(&1) == "start_async_task"))
-    check_tool = Enum.find(tools, &(Tool.name(&1) == "check_async_task"))
+    tools = async_tools(BeamWeaver.AgentCapabilitiesTest.AsyncClientThreadFake)
 
     assert {:ok, %Command{update: %{async_tasks: %{"thread-1" => task}}}} =
-             Tool.invoke(start_tool, %{
+             Tool.invoke(tools["start_async_task"], %{
                "subagent_type" => "remote",
                "description" => "Find references",
                state: %{},
@@ -2709,7 +2534,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
              })
 
     assert {:ok, %Command{update: %{async_tasks: %{"thread-1" => checked}}}} =
-             Tool.invoke(check_tool, %{
+             Tool.invoke(tools["check_async_task"], %{
                "task_id" => "thread-1",
                state: %{async_tasks: %{"thread-1" => task}},
                tool_call_id: "call-check"
@@ -2720,23 +2545,7 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
   end
 
   test "async subagent list tool refreshes live statuses and writes task state" do
-    middleware =
-      Middleware.AsyncSubagents.new(
-        subagents: [
-          AsyncSpec.new(
-            name: "remote",
-            description: "Remote",
-            graph_id: "graph",
-            url: "http://agent",
-            client: BeamWeaver.AgentCapabilitiesTest.AsyncClientFake
-          )
-        ]
-      )
-
-    list_tool =
-      middleware
-      |> Middleware.AsyncSubagents.tools()
-      |> Enum.find(&(Tool.name(&1) == "list_async_tasks"))
+    list_tool = async_tools(BeamWeaver.AgentCapabilitiesTest.AsyncClientFake)["list_async_tasks"]
 
     task = %{
       id: "remote-run",
@@ -2761,16 +2570,18 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     assert msg.content =~ "remote-run"
   end
 
-  test "async subagent middleware injects guidance and validates duplicate names" do
+  test "async subagent middleware injects the guidance it is given and validates duplicate names" do
     middleware =
       Middleware.AsyncSubagents.new(
         subagents: [
           %AsyncSpec{
             name: "remote",
             description: "Remote worker",
-            graph_id: "graph"
+            graph_id: "graph",
+            url: "http://agent"
           }
-        ]
+        ],
+        system_prompt: "Hand long jobs to a remote worker."
       )
 
     request = ModelRequest.new(system_prompt: "base")
@@ -2779,14 +2590,14 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
              Middleware.AsyncSubagents.wrap_model_call(middleware, request, & &1)
 
     assert prompt =~ "base"
-    assert prompt =~ "Async subagents"
+    assert prompt =~ "Hand long jobs to a remote worker."
     assert prompt =~ "remote: Remote worker"
 
     assert_raise ArgumentError, ~r/duplicate async subagent names/, fn ->
       Middleware.AsyncSubagents.new(
         subagents: [
-          %AsyncSpec{name: "dup", description: "One", graph_id: "one"},
-          %AsyncSpec{name: "dup", description: "Two", graph_id: "two"}
+          %AsyncSpec{name: "dup", description: "One", graph_id: "one", url: "http://one"},
+          %AsyncSpec{name: "dup", description: "Two", graph_id: "two", url: "http://two"}
         ]
       )
     end
@@ -2796,12 +2607,12 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
     assert {:ok, agent} =
              Agent.build(
                model: %FakeChatModel{response: "done", parent: self()},
-               summarization: false,
                subagents: [
                  %AsyncSpec{
                    name: "remote",
                    description: "Remote worker",
-                   graph_id: "graph"
+                   graph_id: "graph",
+                   url: "http://agent"
                  }
                ]
              )
@@ -2813,6 +2624,73 @@ defmodule BeamWeaver.AgentCapabilitiesTest do
 
     assert "start_async_task" in tool_names
     assert "list_async_tasks" in tool_names
+  end
+
+  defp task_tool(opts), do: opts |> Middleware.Subagents.new() |> Middleware.Subagents.tools() |> hd()
+
+  # A worker that answers in one structured call, without tools, and keeps its answer.
+  defp captured_worker(fields \\ []) do
+    struct!(
+      %Spec{
+        name: "worker",
+        description: "Worker",
+        system_prompt: "You are a worker.",
+        response_format: worker_output_schema(),
+        capture_output: :worker_output,
+        execution_mode: :structured_once,
+        base_middleware: [],
+        tools: []
+      },
+      fields
+    )
+  end
+
+  defp lookup_tool do
+    Tool.from_function!(
+      name: "lookup",
+      description: "Lookup deal context.",
+      input_schema: %{
+        "type" => "object",
+        "required" => ["query"],
+        "properties" => %{"query" => %{"type" => "string"}}
+      },
+      handler: fn %{"query" => query}, _opts -> "lookup result for #{query}" end
+    )
+  end
+
+  # The subagent saved checkpoints in the thread, none in its root namespace.
+  defp assert_subagent_checkpoints(checkpointer, thread_id) do
+    records = Checkpoint.list(checkpointer, %{"configurable" => %{"thread_id" => thread_id}})
+    namespaces = Enum.map(records, &get_in(&1.config, ["configurable", "checkpoint_ns"]))
+
+    assert records != []
+    refute "" in namespaces
+    assert Enum.any?(namespaces, &String.contains?(&1, "subagent.worker"))
+  end
+
+  defp async_tools(client) do
+    [
+      subagents: [
+        AsyncSpec.new(name: "remote", description: "Remote", graph_id: "graph", url: "http://agent", client: client)
+      ]
+    ]
+    |> Middleware.AsyncSubagents.new()
+    |> Middleware.AsyncSubagents.tools()
+    |> Map.new(&{Tool.name(&1), &1})
+  end
+
+  defp file_agent(responses) do
+    {:ok, agent} =
+      Agent.build(model: BeamWeaver.Models.init_chat_model!("fake:chat", responses: responses), filesystem: State.new())
+
+    agent
+  end
+
+  defp file_text(result, path) do
+    case result.files[path] do
+      %Filesystem.FileData{content: content} -> content
+      content -> content
+    end
   end
 
   defp tmp_root do

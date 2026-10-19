@@ -1,6 +1,9 @@
 defmodule BeamWeaver.Graph.Execution.TaskRun do
   @moduledoc false
 
+  alias BeamWeaver.Graph.Execution.ChannelLookup
+  alias BeamWeaver.Graph.Execution.Namespace
+  alias BeamWeaver.Graph.Execution.Stream
   alias BeamWeaver.Graph.Runtime
   alias BeamWeaver.Graph.ServerInfo
 
@@ -12,7 +15,8 @@ defmodule BeamWeaver.Graph.Execution.TaskRun do
     :error,
     :timeout,
     :scratchpad,
-    :runtime
+    :runtime,
+    :started_at
   ]
 
   @type t :: %__MODULE__{
@@ -23,7 +27,8 @@ defmodule BeamWeaver.Graph.Execution.TaskRun do
           error: term(),
           timeout: timeout(),
           scratchpad: term(),
-          runtime: Runtime.t()
+          runtime: Runtime.t(),
+          started_at: integer() | nil
         }
 
   @spec new(map(), map()) :: t()
@@ -32,19 +37,32 @@ defmodule BeamWeaver.Graph.Execution.TaskRun do
       run: run,
       spec: plan.spec,
       prepared: plan.prepared,
-      state: plan.node_state,
-      error: Map.get(plan, :error),
+      state: node_state(plan.node_state),
+      error: plan.error,
       timeout: plan.timeout,
       scratchpad: plan.scratchpad
     }
 
     runtime = runtime_for(task_run)
-    state = inject_managed(task_run.state, run.compiled.graph.managed, runtime)
+    managed = run.compiled.graph.managed
+    state = inject_managed(task_run.state, managed, runtime)
+    scratchpad = %{task_run.scratchpad | first_state: first_state(plan, managed, runtime)}
 
-    %{task_run | runtime: runtime, state: state}
+    %{task_run | runtime: %{runtime | scratchpad: scratchpad}, scratchpad: scratchpad, state: state}
   end
 
-  defp inject_managed(state, managed, _runtime) when managed in [%{}, nil], do: state
+  defp first_state(%{first_state: nil}, _managed, _runtime), do: nil
+
+  defp first_state(%{first_state: state}, managed, runtime),
+    do: state |> node_state() |> inject_managed(managed, runtime)
+
+  # The graph's own bookkeeping channels are not part of what a node reads.
+  defp node_state(state) when is_map(state) and not is_struct(state),
+    do: ChannelLookup.drop_internal_keys(state)
+
+  defp node_state(state), do: state
+
+  defp inject_managed(state, managed, _runtime) when managed == %{}, do: state
   defp inject_managed(state, _managed, _runtime) when not is_map(state), do: state
 
   defp inject_managed(state, managed, runtime) do
@@ -73,7 +91,7 @@ defmodule BeamWeaver.Graph.Execution.TaskRun do
       run_id: run.run_id,
       task_id: task_run.prepared.id,
       namespace: namespace(run.config),
-      previous_state: run.state,
+      previous_state: node_state(run.state),
       checkpoint: run.config,
       execution: %{
         graph: run.compiled.name,
@@ -84,50 +102,25 @@ defmodule BeamWeaver.Graph.Execution.TaskRun do
         checkpoint_id: Map.get(configurable, "checkpoint_id", ""),
         checkpoint_ns: Map.get(configurable, "checkpoint_ns", ""),
         thread_id: Map.get(configurable, "thread_id"),
-        run_id: maybe_to_string(Map.get(run.config, "run_id", Map.get(run.config, :run_id))),
+        run_id: to_string(run.run_id),
         task_supervisor: run.task_supervisor,
         node_attempt: 1,
         node_first_attempt_time: System.system_time(:millisecond)
       },
       stream_sink: run.stream_sink,
-      stream_writer: fn value ->
-        if run.stream_sink do
-          envelope =
-            BeamWeaver.Stream.envelope(value,
-              run_id: run.run_id,
-              graph: run.compiled.name,
-              node: spec.name,
-              task_id: task_run.prepared.id,
-              step: run.step,
-              namespace: namespace(run.config)
-            )
-
-          BeamWeaver.Stream.Sink.emit(run.stream_sink, envelope)
-        else
-          send(run.parent_pid, {:beam_weaver_graph_custom_stream, run.run_id, value})
-        end
-
-        :ok
-      end,
+      stream_writer: Stream.writer(run, spec.name, task_run.prepared.id),
       stream_modes: run.stream_modes,
-      collect_stream?: run.collect_stream?,
       recursion_limit: max(run.recursion_limit - run.step, 0),
       server_info: run.server_info || ServerInfo.from_configurable(configurable)
     }
   end
 
-  defp maybe_to_string(nil), do: nil
-  defp maybe_to_string(value), do: to_string(value)
-
+  # The same path of node names that the graph's own stream events carry.
   defp namespace(config) do
     config
     |> BeamWeaver.Checkpoint.configurable()
     |> Map.get("checkpoint_ns", "")
-    |> case do
-      "" -> []
-      value when is_binary(value) -> String.split(value, ":", trim: true)
-      value when is_list(value) -> value
-      value -> [value]
-    end
+    |> Namespace.recast()
+    |> Namespace.normalize()
   end
 end

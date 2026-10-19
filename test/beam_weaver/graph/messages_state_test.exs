@@ -56,7 +56,7 @@ defmodule BeamWeaver.Graph.MessagesStateTest do
       result =
         Messages.add_messages(
           {"user", "from tuple"},
-          [%{"role" => "ai", "content" => "from map"}, "from string"]
+          [%{"role" => "assistant", "content" => "from map"}, "from string"]
         )
 
       assert Enum.map(result, & &1.role) == [:user, :assistant, :user]
@@ -69,6 +69,23 @@ defmodule BeamWeaver.Graph.MessagesStateTest do
                  &1.id
                )
              )
+    end
+
+    test "accepts the same roles as Message.from/1" do
+      assert [%Message{role: :system, metadata: %{openai_role: :developer}}] =
+               Messages.add_messages([], [%{"role" => "developer", "content" => "Be brief."}])
+
+      for role <- ["human", "ai"] do
+        assert {:error, %{type: :invalid_role}} = Message.from({role, "hi"})
+
+        assert_raise ArgumentError, ~r/unsupported message representation/, fn ->
+          Messages.add_messages([], [%{"role" => role, "content" => "hi"}])
+        end
+
+        assert_raise ArgumentError, ~r/unsupported message representation/, fn ->
+          Messages.delta_reducer([], [{role, "hi"}])
+        end
+      end
     end
 
     test "formats anthropic-style content blocks into OpenAI-compatible messages" do
@@ -128,7 +145,7 @@ defmodule BeamWeaver.Graph.MessagesStateTest do
                %Message{
                  role: :assistant,
                  content: "",
-                 tool_calls: [%{"name" => "foo", "args" => %{"bar" => "baz"}}]
+                 tool_calls: [%{"name" => "foo", "type" => "tool_call", "args" => %{"bar" => "baz"}}]
                },
                %Message{
                  role: :tool,
@@ -155,6 +172,46 @@ defmodule BeamWeaver.Graph.MessagesStateTest do
     assert Enum.all?(messages, &is_binary(&1.id))
   end
 
+  test "a node removes a message from the state by its id" do
+    graph =
+      Graph.new(state_schema: Messages.state_schema())
+      |> Graph.add_node(:forget, fn %{messages: [first | _rest]} ->
+        %{messages: [Messages.remove(first.id), Message.assistant("Noted.", id: "a1")]}
+      end)
+      |> Graph.add_edge(Graph.start(), :forget)
+      |> Graph.add_edge(:forget, Graph.end_node())
+      |> Graph.compile!()
+
+    input = %{messages: [Message.user("My card is 4111.", id: "u1"), Message.user("Refund A-1001", id: "u2")]}
+
+    assert {:ok, %{messages: messages}} = Compiled.invoke(graph, input)
+    assert Enum.map(messages, & &1.id) == ["u2", "a1"]
+
+    # The step's update shows the removal as it was written; the messages
+    # stream only carries messages.
+    assert {:ok, events} = Compiled.stream_events(graph, input)
+
+    assert [%{"forget" => %{messages: [%Messages.Remove{id: "u1"}, %Message{id: "a1"}]}}] =
+             for(%{event: %BeamWeaver.Stream.Events.GraphUpdate{update: update}} <- events, do: update)
+
+    assert ["a1"] =
+             for(%{event: %BeamWeaver.Stream.Events.Message{message: message}} <- events, do: message.id)
+  end
+
+  test "removing a message that isn't in the state fails the run instead of raising" do
+    graph =
+      Graph.new(state_schema: Messages.state_schema())
+      |> Graph.add_node(:forget, fn _state -> %{messages: [Messages.remove("missing")]} end)
+      |> Graph.add_edge(Graph.start(), :forget)
+      |> Graph.add_edge(:forget, Graph.end_node())
+      |> Graph.compile!()
+
+    assert {:error, %BeamWeaver.Core.Error{type: :invalid_update, message: message}} =
+             Compiled.invoke(graph, %{messages: [Message.user("hi", id: "u1")]})
+
+    assert message =~ "does not exist"
+  end
+
   test "delta reducer is batching invariant for message updates and removals" do
     writes = [
       Message.user("hi", id: "h1"),
@@ -175,8 +232,8 @@ defmodule BeamWeaver.Graph.MessagesStateTest do
   end
 
   test "delta reducer coerces raw state maps and tuple writes without flattening tuples" do
-    state = [%{"role" => "human", "content" => "hello", "id" => "h1"}]
-    writes = [[%{"role" => "ai", "content" => "world", "id" => "h1"}]]
+    state = [%{"role" => "user", "content" => "hello", "id" => "h1"}]
+    writes = [[%{"role" => "assistant", "content" => "world", "id" => "h1"}]]
 
     assert [message] = Messages.delta_reducer(state, writes)
     assert message.role == :assistant
@@ -191,7 +248,7 @@ defmodule BeamWeaver.Graph.MessagesStateTest do
   test "delta reducer replays message removals updates and dict-shaped writes" do
     state =
       []
-      |> Messages.delta_reducer([%{"role" => "human", "content" => "hi", "id" => "h1"}])
+      |> Messages.delta_reducer([%{"role" => "user", "content" => "hi", "id" => "h1"}])
       |> Messages.delta_reducer([Message.assistant("hello", id: "a1")])
 
     assert Enum.map(state, & &1.content) == ["hi", "hello"]
@@ -200,7 +257,7 @@ defmodule BeamWeaver.Graph.MessagesStateTest do
     assert remaining.content == "hi"
 
     assert [updated, still_present] =
-             Messages.delta_reducer(state, [%{"role" => "ai", "content" => "world", "id" => "h1"}])
+             Messages.delta_reducer(state, [%{"role" => "assistant", "content" => "world", "id" => "h1"}])
 
     assert updated.role == :assistant
     assert updated.content == "world"

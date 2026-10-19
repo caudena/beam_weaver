@@ -5,8 +5,7 @@ defmodule BeamWeaver.Graph.Execution.Cache do
   alias BeamWeaver.CachePolicy
 
   @spec key(map(), map()) :: {term(), term(), binary(), keyword()} | nil
-  def key(%{cache: false}, _run), do: nil
-  def key(%{cache: nil}, _run), do: nil
+  def key(%{cache: cache}, _run) when cache in [false, nil], do: nil
 
   def key(spec, run) do
     case cache_for(spec, run) do
@@ -39,18 +38,12 @@ defmodule BeamWeaver.Graph.Execution.Cache do
   @spec put(term(), term(), term()) :: :ok | {:error, BeamWeaver.Core.Error.t()}
   def put(_cache, nil, _value), do: :ok
 
-  def put(_compiled_cache, {cache, namespace, key, opts}, value) do
-    case Cache.put(cache, namespace, key, value, opts) do
-      :ok -> :ok
-      {:error, error} -> {:error, error}
-    end
-  end
+  def put(_compiled_cache, {cache, namespace, key, opts}, value), do: Cache.put(cache, namespace, key, value, opts)
 
   defp cache_for(%{cache: true}, %{compiled: %{cache: cache}}), do: cache
 
   defp cache_for(%{cache: %CachePolicy{} = policy}, %{compiled: %{cache: cache}}),
     do: {cache, policy}
 
-  defp cache_for(%{cache: cache}, _run) when cache not in [true, false, nil], do: cache
-  defp cache_for(_spec, _run), do: nil
+  defp cache_for(%{cache: cache}, _run), do: cache
 end

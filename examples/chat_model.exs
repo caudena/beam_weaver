@@ -6,4 +6,4 @@ alias BeamWeaver.Examples.Support
 
 {:ok, response} = ChatModel.invoke(Support.model(), [Message.user("Say hello in one short sentence.")])
 
-IO.puts(Message.text(response))
+IO.puts(Support.assert_text!(response))

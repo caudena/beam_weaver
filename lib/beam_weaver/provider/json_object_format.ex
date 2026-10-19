@@ -34,7 +34,6 @@ defmodule BeamWeaver.Provider.JsonObjectFormat do
   end
 
   def normalize(other, opts) do
-    error_module = Keyword.get(opts, :error_module, Error)
     message = Keyword.get(opts, :error_message, "provider supports JSON object response_format only")
 
     details =
@@ -44,16 +43,11 @@ defmodule BeamWeaver.Provider.JsonObjectFormat do
         supported: [@wire_format]
       })
 
-    {:error, apply(error_module, :new, [:invalid_response_format, message, details])}
+    {:error, Error.new(:invalid_response_format, message, details)}
   end
 
-  @spec instruction(String.t(), map(), boolean() | nil) :: map()
-  def instruction(name, schema, strict \\ nil) when is_binary(name) and is_map(schema) do
-    %{
-      "role" => "system",
-      "content" => instruction_text(name, schema, strict)
-    }
-  end
+  defp instruction(name, schema, strict \\ nil),
+    do: %{"role" => "system", "content" => instruction_text(name, schema, strict)}
 
   @spec inject_instruction([map()], map() | nil) :: [map()]
   def inject_instruction(messages, nil) when is_list(messages), do: messages

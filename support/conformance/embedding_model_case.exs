@@ -7,7 +7,6 @@ defmodule BeamWeaver.TestSupport.Conformance.EmbeddingModelCase do
     quote bind_quoted: [opts: opts] do
       use ExUnit.Case, async: true
 
-      alias BeamWeaver.Core.Async
       alias BeamWeaver.Core.EmbeddingModel
       alias BeamWeaver.TestSupport.Conformance.Subject
 
@@ -49,36 +48,6 @@ defmodule BeamWeaver.TestSupport.Conformance.EmbeddingModelCase do
 
         assert {:error, error} = EmbeddingModel.embed_query(model, {:not, :a, :query})
         assert error.type == :invalid_query
-      end
-
-      test "embedding model async API returns document and query vectors" do
-        model = build_subject()
-
-        assert {:ok, vectors} =
-                 model
-                 |> EmbeddingModel.async_embed_documents(fixture(:documents))
-                 |> Async.await()
-
-        assert length(vectors) == length(fixture(:documents))
-
-        assert {:ok, query_vector} =
-                 model
-                 |> EmbeddingModel.async_embed_query(fixture(:query))
-                 |> Async.await()
-
-        assert is_list(query_vector)
-      end
-
-      if Subject.capability?(@beamweaver_subject, :batch) do
-        test "embedding model async batch preserves query order" do
-          model = build_subject()
-
-          handles = EmbeddingModel.async_batch_queries(model, ["first", "second"])
-          assert [{:ok, first}, {:ok, second}] = Async.await_batch(handles)
-          assert is_list(first)
-          assert is_list(second)
-          refute first == second
-        end
       end
 
       if Subject.capability?(@beamweaver_subject, :deterministic) do

@@ -3,7 +3,6 @@ defmodule BeamWeaver.RateLimiter do
   Rate limiting behaviours and implementations for bounded model and tool work.
   """
 
-  alias BeamWeaver.Core.Async
   alias BeamWeaver.RateLimiter.Error
   alias BeamWeaver.RateLimiter.TokenBucket
 
@@ -21,7 +20,15 @@ defmodule BeamWeaver.RateLimiter do
   @callback acquire(server(), amount(), keyword()) :: result()
 
   @doc """
-  Starts a token bucket under the BeamWeaver rate limiter supervisor.
+  Starts a permanent token bucket under the BeamWeaver rate limiter supervisor.
+
+  The bucket outlives its caller. Use `DynamicSupervisor.terminate_child/2`
+  with the registered supervisor name BeamWeaver.RateLimiter.Supervisor
+  and the returned PID to remove a temporary bucket. Stopping the GenServer
+  directly causes the supervisor to restart it.
+
+  For application-owned lifetime, add `BeamWeaver.RateLimiter.TokenBucket`
+  to your own supervisor instead. See [Rate Limiting](rate_limiting.md).
   """
   @spec start_bucket(keyword()) :: DynamicSupervisor.on_start_child()
   def start_bucket(opts \\ []) do
@@ -34,14 +41,6 @@ defmodule BeamWeaver.RateLimiter do
   @spec acquire(server(), amount(), keyword()) :: result()
   def acquire(limiter, amount \\ 1, opts \\ []) do
     TokenBucket.acquire(limiter, amount, opts)
-  end
-
-  @doc """
-  Starts an async token acquisition.
-  """
-  @spec async_acquire(server(), amount(), keyword()) :: Async.handle()
-  def async_acquire(limiter, amount \\ 1, opts \\ []) do
-    Async.run_call(opts, &acquire(limiter, amount, &1))
   end
 
   @doc """

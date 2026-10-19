@@ -6,7 +6,6 @@ defmodule BeamWeaver.Core.Messages.Utils do
   alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.Message
-  alias BeamWeaver.Core.MessageLike
   alias BeamWeaver.Core.Messages.Buffer
   alias BeamWeaver.Core.Messages.MessageChunk
   alias BeamWeaver.Core.Messages.OpenAI
@@ -21,14 +20,12 @@ defmodule BeamWeaver.Core.Messages.Utils do
   """
   @spec normalize(term()) :: {:ok, [Message.t()]} | {:error, Error.t()}
   def normalize(messages) when is_list(messages) do
-    Result.traverse(messages, &MessageLike.to_message/1)
+    Result.traverse(messages, &Message.from/1)
   end
 
   def normalize(message), do: normalize([message])
 
-  def convert_to_messages(messages), do: normalize(messages)
-
-  def convert_to_openai_messages(messages, opts \\ []),
+  def to_openai_messages(messages, opts \\ []),
     do: OpenAI.convert(messages, opts, &normalize/1)
 
   @doc """
@@ -52,23 +49,17 @@ defmodule BeamWeaver.Core.Messages.Utils do
 
   def message_chunk_to_message(chunk), do: MessageChunk.to_message(chunk)
 
-  def message_to_dict(message) do
-    with {:ok, [message]} <- normalize(message) do
-      {:ok, Serialization.encode(message)}
-    end
-  end
-
-  def messages_to_dict(messages) do
+  def encode(messages) do
     with {:ok, messages} <- normalize(messages) do
       {:ok, Enum.map(messages, &Serialization.encode/1)}
     end
   end
 
-  def messages_from_dict(values) when is_list(values) do
+  def decode(values) when is_list(values) do
     Result.traverse(values, &Serialization.decode/1)
   end
 
-  def messages_from_dict(value), do: messages_from_dict([value])
+  def decode(value), do: decode([value])
 
   @doc """
   Filters messages by names, roles, IDs, and tool-call IDs.
@@ -143,7 +134,7 @@ defmodule BeamWeaver.Core.Messages.Utils do
     end
   end
 
-  def get_buffer_string(messages, opts \\ []) do
+  def buffer_string(messages, opts \\ []) do
     with {:ok, messages} <- normalize(messages) do
       Buffer.render(messages, opts)
     end
@@ -183,14 +174,10 @@ defmodule BeamWeaver.Core.Messages.Utils do
   defp excluded_name?(message, opts), do: in_opt?(message.name, opts, :exclude_names)
 
   defp included_role?(message, opts),
-    do:
-      in_role_opt?(role_name(message.role), opts, :include_roles) or
-        in_role_opt?(role_name(message.role), opts, :include_types)
+    do: in_opt?(message.role, opts, :include_roles) or in_opt?(message.role, opts, :include_types)
 
   defp excluded_role?(message, opts),
-    do:
-      in_role_opt?(role_name(message.role), opts, :exclude_roles) or
-        in_role_opt?(role_name(message.role), opts, :exclude_types)
+    do: in_opt?(message.role, opts, :exclude_roles) or in_opt?(message.role, opts, :exclude_types)
 
   defp included_id?(message, opts), do: in_opt?(message.id, opts, :include_ids)
   defp excluded_id?(message, opts), do: in_opt?(message.id, opts, :exclude_ids)
@@ -200,32 +187,23 @@ defmodule BeamWeaver.Core.Messages.Utils do
   defp in_opt?(value, opts, key),
     do: to_string(value) in Enum.map(List.wrap(Keyword.get(opts, key)), &to_string/1)
 
-  defp in_role_opt?(value, opts, key),
-    do:
-      normalize_role_alias(value) in Enum.map(
-        List.wrap(Keyword.get(opts, key)),
-        &normalize_role_alias/1
-      )
-
   defp filter_tool_call_ids(%Message{role: :tool, tool_call_id: id} = message, excluded) do
     if id in excluded, do: [], else: [message]
   end
 
   defp filter_tool_call_ids(%Message{role: :assistant, tool_calls: calls} = message, excluded)
        when calls != [] do
-    calls = Enum.reject(calls, &(tool_call_id(&1) in excluded))
+    calls = Enum.reject(calls, &(Map.get(&1, :id) in excluded))
     content = reject_tool_use_blocks(message.content, excluded)
     if calls == [], do: [], else: [%{message | tool_calls: calls, content: content}]
   end
 
   defp filter_tool_call_ids(message, _excluded), do: [message]
 
-  defp tool_call_id(call) when is_map(call), do: Map.get(call, :id)
-
   defp reject_tool_use_blocks(content, excluded) when is_list(content) do
     Enum.reject(content, fn
       block when is_map(block) ->
-        Map.get(block, :type) == :tool_use and tool_call_id(block) in excluded
+        Map.get(block, :type) == :tool_use and Map.get(block, :id) in excluded
 
       _block ->
         false
@@ -233,17 +211,6 @@ defmodule BeamWeaver.Core.Messages.Utils do
   end
 
   defp reject_tool_use_blocks(content, _excluded), do: content
-
-  defp role_name(:user), do: "user"
-  defp role_name(:assistant), do: "assistant"
-  defp role_name(:system), do: "system"
-  defp role_name(:tool), do: "tool"
-
-  defp normalize_role_alias("human"), do: "user"
-  defp normalize_role_alias(:human), do: "user"
-  defp normalize_role_alias("ai"), do: "assistant"
-  defp normalize_role_alias(:ai), do: "assistant"
-  defp normalize_role_alias(value), do: to_string(value)
 
   defp merge_two(left, right, separator) do
     content = merge_content(left.content, right.content, separator)
@@ -253,7 +220,6 @@ defmodule BeamWeaver.Core.Messages.Utils do
       | content: content,
         tool_calls: left.tool_calls ++ right.tool_calls,
         metadata: Map.merge(left.metadata, right.metadata),
-        response_metadata: left.response_metadata,
         usage_metadata: merge_usage_metadata(left.usage_metadata, right.usage_metadata)
     }
   end
@@ -268,7 +234,6 @@ defmodule BeamWeaver.Core.Messages.Utils do
 
   defp merge_content(left, right, _separator), do: List.wrap(left) ++ List.wrap(right)
 
-  defp merge_usage_metadata(nil, nil), do: nil
   defp merge_usage_metadata(nil, right), do: right
   defp merge_usage_metadata(left, nil), do: left
 

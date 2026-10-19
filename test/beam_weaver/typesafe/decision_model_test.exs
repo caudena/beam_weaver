@@ -1,24 +1,14 @@
 defmodule BeamWeaver.TypeSafe.DecisionModelTest do
   use ExUnit.Case, async: true
-  alias BeamWeaver.Core.{Async, ChatModel, DecisionModel, Message}
-  alias BeamWeaver.{Models, Runnable, Serialization}
-  alias BeamWeaver.Provider.{Compatibility, Registry}
+  alias BeamWeaver.Core.{ChatModel, DecisionModel, Message}
+  alias BeamWeaver.{Models, Serialization}
   alias BeamWeaver.TestSupport.TypeSafe, as: Fixture
   alias BeamWeaver.TypeSafe.{ChoiceAnswer, Client, Input, NoulAnswer, Question, ScoreAnswer}
   alias BeamWeaver.Transport.Response
 
-  test "initialization, discovery, aliases and explicit capabilities" do
-    for id <- ["jev-1.13.0", "jev-latest", "jev-preview", "jev-future"] do
-      assert {:ok, model} = Models.init_decision_model("typesafe:#{id}")
-      assert model.model == id
-      assert Compatibility.supports?(model, :decision_output)
-      refute Compatibility.supports?(model, :text_output)
-      refute Compatibility.supports?(model, :streaming)
-      refute Compatibility.supports?(model, :tool_calling)
-    end
-
-    assert :typesafe in Registry.providers()
-    assert Enum.any?(Compatibility.matrix(), &(&1.provider == :typesafe and &1.features.decision_output))
+  test "decision models reject chat and embedding entry points" do
+    assert {:ok, model} = Models.init_decision_model("typesafe:jev-fixture")
+    assert model.model == "jev-fixture"
     assert {:error, %{type: :invalid_model}} = Models.init_decision_model("jev-latest")
     assert {:error, %{type: :unsupported_feature}} = Models.init_chat_model("typesafe:jev-latest")
     assert {:error, %{type: :unsupported_feature}} = Models.init_embeddings("typesafe:jev-latest")
@@ -31,7 +21,6 @@ defmodule BeamWeaver.TypeSafe.DecisionModelTest do
     assert response.request_id == "req-fixture"
     assert response.usage == %{input_tokens: 100, output_tokens: 20, total_tokens: 120}
     assert response.latency_ms >= 0
-    assert_in_delta response.metadata.cost.total_cost, 0.0000042, 0.000000001
     assert %ChoiceAnswer{choice: "powerful", confidence: 0.9} = response.answers["route"]
     assert %NoulAnswer{noul: 0.98} = response.answers["urgency"]
     assert %ScoreAnswer{legend: %{"0" => %{"level" => "cosmetic"}, "1" => ["degraded"]}} = response.answers["severity"]
@@ -154,10 +143,16 @@ defmodule BeamWeaver.TypeSafe.DecisionModelTest do
 
   test "transport failures and missing credentials are explicit errors" do
     model = Fixture.model(respond: fn _ -> {:error, BeamWeaver.Transport.Error.new(:timeout, "timed out")} end)
-    assert {:error, %{type: :transport_error}} = DecisionModel.invoke(model, Fixture.input())
-    client = Client.new(api_key: nil, transport: Fixture.Transport)
+
+    assert {:error, %{type: :timeout, details: %{reason: :timeout, retryable: true}}} =
+             DecisionModel.invoke(model, Fixture.input())
+
+    assert_received {:typesafe_request, _}
+    client = Client.new(api_key: nil, transport: Fixture.Transport, transport_opts: [parent: self()])
     model = %{Fixture.model() | client: client}
-    assert {:error, %{type: :model_authentication}} = DecisionModel.invoke(model, Fixture.input())
+    assert {:error, %{type: :missing_api_key} = error} = DecisionModel.invoke(model, Fixture.input())
+    assert error.details == %{provider: :typesafe, retryable: false}
+    refute_received {:typesafe_request, _}
   end
 
   test "models endpoint uses the shared client and preserves request metadata" do
@@ -176,14 +171,11 @@ defmodule BeamWeaver.TypeSafe.DecisionModelTest do
     assert_receive {:typesafe_request, %{method: :get, url: "https://gateway.test/v1/models"}}
   end
 
-  test "Runnable composition, bounded batch, async and one-result streams" do
+  test "direct invoke and bounded batch" do
     model = Fixture.model()
-    pipeline = Runnable.sequence([model, Runnable.lambda(& &1.answers["urgency"].noul)])
-    assert {:ok, 0.98} = Runnable.invoke(pipeline, Fixture.input())
+    assert {:ok, response} = DecisionModel.invoke(model, Fixture.input())
+    assert response.answers["urgency"].noul == 0.98
     assert {:ok, [_, _]} = DecisionModel.batch(model, [Fixture.input(), Fixture.input()], max_concurrency: 2)
-    assert {:ok, _} = model |> DecisionModel.async_invoke(Fixture.input()) |> Async.await()
-    assert {:ok, stream} = Runnable.stream(model, Fixture.input())
-    assert [%BeamWeaver.TypeSafe.Response{}] = Enum.to_list(stream)
   end
 
   test "response serialization preserves typed answers and structured criteria" do

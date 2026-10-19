@@ -3,27 +3,13 @@ defmodule BeamWeaver.TextSplitter.MarkdownSyntax do
 
   alias BeamWeaver.Core.Document
 
-  defstruct headers: [
-              {"#", "Header 1"},
-              {"##", "Header 2"},
-              {"###", "Header 3"},
-              {"####", "Header 4"},
-              {"#####", "Header 5"},
-              {"######", "Header 6"}
-            ],
+  defstruct headers: for(level <- 1..6, do: {String.duplicate("#", level), "Header #{level}"}),
             return_each_line: false,
             strip_headers?: true,
             chunk_size: 1_000,
             chunk_overlap: 0
 
-  def new(opts \\ []) do
-    opts =
-      opts
-      |> normalize_alias(:headers_to_split_on, :headers)
-      |> normalize_alias(:strip_headers, :strip_headers?)
-
-    struct(__MODULE__, opts)
-  end
+  def new(opts), do: struct(__MODULE__, opts)
 
   def split_text(%__MODULE__{} = splitter, text) when is_binary(text) do
     splitter
@@ -35,16 +21,14 @@ defmodule BeamWeaver.TextSplitter.MarkdownSyntax do
     {chunks, current, headers} =
       document.content
       |> markdown_lines()
-      |> consume_markdown_lines(splitter, {[], "", []})
+      |> consume_markdown_lines(splitter, {[], "", []}, Map.new(splitter.headers))
 
+    # Every chunk keeps the document's metadata, under its own header keys.
     chunks
-    |> complete_markdown_chunk(splitter, document, current, headers)
+    |> complete_markdown_chunk(splitter, current, headers)
     |> Enum.reverse()
+    |> Enum.map(&%{&1 | metadata: Map.merge(document.metadata, &1.metadata)})
     |> maybe_lines(splitter)
-  end
-
-  defp consume_markdown_lines(lines, splitter, state) do
-    consume_markdown_lines(lines, splitter, state, Map.new(splitter.headers))
   end
 
   defp consume_markdown_lines([], _splitter, state, _header_names), do: state
@@ -52,21 +36,21 @@ defmodule BeamWeaver.TextSplitter.MarkdownSyntax do
   defp consume_markdown_lines([line | rest], splitter, {chunks, current, headers}, header_names) do
     cond do
       header = markdown_header(line, header_names) ->
-        chunks = complete_markdown_chunk(chunks, splitter, nil, current, headers)
+        chunks = complete_markdown_chunk(chunks, splitter, current, headers)
         {depth, title} = header
         headers = resolve_markdown_headers(headers, depth, title)
         current = if splitter.strip_headers?, do: "", else: line
         consume_markdown_lines(rest, splitter, {chunks, current, headers}, header_names)
 
       code = markdown_code_fence(line) ->
-        chunks = complete_markdown_chunk(chunks, splitter, nil, current, headers)
+        chunks = complete_markdown_chunk(chunks, splitter, current, headers)
         {code_chunk, rest} = take_code_chunk(rest, line, code.marker)
         metadata = headers_to_metadata(headers, splitter) |> Map.put("Code", code.language)
-        chunks = append_markdown_doc(chunks, code_chunk, metadata, nil)
+        chunks = append_markdown_doc(chunks, code_chunk, metadata)
         consume_markdown_lines(rest, splitter, {chunks, "", headers}, header_names)
 
       markdown_horizontal_rule?(line) ->
-        chunks = complete_markdown_chunk(chunks, splitter, nil, current, headers)
+        chunks = complete_markdown_chunk(chunks, splitter, current, headers)
         consume_markdown_lines(rest, splitter, {chunks, "", headers}, header_names)
 
       true ->
@@ -117,26 +101,16 @@ defmodule BeamWeaver.TextSplitter.MarkdownSyntax do
     |> Kernel.++([{depth, title}])
   end
 
-  defp complete_markdown_chunk(chunks, _splitter, _document, "", _headers), do: chunks
-
-  defp complete_markdown_chunk(chunks, splitter, document, content, headers) do
+  defp complete_markdown_chunk(chunks, splitter, content, headers) do
     if String.trim(content) == "" do
       chunks
     else
-      append_markdown_doc(chunks, content, headers_to_metadata(headers, splitter), document)
+      append_markdown_doc(chunks, content, headers_to_metadata(headers, splitter))
     end
   end
 
-  defp append_markdown_doc(chunks, content, metadata, nil) do
-    [Document.new!(content, metadata: metadata) | chunks]
-  end
-
-  defp append_markdown_doc(chunks, content, metadata, %Document{} = document) do
-    [
-      Document.new!(content, id: document.id, metadata: Map.merge(document.metadata, metadata))
-      | chunks
-    ]
-  end
+  defp append_markdown_doc(chunks, content, metadata),
+    do: [Document.new!(content, metadata: metadata) | chunks]
 
   defp headers_to_metadata(headers, splitter) do
     header_names = Map.new(splitter.headers)
@@ -153,14 +127,7 @@ defmodule BeamWeaver.TextSplitter.MarkdownSyntax do
       doc.content
       |> String.split("\n")
       |> Enum.reject(&(&1 == "" or String.trim(&1) == ""))
-      |> Enum.map(&Document.new!(&1, id: doc.id, metadata: doc.metadata))
+      |> Enum.map(&Document.new!(&1, metadata: doc.metadata))
     end)
-  end
-
-  defp normalize_alias(opts, from, to) do
-    case Keyword.fetch(opts, from) do
-      {:ok, value} -> opts |> Keyword.delete(from) |> Keyword.put(to, value)
-      :error -> opts
-    end
   end
 end

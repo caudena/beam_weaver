@@ -1,36 +1,28 @@
 defmodule BeamWeaver.XAI.Messages do
-  @moduledoc """
-  xAI message translation helpers.
+  @moduledoc false
 
-  The xAI API is OpenAI-compatible for the chat surfaces BeamWeaver supports, so
-  request translation delegates to the OpenAI translators and response
-  translation adds the xAI-specific metadata and accounting details.
-  """
+  import BeamWeaver.MapShape, only: [put_optional: 3]
 
   alias BeamWeaver.Core.Message
   alias BeamWeaver.OpenAI.ChatCompletions
   alias BeamWeaver.OpenAI.MessageParts
   alias BeamWeaver.OpenAI.Messages, as: OpenAIMessages
-  alias BeamWeaver.XAI.Error
+  alias BeamWeaver.Core.Error
 
-  @spec to_responses_input([Message.t()]) :: {:ok, [map()]} | {:error, Error.t()}
-  def to_responses_input(messages),
-    do: OpenAIMessages.to_responses_input(messages) |> convert_error()
+  # xAI's response ids are UUIDs, such as "94fa5e70-e18c-9f53-9368-d77dabd2b8a7".
+  @uuid ~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i
 
-  @spec normalize_input_items([map()] | nil) :: {:ok, [map()]} | {:error, Error.t()}
-  def normalize_input_items(items),
-    do: OpenAIMessages.normalize_input_items(items) |> convert_error()
-
-  @spec last_after_previous_response([Message.t()]) :: {[Message.t()], String.t() | nil}
-  def last_after_previous_response(messages),
-    do: OpenAIMessages.last_after_previous_response(messages)
-
-  @spec structured_output_format(String.t(), map(), keyword()) :: map()
-  def structured_output_format(name, schema, opts \\ []) do
-    name
-    |> OpenAIMessages.structured_output_format(schema, opts)
-    |> preserve_open_empty_object_maps()
+  # The id of a reply xAI's Responses API stored, the only kind
+  # `previous_response_id` continues from. A reply from another provider, from
+  # xAI's Chat Completions API, or made with `store: false` (xAI answers 404
+  # for its id) gets nil.
+  @spec response_id(Message.t()) :: String.t() | nil
+  def response_id(%Message{role: :assistant, response_metadata: %{model_provider: "xai", api: :responses} = metadata}) do
+    id = metadata[:id]
+    if is_binary(id) and Regex.match?(@uuid, id) and OpenAIMessages.Request.stored?(metadata), do: id
   end
+
+  def response_id(_message), do: nil
 
   @spec preserve_xai_open_object_maps(map()) :: map()
   def preserve_xai_open_object_maps(%{} = body) do
@@ -38,8 +30,6 @@ defmodule BeamWeaver.XAI.Messages do
     |> update_format_in(["text", "format"])
     |> update_format_in(["response_format"])
   end
-
-  def preserve_xai_open_object_maps(body), do: body
 
   defp update_format_in(body, path) do
     case get_in(body, path) do
@@ -57,20 +47,20 @@ defmodule BeamWeaver.XAI.Messages do
   end
 
   defp preserve_open_empty_object_maps(%{} = schema) do
-    schema
-    |> maybe_open_empty_object_map()
-    |> update_schema_child("properties", fn properties ->
-      Map.new(properties, fn {key, value} -> {key, preserve_open_empty_object_maps(value)} end)
-    end)
-    |> update_schema_child("items", &preserve_open_empty_object_maps/1)
-    |> update_schema_child("anyOf", fn schemas -> Enum.map(schemas, &preserve_open_empty_object_maps/1) end)
-    |> update_schema_child("oneOf", fn schemas -> Enum.map(schemas, &preserve_open_empty_object_maps/1) end)
-    |> update_schema_child("allOf", fn schemas -> Enum.map(schemas, &preserve_open_empty_object_maps/1) end)
-    |> update_schema_child("$defs", fn defs ->
-      Map.new(defs, fn {key, value} -> {key, preserve_open_empty_object_maps(value)} end)
-    end)
-    |> update_schema_child("definitions", fn defs ->
-      Map.new(defs, fn {key, value} -> {key, preserve_open_empty_object_maps(value)} end)
+    schema = maybe_open_empty_object_map(schema)
+
+    Map.new(schema, fn
+      {key, schemas} when key in ["properties", "$defs", "definitions"] ->
+        {key, Map.new(schemas, fn {name, value} -> {name, preserve_open_empty_object_maps(value)} end)}
+
+      {key, schemas} when key in ["anyOf", "oneOf", "allOf"] ->
+        {key, Enum.map(schemas, &preserve_open_empty_object_maps/1)}
+
+      {"items", items} ->
+        {"items", preserve_open_empty_object_maps(items)}
+
+      entry ->
+        entry
     end)
   end
 
@@ -91,118 +81,93 @@ defmodule BeamWeaver.XAI.Messages do
 
   defp maybe_open_empty_object_map(schema), do: schema
 
-  defp update_schema_child(schema, key, fun) do
-    case Map.fetch(schema, key) do
-      {:ok, value} -> Map.put(schema, key, fun.(value))
-      :error -> schema
-    end
-  end
-
-  @spec to_chat_completions_messages([Message.t()]) :: {:ok, [map()]} | {:error, Error.t()}
-  def to_chat_completions_messages(messages) do
-    ChatCompletions.Messages.to_openai_messages(messages) |> convert_error()
-  end
-
   @spec responses_to_message(map()) :: {:ok, Message.t()} | {:error, Error.t()}
   def responses_to_message(response) when is_map(response) do
-    response
-    |> OpenAIMessages.response_to_message()
-    |> convert_error()
-    |> put_provider_metadata(response)
+    with {:ok, message} <- OpenAIMessages.response_to_message(response), do: {:ok, put_responses_metadata(message)}
   end
+
+  # A Responses reply decoded by the OpenAI decoder, as a stream's final
+  # message is, becomes the same message `responses_to_message/1` returns.
+  @spec put_responses_metadata(Message.t()) :: Message.t()
+  def put_responses_metadata(%Message{} = message), do: put_provider_metadata(message, :responses)
 
   @spec chat_completions_to_message(map()) :: {:ok, Message.t()} | {:error, Error.t()}
   def chat_completions_to_message(response) when is_map(response) do
-    response
-    |> ChatCompletions.Messages.response_to_message()
-    |> convert_error()
-    |> put_provider_metadata(response)
-    |> put_chat_completion_metadata(response)
-    |> adjust_reasoning_usage(response)
+    with {:ok, message} <- ChatCompletions.Messages.response_to_message(response) do
+      {:ok,
+       message
+       |> put_provider_metadata(:chat_completions)
+       |> put_chat_completion_metadata(response)
+       |> adjust_reasoning_usage(response)}
+    end
   end
 
-  defp convert_error({:error, %BeamWeaver.OpenAI.Error{} = error}) do
-    {:error, Error.new(error.type, error.message, error.details)}
+  defp put_provider_metadata(message, api) do
+    message = %{
+      message
+      | metadata: put_xai_provider(message.metadata, api),
+        response_metadata: put_xai_provider(message.response_metadata, api)
+    }
+
+    # Billed totals include all server-side agent steps. Context details describe
+    # only the latest window and must drive context budgeting instead.
+    case get_in(message.response_metadata, [:usage, "context_details"]) do
+      %{"input_tokens" => input, "output_tokens" => output}
+      when is_integer(input) and input >= 0 and is_integer(output) and output >= 0 ->
+        %{message | usage_metadata: Map.put(message.usage_metadata || %{}, :context_tokens, input + output)}
+
+      _other ->
+        message
+    end
   end
 
-  defp convert_error(other), do: other
-
-  defp put_provider_metadata({:ok, %Message{} = message}, _response) do
-    metadata = put_xai_provider(message.metadata)
-    response_metadata = put_xai_provider(message.response_metadata)
-
-    {:ok, %{message | metadata: metadata, response_metadata: response_metadata}}
-  end
-
-  defp put_provider_metadata(other, _response), do: other
-
-  defp put_chat_completion_metadata({:ok, %Message{} = message}, response) do
+  defp put_chat_completion_metadata(message, response) do
     extras =
       %{}
       |> put_optional(:reasoning_content, reasoning_content(response))
       |> put_optional(:citations, citations(response))
+      |> put_optional(:output_files, response["output_files"])
 
-    metadata =
-      message.metadata
-      |> Map.merge(extras)
-      |> MessageParts.reject_nil_values()
-
-    response_metadata =
-      message.response_metadata
-      |> Map.merge(extras)
-      |> MessageParts.reject_nil_values()
-
-    {:ok, %{message | metadata: metadata, response_metadata: response_metadata}}
+    %{
+      message
+      | metadata: message.metadata |> Map.merge(extras) |> MessageParts.reject_nil_values(),
+        response_metadata: message.response_metadata |> Map.merge(extras) |> MessageParts.reject_nil_values()
+    }
   end
 
-  defp put_chat_completion_metadata(other, _response), do: other
+  defp adjust_reasoning_usage(%Message{usage_metadata: nil} = message, _response), do: message
 
-  defp adjust_reasoning_usage({:ok, %Message{usage_metadata: nil} = message}, _response),
-    do: {:ok, message}
+  defp adjust_reasoning_usage(message, response) do
+    case reasoning_tokens(response) do
+      0 ->
+        message
 
-  defp adjust_reasoning_usage({:ok, %Message{} = message}, response) do
-    reasoning_tokens = reasoning_tokens(response)
-
-    usage =
-      if reasoning_tokens > 0 do
+      reasoning_tokens ->
         usage = message.usage_metadata
-        base_output = Map.get(usage, :output_tokens, 0)
-        input = Map.get(usage, :input_tokens, 0)
-        raw_total = Map.get(usage, :total_tokens, 0)
-        adjusted_output = base_output + reasoning_tokens
+        output = Map.get(usage, :output_tokens, 0)
+        total = Map.get(usage, :total_tokens, 0)
+        total = if total == Map.get(usage, :input_tokens, 0) + output, do: total + reasoning_tokens, else: total
 
-        adjusted_total =
-          if raw_total == input + base_output do
-            raw_total + reasoning_tokens
-          else
-            raw_total
-          end
-
-        %{usage | output_tokens: adjusted_output, total_tokens: adjusted_total}
-      else
-        message.usage_metadata
-      end
-
-    {:ok, %{message | usage_metadata: usage}}
+        %{message | usage_metadata: %{usage | output_tokens: output + reasoning_tokens, total_tokens: total}}
+    end
   end
 
-  defp adjust_reasoning_usage(other, _response), do: other
-
-  defp put_xai_provider(metadata) do
+  defp put_xai_provider(metadata, api) do
     metadata
     |> Map.put(:model_provider, "xai")
     |> Map.put(:provider, :xai)
+    |> Map.put(:api, api)
   end
 
-  defp reasoning_content(response) do
-    response
-    |> first_choice_message()
-    |> case do
+  defp reasoning_content(%{"choices" => [%{"message" => message} | _rest]}) do
+    case message do
       %{"reasoning_content" => reasoning} when is_binary(reasoning) -> reasoning
       %{"reasoning" => reasoning} when is_binary(reasoning) -> reasoning
       _message -> nil
     end
   end
+
+  defp reasoning_content(_response), do: nil
 
   defp citations(response) do
     cond do
@@ -229,14 +194,4 @@ defmodule BeamWeaver.XAI.Messages do
       _value -> 0
     end
   end
-
-  defp first_choice_message(%{"choices" => [%{"message" => message} | _rest]})
-       when is_map(message),
-       do: message
-
-  defp first_choice_message(_response), do: nil
-
-  defp put_optional(map, _key, nil), do: map
-  defp put_optional(map, _key, []), do: map
-  defp put_optional(map, key, value), do: Map.put(map, key, value)
 end

@@ -1,18 +1,13 @@
 defmodule BeamWeaver.Anthropic.Messages do
-  @moduledoc """
-  Anthropic Messages API translation for BeamWeaver messages.
-  """
+  @moduledoc false
 
-  @behaviour BeamWeaver.Provider.MessageTranslator
-
-  alias BeamWeaver.Anthropic.Error
-  alias BeamWeaver.Anthropic.OutputParsers
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Core.ContentBlock
   alias BeamWeaver.Core.Message
+  alias BeamWeaver.Provider.ChatCompletionsWire
   alias BeamWeaver.Provider.Options
 
-  @impl true
-  def encode_message(%Message{} = message, opts \\ []) do
+  def encode_message(%Message{} = message, opts) do
     with {:ok, {system, messages}} <- format_messages([message], opts) do
       case messages do
         [encoded] -> {:ok, encoded}
@@ -22,11 +17,7 @@ defmodule BeamWeaver.Anthropic.Messages do
     end
   end
 
-  @impl true
-  def decode_message(payload, opts \\ []), do: response_to_message(payload, opts)
-
-  @impl true
-  def encode_messages(messages, opts \\ []), do: format_messages(messages, opts)
+  def decode_message(payload, _opts), do: response_to_message(payload)
 
   @spec format_messages([Message.t()], keyword()) ::
           {:ok, {String.t() | [map()] | nil, [map()]}} | {:error, Error.t()}
@@ -36,23 +27,21 @@ defmodule BeamWeaver.Anthropic.Messages do
     messages
     |> merge_messages()
     |> do_format_messages(opts)
+  rescue
+    error in ArgumentError -> {:error, Error.new(:invalid_content_block, Exception.message(error))}
   end
 
   def format_messages(_messages, _opts) do
     {:error, Error.new(:invalid_messages, "Anthropic input messages must be a list")}
   end
 
-  @spec response_to_message(map(), keyword()) :: {:ok, Message.t()} | {:error, Error.t()}
-  def response_to_message(response, _opts \\ [])
-
-  def response_to_message(%{"error" => %{"message" => message} = error}, _opts)
-      when is_binary(message) do
+  @spec response_to_message(map()) :: {:ok, Message.t()} | {:error, Error.t()}
+  def response_to_message(%{"error" => %{"message" => message} = error}) when is_binary(message) do
     {:error, Error.new(:response_error, message, %{error: Options.stringify_keys(error)})}
   end
 
-  def response_to_message(response, _opts) when is_map(response) do
-    content = normalize_response_content(response["content"] || [])
-    tool_calls = OutputParsers.extract_tool_calls(response["content"] || [])
+  def response_to_message(response) when is_map(response) do
+    content = normalize_response_content(response["content"])
     metadata = response_metadata(response)
 
     message_content =
@@ -74,28 +63,32 @@ defmodule BeamWeaver.Anthropic.Messages do
       response_metadata: metadata,
       usage_metadata: usage_metadata(response["usage"]),
       status: response["stop_reason"],
-      tool_calls: tool_calls
+      tool_calls: tool_calls(response["content"])
     )
-    |> case do
-      {:ok, message} -> {:ok, message}
-      {:error, error} -> {:error, Error.new(error.type, error.message, error.details)}
-    end
   end
 
-  def response_to_message(_response, _opts) do
+  def response_to_message(_response) do
     {:error, Error.new(:invalid_response, "Anthropic response must be a JSON object")}
   end
 
+  defp tool_calls(content) when is_list(content) do
+    for %{"type" => "tool_use"} = block <- content do
+      BeamWeaver.Core.Messages.tool_call(
+        id: block["id"],
+        provider_id: block["id"],
+        call_id: block["id"],
+        name: block["name"],
+        args: block["input"] || %{}
+      )
+    end
+  end
+
+  defp tool_calls(_content), do: []
+
   defp merge_messages(messages) do
     Enum.reduce(messages, [], fn
-      %Message{role: :tool} = message, acc ->
-        append_merged(acc, tool_message_as_user(message))
-
-      %Message{} = message, acc ->
-        append_merged(acc, message)
-
-      other, acc ->
-        append_merged(acc, other)
+      %Message{role: :tool} = message, acc -> append_merged(acc, tool_message_as_user(message))
+      message, acc -> append_merged(acc, message)
     end)
   end
 
@@ -142,84 +135,47 @@ defmodule BeamWeaver.Anthropic.Messages do
 
   defp do_format_messages(messages, opts) do
     messages = Enum.reverse(messages)
+    last = length(messages) - 1
 
-    with :ok <- validate_system_message_positions(messages, opts) do
-      Enum.reduce_while(
-        Enum.with_index(messages),
-        {:ok, nil, []},
-        fn {message, index}, {:ok, system, formatted} ->
-          case format_message(message, index, length(messages), system, opts) do
-            {:ok, new_system, nil} ->
-              {:cont, {:ok, new_system, formatted}}
-
-            {:ok, new_system, provider_message} ->
-              {:cont, {:ok, new_system, formatted ++ [provider_message]}}
-
-            {:error, error} ->
-              {:halt, {:error, error}}
-          end
-        end
-      )
-      |> case do
-        {:ok, system, formatted} -> {:ok, {system, formatted}}
-        {:error, error} -> {:error, error}
+    with :ok <- validate_system_message_positions(messages, opts),
+         {:ok, formatted} <-
+           messages |> Enum.with_index() |> BeamWeaver.Result.traverse(&format_message(&1, last)) do
+      case Enum.reject(formatted, &is_nil/1) do
+        [{:system, system} | formatted] -> {:ok, {system, formatted}}
+        formatted -> {:ok, {nil, formatted}}
       end
     end
   end
 
-  defp format_message(%Message{role: :system} = message, index, _count, system, opts) do
-    cond do
-      index == 0 and is_nil(system) ->
-        {:ok, system_content(message.content), nil}
+  defp format_message({%Message{role: :system} = message, 0}, _last),
+    do: {:ok, {:system, system_content(message.content)}}
 
-      Keyword.get(opts, :mid_conversation_system_messages, false) ->
-        {:ok, system, system_message(message)}
+  defp format_message({%Message{role: :system} = message, _index}, _last), do: {:ok, system_message(message)}
 
-      true ->
-        {:error, Error.new(:invalid_messages, "received multiple non-consecutive system messages")}
-    end
-  end
-
-  defp format_message(%Message{} = message, index, count, system, opts) do
-    with {:ok, content} <- message_content(message, opts) do
+  defp format_message({%Message{} = message, index}, last) do
+    with {:ok, content} <- message_content(message) do
       content =
-        if message.role == :assistant and index == count - 1 do
-          trim_final_assistant_content(content)
-        else
-          content
-        end
+        if message.role == :assistant and index == last, do: trim_final_assistant_content(content), else: content
 
-      if empty_content?(content) and message.role == :assistant and index < count - 1 do
-        {:ok, system, nil}
-      else
-        {:ok, system, %{"role" => provider_role(message.role), "content" => content}}
-      end
+      if empty_content?(content) and message.role == :assistant and index < last,
+        do: {:ok, nil},
+        else: {:ok, %{"role" => provider_role(message.role), "content" => content}}
     end
   end
 
-  defp format_message(_message, _index, _count, _system, _opts) do
-    {:error, Error.new(:invalid_message, "expected a BeamWeaver message")}
-  end
+  defp format_message(_message, _last), do: {:error, Error.new(:invalid_message, "expected a BeamWeaver message")}
 
   defp validate_system_message_positions(messages, opts) do
-    mid_conversation_systems =
-      messages
-      |> Enum.with_index()
-      |> Enum.filter(fn
-        {%Message{role: :system}, index} -> index > 0
-        _message -> false
-      end)
+    indexes = for {%Message{role: :system}, index} <- Enum.with_index(messages), index > 0, do: index
 
     cond do
-      mid_conversation_systems == [] ->
+      indexes == [] ->
         :ok
 
       not Keyword.get(opts, :mid_conversation_system_messages, false) ->
         {:error, Error.new(:invalid_messages, "received multiple non-consecutive system messages")}
 
-      Enum.all?(mid_conversation_systems, fn {_message, index} ->
-        valid_mid_conversation_system_position?(messages, index)
-      end) ->
+      Enum.all?(indexes, &valid_mid_conversation_system_position?(messages, &1)) ->
         :ok
 
       true ->
@@ -235,12 +191,8 @@ defmodule BeamWeaver.Anthropic.Messages do
     previous = Enum.at(messages, index - 1)
     following = Enum.at(messages, index + 1)
 
-    valid_previous =
-      match?(%Message{role: :user}, previous) or assistant_ends_with_server_tool_result?(previous)
-
-    valid_following = is_nil(following) or match?(%Message{role: :assistant}, following)
-
-    valid_previous and valid_following
+    (match?(%Message{role: :user}, previous) or assistant_ends_with_server_tool_result?(previous)) and
+      (is_nil(following) or match?(%Message{role: :assistant}, following))
   end
 
   defp assistant_ends_with_server_tool_result?(%Message{role: :assistant, content: content})
@@ -274,32 +226,94 @@ defmodule BeamWeaver.Anthropic.Messages do
     )
   end
 
-  defp message_content(
-         %Message{role: :assistant, response_metadata: %{provider_replay: %{provider: "anthropic", content: content}}},
-         _opts
-       )
+  defp message_content(%Message{
+         role: :assistant,
+         response_metadata: %{provider_replay: %{provider: "anthropic", content: content}}
+       })
        when is_list(content), do: {:ok, content}
 
-  defp message_content(%Message{role: role, content: content} = message, _opts)
-       when is_binary(content) do
-    if role == :assistant and message.tool_calls != [] do
-      initial = if content == "", do: [], else: [%{"type" => "text", "text" => content}]
-      {:ok, add_missing_tool_use_blocks(initial, message)}
+  defp message_content(%Message{role: :assistant, response_metadata: %{model_provider: provider}} = message)
+       when is_binary(provider) and provider != "anthropic",
+       do: {:ok, portable_content(message)}
+
+  defp message_content(
+         %Message{role: :assistant, response_metadata: %{provider_replay: %{provider: provider}}} = message
+       )
+       when provider != "anthropic",
+       do: {:ok, portable_content(message)}
+
+  defp message_content(%Message{role: role, content: content} = message) when is_binary(content) do
+    if role == :assistant and (message.tool_calls != [] or invalid_tool_calls(message) != []) do
+      {:ok, add_missing_tool_use_blocks(text_blocks(content), message)}
     else
       {:ok, content}
     end
   end
 
-  defp message_content(%Message{content: content} = message, _opts) when is_list(content) do
+  defp message_content(%Message{content: content} = message) when is_list(content) do
     blocks =
       content
       |> Enum.map(&content_block_to_anthropic!/1)
+      |> fold_server_tool_input()
+      |> Enum.flat_map(&replayable_block/1)
       |> add_missing_tool_use_blocks(message)
 
     {:ok, blocks}
-  rescue
-    exception -> {:error, Error.new(:invalid_content_block, Exception.message(exception))}
   end
+
+  defp text_blocks(""), do: []
+  defp text_blocks(text), do: [%{"type" => "text", "text" => text}]
+
+  # A reply from another provider, such as an OpenAI reply after a model
+  # fallback, goes as its text and tool calls. Its reasoning and provider
+  # blocks have no Anthropic form: Anthropic takes back only its own signed
+  # thinking.
+  defp portable_content(%Message{content: content} = message) do
+    content
+    |> List.wrap()
+    |> Enum.flat_map(fn
+      text when is_binary(text) and text != "" ->
+        [%{"type" => "text", "text" => text}]
+
+      %{type: type, text: text} when type in [:text, :output_text] and is_binary(text) and text != "" ->
+        [%{"type" => "text", "text" => text}]
+
+      %{type: :refusal, refusal: refusal} when is_binary(refusal) and refusal != "" ->
+        [%{"type" => "text", "text" => refusal}]
+
+      _block ->
+        []
+    end)
+    |> add_missing_tool_use_blocks(message)
+  end
+
+  # A streamed server tool call is merged from its start block, whose input is
+  # empty, and chunks of input JSON at the same stream position. The request
+  # takes the start block with the whole input.
+  defp fold_server_tool_input(blocks) do
+    partial_json =
+      for %{"type" => "server_tool_call_chunk", "index" => index} = chunk <- blocks, reduce: %{} do
+        acc -> Map.update(acc, index, chunk["args"] || "", &(&1 <> (chunk["args"] || "")))
+      end
+
+    Enum.map(blocks, fn
+      %{"type" => type, "index" => index} = block
+      when type in ["server_tool_use", "mcp_tool_use"] and is_map_key(partial_json, index) ->
+        block |> Map.put("partial_json", partial_json[index]) |> normalize_server_tool_input()
+
+      block ->
+        block
+    end)
+  end
+
+  # A streamed message is merged from chunks that carry partial tool input,
+  # empty text starts and stream positions. A request takes only the finished
+  # blocks; tool calls come back as tool_use blocks from the message's
+  # tool calls.
+  defp replayable_block(%{"type" => type}) when type in ["input_json_delta", "server_tool_call_chunk"], do: []
+  defp replayable_block(%{"type" => "text", "text" => ""}), do: []
+  defp replayable_block(block) when is_map(block), do: [Map.delete(block, "index")]
+  defp replayable_block(block), do: [block]
 
   defp content_block_to_anthropic!(%ContentBlock.Text{text: text, metadata: metadata}) do
     %{"type" => "text", "text" => text}
@@ -313,24 +327,14 @@ defmodule BeamWeaver.Anthropic.Messages do
   end
 
   defp content_block_to_anthropic!(%ContentBlock.Image{metadata: metadata} = block) do
-    %{"type" => "image", "source" => image_source(block.url, block.data, block.mime_type, nil)}
+    source = image_source(block.url, block.data, block.mime_type, %{"file_id" => block.file_id})
+
+    %{"type" => "image", "source" => source}
     |> merge_typed_metadata(metadata, ["cache_control"])
   end
 
   defp content_block_to_anthropic!(%ContentBlock.File{metadata: metadata} = block) do
-    %{
-      "type" => "document",
-      "source" =>
-        document_source(
-          block.file_id,
-          block.url,
-          block.data,
-          block.mime_type,
-          block.filename,
-          nil
-        )
-    }
-    |> Options.reject_nil_values()
+    %{"type" => "document", "source" => document_source(block.file_id, block.url, block.data, block.mime_type, nil)}
     |> merge_typed_metadata(metadata, ["cache_control"])
   end
 
@@ -351,18 +355,10 @@ defmodule BeamWeaver.Anthropic.Messages do
 
   defp content_block_to_anthropic!(%ContentBlock.Unknown{provider_type: type, value: value})
        when is_map(value) do
-    raw_provider_block =
-      case Map.get(value, :raw_provider_block) || Map.get(value, "raw_provider_block") do
-        raw when is_map(raw) -> Options.stringify_keys(raw)
-        _raw -> %{}
-      end
+    {_raw, provider_block} = with_raw_block(value)
+    provider_block = Map.put_new(provider_block, "type", type)
 
-    provider_block =
-      raw_provider_block
-      |> Map.merge(value |> Options.stringify_keys() |> Map.drop(["raw_provider_block"]))
-      |> Map.put_new("type", type)
-
-    case provider_type(type) do
+    case ChatCompletionsWire.provider_type(type) do
       tool_change when tool_change in ["tool_addition", "tool_removal"] ->
         normalize_tool_change(provider_block, tool_change)
 
@@ -374,24 +370,18 @@ defmodule BeamWeaver.Anthropic.Messages do
   defp content_block_to_anthropic!(%ContentBlock.Unknown{provider_type: type, value: value}),
     do: %{"type" => type, "value" => value}
 
+  # A content block Anthropic has no input for, such as video or audio.
+  defp content_block_to_anthropic!(%{__struct__: module} = block) do
+    raise ArgumentError,
+          "Anthropic Messages input does not take this #{inspect(Map.get(block, :type, module))} block"
+  end
+
   defp content_block_to_anthropic!(block) when is_map(block) do
     BeamWeaver.MapShape.assert_atom_keys!(block)
+    {raw_provider_block, provider_block} = with_raw_block(block)
 
-    raw_provider_block =
-      case Map.get(block, :raw_provider_block) do
-        raw when is_map(raw) -> Options.stringify_keys(raw)
-        _raw -> %{}
-      end
-
-    provider_block =
-      raw_provider_block
-      |> Map.merge(block |> Options.stringify_keys() |> Map.drop(["raw_provider_block"]))
-
-    case provider_type(Map.get(block, :type)) do
-      "input_text" ->
-        %{"type" => "text", "text" => Map.get(block, :text) || Map.get(block, :content) || ""}
-
-      "output_text" ->
+    case ChatCompletionsWire.provider_type(Map.get(block, :type)) do
+      type when type in ["input_text", "output_text"] ->
         %{"type" => "text", "text" => Map.get(block, :text) || Map.get(block, :content) || ""}
 
       "plain_text" ->
@@ -426,7 +416,6 @@ defmodule BeamWeaver.Anthropic.Messages do
               Map.get(block, :url),
               Map.get(block, :base64) || Map.get(block, :data),
               Map.get(block, :mime_type),
-              Map.get(block, :filename),
               provider_block
             )
         }
@@ -447,12 +436,10 @@ defmodule BeamWeaver.Anthropic.Messages do
         |> merge_passthrough(provider_block, ["caller", "toolset_name", "cache_control"])
 
       "server_tool_call" ->
-        provider_block
-        |> Map.put("type", "server_tool_use")
-        |> normalize_server_tool_input()
+        server_tool_use_block(block, raw_provider_block)
 
       "server_tool_result" ->
-        provider_block
+        server_tool_result_block(raw_provider_block)
 
       type when type in ["tool_addition", "tool_removal"] ->
         normalize_tool_change(provider_block, type)
@@ -472,7 +459,6 @@ defmodule BeamWeaver.Anthropic.Messages do
              "tool_use",
              "server_tool_use",
              "mcp_tool_use",
-             "input_json_delta",
              "code_execution_tool_result",
              "bash_code_execution_tool_result",
              "text_editor_code_execution_tool_result",
@@ -493,11 +479,17 @@ defmodule BeamWeaver.Anthropic.Messages do
   defp content_block_to_anthropic!(block) when is_binary(block),
     do: %{"type" => "text", "text" => block}
 
-  defp content_block_to_anthropic!(block) do
-    case ContentBlock.from(block) do
-      {:ok, normalized} -> content_block_to_anthropic!(normalized)
-      {:error, error} -> raise ArgumentError, error.message
-    end
+  defp content_block_to_anthropic!(block),
+    do: raise(ArgumentError, "value cannot be converted to a content block: #{inspect(block)}")
+
+  defp with_raw_block(value) do
+    raw =
+      case Map.get(value, :raw_provider_block) || Map.get(value, "raw_provider_block") do
+        raw when is_map(raw) -> Options.stringify_keys(raw)
+        _raw -> %{}
+      end
+
+    {raw, Map.merge(raw, value |> Options.stringify_keys() |> Map.drop(["raw_provider_block"]))}
   end
 
   defp text_document(text, block \\ %{}) do
@@ -539,55 +531,67 @@ defmodule BeamWeaver.Anthropic.Messages do
     end
   end
 
-  defp document_source(file_id, _url, _data, _mime_type, _filename, _block)
-       when is_binary(file_id) do
-    %{"type" => "file", "file_id" => file_id}
-  end
+  defp document_source(file_id, _url, _data, _mime_type, _block) when is_binary(file_id),
+    do: %{"type" => "file", "file_id" => file_id}
 
-  defp document_source(_file_id, _url, data, mime_type, _filename, _block)
-       when is_binary(data) do
-    %{"type" => "base64", "media_type" => mime_type || "application/pdf", "data" => data}
-  end
+  defp document_source(_file_id, _url, data, mime_type, _block) when is_binary(data),
+    do: %{"type" => "base64", "media_type" => mime_type || "application/pdf", "data" => data}
 
-  defp document_source(_file_id, url, _data, _mime_type, _filename, _block)
-       when is_binary(url) do
-    %{"type" => "url", "url" => url}
-  end
+  defp document_source(_file_id, url, _data, _mime_type, _block) when is_binary(url),
+    do: %{"type" => "url", "url" => url}
 
-  defp document_source(_file_id, _url, _data, mime_type, _filename, %{
-         "source_type" => "text",
-         "text" => text
-       }) do
-    %{"type" => "text", "media_type" => mime_type || "text/plain", "data" => text}
-  end
+  defp document_source(_file_id, _url, _data, mime_type, %{"source_type" => "text", "text" => text}),
+    do: %{"type" => "text", "media_type" => mime_type || "text/plain", "data" => text}
 
-  defp document_source(_file_id, _url, _data, _mime_type, _filename, _block) do
+  defp document_source(_file_id, _url, _data, _mime_type, _block) do
     raise ArgumentError,
           "Anthropic document blocks require url, base64/data, file_id/id, or source_type text"
   end
 
   defp merge_passthrough(formatted, block, keys) do
     extras = block["extras"] || block["metadata"] || %{}
-
-    keys
-    |> Enum.reduce(formatted, fn key, acc ->
-      value = block[key] || extras[key]
-      if is_nil(value), do: acc, else: Map.put(acc, key, value)
-    end)
+    Enum.reduce(keys, formatted, &BeamWeaver.MapShape.put_present(&2, &1, block[&1] || extras[&1]))
   end
 
   defp merge_typed_metadata(formatted, metadata, keys) do
     merge_passthrough(formatted, Options.stringify_keys(metadata || %{}), keys)
   end
 
-  defp normalize_server_tool_input(%{"input" => input, "partial_json" => partial_json} = block)
-       when input in [%{}, nil] and is_binary(partial_json) do
-    case BeamWeaver.JSON.decode(partial_json) do
-      {:ok, decoded} when is_map(decoded) and map_size(decoded) > 0 ->
-        Map.put(block, "input", decoded)
+  # A server tool call decoded from an Anthropic reply goes back as the block
+  # Anthropic sent; one made another way is mapped back from its fields.
+  defp server_tool_use_block(_block, %{"type" => type} = raw)
+       when type in ["server_tool_use", "mcp_tool_use"],
+       do: normalize_server_tool_input(raw)
 
-      _other ->
-        block
+  defp server_tool_use_block(block, _raw) do
+    %{
+      "type" => "server_tool_use",
+      "id" => Map.get(block, :id),
+      "name" => anthropic_server_tool_name(Map.get(block, :name)),
+      "input" => Map.get(block, :args) || %{}
+    }
+    |> Options.reject_nil_values()
+  end
+
+  # Each server tool has its own result block type, such as
+  # `web_search_tool_result`, which only the block Anthropic sent records.
+  defp server_tool_result_block(raw) do
+    if String.ends_with?(raw["type"] || "", "_tool_result") do
+      raw
+    else
+      raise ArgumentError, "a server tool result can be sent to Anthropic only as the block Anthropic returned"
+    end
+  end
+
+  # `partial_json` is stream state, not part of the block Anthropic takes back.
+  defp normalize_server_tool_input(%{"partial_json" => partial_json} = block) do
+    block = Map.delete(block, "partial_json")
+
+    with input when input in [%{}, nil] <- block["input"],
+         %{} = decoded <- decode_partial_json(partial_json) do
+      Map.put(block, "input", decoded)
+    else
+      _other -> block
     end
   end
 
@@ -621,33 +625,46 @@ defmodule BeamWeaver.Anthropic.Messages do
     end
   end
 
-  defp provider_type(type) when is_atom(type), do: Atom.to_string(type)
-  defp provider_type(type), do: type
-
   defp nested_value(map, key) when is_map(map), do: Map.get(map, key)
   defp nested_value(_value, _key), do: nil
 
-  defp add_missing_tool_use_blocks(content, %Message{role: :assistant, tool_calls: calls})
-       when is_list(calls) and calls != [] do
-    existing_ids =
-      content
-      |> Enum.filter(&(is_map(&1) and &1["type"] == "tool_use"))
-      |> Enum.map(& &1["id"])
-      |> Enum.reject(&is_nil/1)
-      |> MapSet.new()
-
-    missing =
-      calls
-      |> Enum.reject(fn call ->
-        id = call |> tool_call_id() |> anthropic_tool_use_id()
-        not is_nil(id) and MapSet.member?(existing_ids, id)
-      end)
-      |> Enum.map(&tool_call_to_tool_use/1)
-
-    content ++ missing
+  # Invalid calls, whose arguments came back malformed or truncated, go back as
+  # `tool_use` blocks too, with the arguments when they parse to an object:
+  # the agent answers each with an error `tool_result`, which needs its call.
+  defp add_missing_tool_use_blocks(content, %Message{role: :assistant, tool_calls: calls} = message)
+       when is_list(calls) do
+    add_tool_use_blocks(content, calls ++ Enum.map(invalid_tool_calls(message), &invalid_call_as_tool_use/1))
   end
 
   defp add_missing_tool_use_blocks(content, _message), do: content
+
+  defp add_tool_use_blocks(content, calls) do
+    existing_ids = for %{"type" => "tool_use", "id" => id} when not is_nil(id) <- content, into: MapSet.new(), do: id
+
+    content ++
+      for call <- calls,
+          not MapSet.member?(existing_ids, call |> tool_call_id() |> anthropic_tool_use_id()),
+          do: tool_call_to_tool_use(call)
+  end
+
+  defp invalid_tool_calls(%Message{metadata: %{invalid_tool_calls: calls}}) when is_list(calls),
+    do: Enum.filter(calls, &(is_map(&1) and is_binary(BeamWeaver.MapAccess.get(&1, :name))))
+
+  defp invalid_tool_calls(_message), do: []
+
+  defp invalid_call_as_tool_use(call) do
+    input =
+      case BeamWeaver.JSON.decode(BeamWeaver.MapAccess.get(call, :args) || "") do
+        {:ok, %{} = args} -> args
+        _other -> %{}
+      end
+
+    %{
+      call_id: tool_call_id(call),
+      name: BeamWeaver.MapAccess.get(call, :name),
+      args: input
+    }
+  end
 
   defp tool_call_to_tool_use(call) when is_map(call) do
     %{
@@ -716,8 +733,11 @@ defmodule BeamWeaver.Anthropic.Messages do
 
   defp response_block_to_beamweaver(block) when is_map(block) do
     block =
-      Options.stringify_keys(block)
-      |> drop_nil_fields(["citations", "caller", "encrypted_content", "text"])
+      block
+      |> Options.stringify_keys()
+      |> Map.reject(fn {key, value} ->
+        is_nil(value) and key in ["citations", "caller", "encrypted_content", "text"]
+      end)
 
     case block["type"] do
       "thinking" ->
@@ -741,12 +761,15 @@ defmodule BeamWeaver.Anthropic.Messages do
         }
         |> Options.reject_nil_values()
 
+      # Server tool blocks keep the block Anthropic sent, which is what a
+      # later request must replay.
       "server_tool_use" ->
         %{
           type: :server_tool_call,
           id: block["id"],
           name: server_tool_name(block["name"]),
-          args: block["input"] || decode_partial_json(block["partial_json"]) || %{}
+          args: server_tool_input(block),
+          raw_provider_block: block
         }
         |> maybe_put_index(block)
 
@@ -755,16 +778,17 @@ defmodule BeamWeaver.Anthropic.Messages do
           type: :server_tool_call,
           id: block["id"],
           name: "remote_mcp",
-          args: block["input"] || decode_partial_json(block["partial_json"]) || %{},
-          extras: %{"tool_name" => block["name"], "server_name" => block["server_name"]}
+          args: server_tool_input(block),
+          extras: %{"tool_name" => block["name"], "server_name" => block["server_name"]},
+          raw_provider_block: block
         }
         |> maybe_put_index(block)
 
       "document" ->
-        document_block_to_beamweaver(block)
+        media_response_block(:file, block)
 
       "image" ->
-        image_block_to_beamweaver(block)
+        media_response_block(:image, block)
 
       type when is_binary(type) ->
         if String.ends_with?(type, "_tool_result") do
@@ -773,7 +797,8 @@ defmodule BeamWeaver.Anthropic.Messages do
             tool_call_id: block["tool_use_id"],
             output: block["content"],
             status: if(block["is_error"], do: "error", else: "success"),
-            extras: %{"block_type" => type}
+            extras: %{"block_type" => type},
+            raw_provider_block: block
           }
           |> maybe_put_index(block)
         else
@@ -787,54 +812,30 @@ defmodule BeamWeaver.Anthropic.Messages do
 
   defp response_block_to_beamweaver(block), do: block
 
-  defp document_block_to_beamweaver(%{"source" => %{"type" => "base64"} = source} = block) do
-    %{type: :file, base64: source["data"], mime_type: source["media_type"]}
-    |> merge_response_extras(block, ["type", "source"])
-  end
+  defp media_response_block(type, block) do
+    standard =
+      case block["source"] do
+        %{"type" => "base64"} = source ->
+          %{type: type, base64: source["data"], mime_type: source["media_type"]}
 
-  defp document_block_to_beamweaver(%{"source" => %{"type" => "url", "url" => url}} = block) do
-    %{type: :file, url: url}
-    |> merge_response_extras(block, ["type", "source"])
-  end
+        %{"type" => "url", "url" => url} ->
+          %{type: type, url: url}
 
-  defp document_block_to_beamweaver(%{"source" => %{"type" => "file", "file_id" => id}} = block) do
-    %{type: :file, file_id: id}
-    |> merge_response_extras(block, ["type", "source"])
-  end
+        %{"type" => "file", "file_id" => id} ->
+          %{type: type, file_id: id}
 
-  defp document_block_to_beamweaver(%{"source" => %{"type" => "text", "data" => text} = source} = block) do
-    %{type: :plain_text, text: text, mime_type: source["media_type"] || "text/plain"}
-    |> merge_response_extras(block, ["type", "source"])
-  end
+        %{"type" => "text", "data" => text} = source when type == :file ->
+          %{type: :plain_text, text: text, mime_type: source["media_type"] || "text/plain"}
 
-  defp document_block_to_beamweaver(block), do: provider_response_block(block)
+        _source ->
+          nil
+      end
 
-  defp image_block_to_beamweaver(%{"source" => %{"type" => "base64"} = source} = block) do
-    %{type: :image, base64: source["data"], mime_type: source["media_type"]}
-    |> merge_response_extras(block, ["type", "source"])
-  end
-
-  defp image_block_to_beamweaver(%{"source" => %{"type" => "url", "url" => url}} = block) do
-    %{type: :image, url: url}
-    |> merge_response_extras(block, ["type", "source"])
-  end
-
-  defp image_block_to_beamweaver(%{"source" => %{"type" => "file", "file_id" => id}} = block) do
-    %{type: :image, file_id: id}
-    |> merge_response_extras(block, ["type", "source"])
-  end
-
-  defp image_block_to_beamweaver(block), do: provider_response_block(block)
-
-  defp merge_response_extras(standard, block, known_fields) do
-    extras = Map.drop(block, known_fields)
-    if extras == %{}, do: standard, else: Map.put(standard, :extras, extras)
-  end
-
-  defp drop_nil_fields(block, fields) do
-    Enum.reduce(fields, block, fn field, acc ->
-      if Map.get(acc, field) == nil, do: Map.delete(acc, field), else: acc
-    end)
+    case {standard, Map.drop(block, ["type", "source"])} do
+      {nil, _extras} -> provider_response_block(block)
+      {standard, extras} when extras == %{} -> standard
+      {standard, extras} -> Map.put(standard, :extras, extras)
+    end
   end
 
   defp provider_response_block(%{"type" => "text"} = block) do
@@ -864,7 +865,17 @@ defmodule BeamWeaver.Anthropic.Messages do
   defp server_tool_name("code_execution"), do: "code_interpreter"
   defp server_tool_name(name), do: name || ""
 
-  defp decode_partial_json(nil), do: nil
+  defp anthropic_server_tool_name("code_interpreter"), do: "code_execution"
+  defp anthropic_server_tool_name(name), do: name
+
+  # Until a streamed tool block is finished, its input is `{}` and the JSON
+  # arrives in `partial_json`.
+  defp server_tool_input(block) do
+    case block["input"] do
+      input when is_map(input) and map_size(input) > 0 -> input
+      input -> decode_partial_json(block["partial_json"]) || input || %{}
+    end
+  end
 
   defp decode_partial_json(partial_json) when is_binary(partial_json) do
     case BeamWeaver.JSON.decode(partial_json) do
@@ -873,31 +884,29 @@ defmodule BeamWeaver.Anthropic.Messages do
     end
   end
 
+  defp decode_partial_json(_partial_json), do: nil
+
   @doc false
   def usage_metadata(nil), do: nil
 
   def usage_metadata(usage) when is_map(usage) do
     usage = usage |> Options.stringify_keys() |> effective_compaction_usage()
-    cache_creation = usage["cache_creation"] || %{}
-
-    cache_creation =
-      if is_map(cache_creation), do: Options.stringify_keys(cache_creation), else: %{}
-
+    cache_creation = if is_map(usage["cache_creation"]), do: usage["cache_creation"], else: %{}
     cache_read = usage["cache_read_input_tokens"] || 0
-    cache_creation_total = usage["cache_creation_input_tokens"] || 0
     ephemeral_5m = cache_creation["ephemeral_5m_input_tokens"] || 0
     ephemeral_1h = cache_creation["ephemeral_1h_input_tokens"] || 0
-    specific_cache_creation = ephemeral_5m + ephemeral_1h
-    cache_creation_tokens = cache_creation_tokens(cache_creation_total, specific_cache_creation)
 
-    input_tokens =
-      (usage["input_tokens"] || 0) + cache_read + cache_creation_tokens
+    cache_creation_tokens =
+      if ephemeral_5m + ephemeral_1h > 0,
+        do: ephemeral_5m + ephemeral_1h,
+        else: usage["cache_creation_input_tokens"] || 0
 
+    input_tokens = (usage["input_tokens"] || 0) + cache_read + cache_creation_tokens
     output_tokens = usage["output_tokens"] || 0
 
     input_details =
       %{
-        cache_read: if(cache_read > 0, do: cache_read),
+        cache_read: positive(cache_read),
         cache_creation: positive(cache_creation_tokens),
         ephemeral_5m_input_tokens: positive(ephemeral_5m),
         ephemeral_1h_input_tokens: positive(ephemeral_1h)
@@ -921,44 +930,28 @@ defmodule BeamWeaver.Anthropic.Messages do
   end
 
   defp effective_compaction_usage(usage) do
-    if usage["input_tokens"] in [nil, 0] and usage["output_tokens"] in [nil, 0] do
-      case Enum.find(List.wrap(usage["iterations"]), fn
-             %{"type" => "compaction"} -> true
-             _iteration -> false
-           end) do
-        %{} = iteration ->
-          Map.merge(
-            usage,
-            Map.take(iteration, [
-              "input_tokens",
-              "output_tokens",
-              "cache_read_input_tokens",
-              "cache_creation_input_tokens",
-              "cache_creation"
-            ])
-          )
+    compaction = Enum.find(List.wrap(usage["iterations"]), &match?(%{"type" => "compaction"}, &1))
 
-        nil ->
-          usage
-      end
+    if usage["input_tokens"] in [nil, 0] and usage["output_tokens"] in [nil, 0] and compaction do
+      Map.merge(
+        usage,
+        Map.take(compaction, [
+          "input_tokens",
+          "output_tokens",
+          "cache_read_input_tokens",
+          "cache_creation_input_tokens",
+          "cache_creation"
+        ])
+      )
     else
       usage
     end
   end
 
-  defp cache_creation_tokens(_cache_creation_total, specific_cache_creation)
-       when is_number(specific_cache_creation) and specific_cache_creation > 0,
-       do: specific_cache_creation
-
-  defp cache_creation_tokens(cache_creation_total, _specific_cache_creation),
-    do: cache_creation_total
-
   defp positive(value) when is_number(value) and value > 0, do: value
   defp positive(_value), do: nil
 
   defp output_token_details(details) when is_map(details) do
-    details = Options.stringify_keys(details)
-
     %{
       thinking_tokens: positive(details["thinking_tokens"]),
       reasoning: positive(details["reasoning_tokens"])
@@ -990,15 +983,9 @@ defmodule BeamWeaver.Anthropic.Messages do
       diagnostics: response["diagnostics"],
       input_transformations: response["input_transformations"],
       headers: header_metadata[:headers],
-      transport: transport_metadata(header_metadata),
+      transport: BeamWeaver.Provider.ResponseDecoder.transport_metadata(header_metadata),
       raw_provider_response: response
     }
     |> Options.reject_nil_values()
   end
-
-  defp transport_metadata(%{request_id: request_id}) when is_binary(request_id) and request_id != "" do
-    %{request_id: request_id}
-  end
-
-  defp transport_metadata(_metadata), do: nil
 end

@@ -2,6 +2,7 @@
 # Offline fixtures: mix run examples/typesafe_dynamic_routing.exs --offline
 # Export TYPESAFE_API_KEY (or TYPESAFE_API) and OPENAI_API_KEY before live runs.
 
+Code.require_file("support.exs", __DIR__)
 Code.require_file("typesafe_routing_prompts.exs", __DIR__)
 
 defmodule BeamWeaver.Examples.TypeSafeRouting do
@@ -21,7 +22,7 @@ defmodule BeamWeaver.Examples.TypeSafeRouting do
       questions = request.json["questions"]
 
       answers =
-        if Map.has_key?(questions, "route") do
+        if Map.has_key?(questions, "choice") do
           text = request.json["state"]["message"]["content"]
 
           choice =
@@ -34,7 +35,7 @@ defmodule BeamWeaver.Examples.TypeSafeRouting do
             end
 
           %{
-            "route" => %{
+            "choice" => %{
               "type" => "choice",
               "choice" => choice,
               "confidence" => 0.95,
@@ -131,6 +132,9 @@ defmodule BeamWeaver.Examples.TypeSafeRouting do
       })
 
     IO.inspect(result.answers, label: "Standalone Jev decisions")
+    "engineering" = result.answers["team"].choice
+    true = result.answers["urgent"].noul > 0.5
+    true = result.answers["severity"].score > 1.5
 
     IO.inspect(
       %{
@@ -180,7 +184,10 @@ defmodule BeamWeaver.Examples.TypeSafeRouting do
       case BWAgent.invoke(agent, %{messages: [Message.user(prompt)]}) do
         {:ok, state} ->
           IO.inspect(state.model_route, label: "Model route (below 0.8 or on error: Luna)")
-          IO.puts("Answer: " <> Message.text(List.last(state.messages)))
+          expected_route = if prompt == @simple, do: "fast", else: "powerful"
+          %{"accepted" => true, "choice" => ^expected_route} = state.model_route
+          IO.puts("Answer: " <> BeamWeaver.Examples.Support.assert_text!(List.last(state.messages)))
+          if prompt == @simple, do: BeamWeaver.Examples.Support.assert_tools_called!(state.messages, ["multiply"])
 
         {:error, error} ->
           raise "Agent failed: #{error.type}: #{error.message}"

@@ -1,7 +1,6 @@
 defmodule BeamWeaver.Agent.Middleware.Hooks do
   @moduledoc false
 
-  alias BeamWeaver.Agent.Middleware.Capabilities
   alias BeamWeaver.Agent.Middleware.ModelCallLimit
   alias BeamWeaver.Agent.Middleware.ToolCallLimit
   alias BeamWeaver.Agent.ModelRequest
@@ -11,96 +10,41 @@ defmodule BeamWeaver.Agent.Middleware.Hooks do
   alias BeamWeaver.Graph.Command
   alias BeamWeaver.Tracing
 
-  @type middleware :: module() | struct()
-  @type hook_result ::
-          nil
-          | map()
-          | {:ok, map()}
-          | {:error, term()}
-          | {:jump, :model | :tools | :end, map()}
-          | BeamWeaver.Graph.Command.t()
-
-  @hooks [
-    :before_agent,
-    :before_model,
-    :after_model,
-    :after_agent,
-    :wrap_model_call,
-    :wrap_tool_call
-  ]
-
-  @spec hook?(middleware(), atom()) :: boolean()
-  def hook?(middleware, hook) when hook in @hooks do
-    module = middleware_module(middleware)
-    Code.ensure_loaded?(module)
-    function_exported?(module, hook, 2) or function_exported?(module, hook, 3)
-  end
-
-  def hook?(_middleware, _hook), do: false
-
-  @spec call_hook(middleware(), atom(), map(), BeamWeaver.Graph.Runtime.t()) :: hook_result()
-  def call_hook(middleware, hook, state, runtime)
-      when hook in [:before_agent, :before_model, :after_model, :after_agent] do
-    module = middleware_module(middleware)
-    Code.ensure_loaded?(module)
-
-    trace_middleware(middleware, hook, hook_inputs(state), fn ->
-      cond do
-        function_exported?(module, hook, 3) -> apply(module, hook, [middleware, state, runtime])
-        function_exported?(module, hook, 2) -> apply(module, hook, [state, runtime])
-      end
+  # Runs one middleware hook, inside a trace span when tracing is on.
+  @doc false
+  def call(middleware, hook, arg, extra) do
+    trace_middleware(middleware, hook, trace_inputs(hook, arg), fn ->
+      apply(middleware_module(middleware), hook, [middleware, arg, extra])
     end)
   end
 
-  @spec call_wrapper(middleware(), :wrap_model_call | :wrap_tool_call, term(), function()) ::
-          term()
-  def call_wrapper(middleware, hook, request, handler)
-      when hook in [:wrap_model_call, :wrap_tool_call] do
-    module = middleware_module(middleware)
-    Code.ensure_loaded?(module)
-
-    trace_middleware(middleware, hook, wrapper_inputs(request), fn ->
-      cond do
-        function_exported?(module, hook, 3) -> apply(module, hook, [middleware, request, handler])
-        function_exported?(module, hook, 2) -> apply(module, hook, [request, handler])
-      end
-    end)
-  end
+  defp trace_inputs(hook, request) when hook in [:wrap_model_call, :wrap_tool_call], do: wrapper_inputs(request)
+  defp trace_inputs(_hook, state), do: hook_inputs(state)
 
   defp middleware_module(module) when is_atom(module), do: module
   defp middleware_module(%{__struct__: module}), do: module
 
   defp trace_middleware(middleware, hook, inputs, fun) when is_function(fun, 0) do
-    if trace_middleware?() do
-      {:ok, run} =
-        Tracing.start_run(trace_name(middleware, hook),
+    if BeamWeaver.Core.ChatModel.trace?([]) do
+      Tracing.Runner.run(
+        trace_name(middleware, hook),
+        [
           kind: :chain,
           inputs: inputs,
           tags: [:middleware, hook],
           metadata: trace_metadata(middleware, hook),
           context_metadata: %{}
-        )
-
-      try do
-        result = fun.()
-        finish_middleware_run(run, result)
-        result
-      rescue
-        exception ->
-          Tracing.fail_run(run, exception)
-          reraise exception, __STACKTRACE__
-      catch
-        kind, reason ->
-          Tracing.fail_run(run, %{kind: kind, reason: reason})
-          :erlang.raise(kind, reason, __STACKTRACE__)
-      end
+        ],
+        [],
+        fun,
+        fn run, result ->
+          finish_middleware_run(run, result)
+          result
+        end
+      )
     else
       fun.()
     end
-  end
-
-  defp trace_middleware? do
-    not is_nil(Tracing.capture_context()) or Tracing.exporter_configured?()
   end
 
   defp finish_middleware_run(run, {:error, error}) do
@@ -123,20 +67,7 @@ defmodule BeamWeaver.Agent.Middleware.Hooks do
   defp middleware_trace_identity(_middleware), do: nil
 
   defp middleware_display_name(middleware) do
-    case middleware_module(middleware) |> Module.split() |> List.last() do
-      "ToolCallNormalization" -> "PatchToolCallsMiddleware"
-      "TodoList" -> "TodoListMiddleware"
-      "Filesystem" -> "FilesystemMiddleware"
-      "Subagents" -> "SubAgentMiddleware"
-      "AsyncSubagents" -> "AsyncSubAgentMiddleware"
-      "CompactConversation" -> "SummarizationMiddleware"
-      "PromptCaching" -> "PromptCachingMiddleware"
-      name when is_binary(name) -> ensure_middleware_suffix(name)
-    end
-  end
-
-  defp ensure_middleware_suffix(name) do
-    if String.ends_with?(name, "Middleware"), do: name, else: "#{name}Middleware"
+    middleware |> middleware_module() |> Module.split() |> List.last()
   end
 
   defp trace_metadata(middleware, hook) do
@@ -149,18 +80,12 @@ defmodule BeamWeaver.Agent.Middleware.Hooks do
     }
   end
 
-  defp middleware_name(middleware) do
-    middleware
-    |> Capabilities.name()
-    |> to_string()
-  rescue
-    _exception -> inspect(middleware_module(middleware))
-  end
+  defp middleware_name(middleware), do: BeamWeaver.Agent.Middleware.name(middleware)
 
   defp hook_inputs(state) when is_map(state) do
     %{
       state_keys: state_keys(state),
-      messages_count: state |> state_messages() |> length()
+      messages_count: length(Map.get(state, :messages) || [])
     }
   end
 
@@ -223,10 +148,6 @@ defmodule BeamWeaver.Agent.Middleware.Hooks do
   defp trace_output(nil), do: nil
   defp trace_output(value) when is_binary(value), do: String.slice(value, 0, 500)
   defp trace_output(value), do: inspect(value)
-
-  defp state_messages(state) when is_map(state) do
-    Map.get(state, :messages) || Map.get(state, "messages") || []
-  end
 
   defp state_keys(state) when is_map(state) do
     state

@@ -1,11 +1,14 @@
 defmodule BeamWeaver.Agent.State do
   @moduledoc false
 
+  alias BeamWeaver.Graph.Command
+
   @core_keys [
     :messages,
     :remaining_steps,
     :jump_to,
     :tool_set,
+    :tool_set_names,
     :usage,
     :structured_response,
     :raw_input
@@ -13,23 +16,27 @@ defmodule BeamWeaver.Agent.State do
 
   @string_key_aliases Map.new(@core_keys, fn key -> {Atom.to_string(key), key} end)
 
-  @spec project(map(), map() | nil) :: map()
-  def project(input, schema \\ nil) when is_map(input) do
+  @spec project(map() | Command.t(), map() | nil) :: map() | Command.t()
+  def project(input, schema \\ nil)
+
+  # A command continues the thread; only its state update is agent input.
+  def project(%Command{update: update} = command, schema) when is_map(update) and not is_struct(update),
+    do: %{command | update: project(update, schema)}
+
+  def project(%Command{} = command, _schema), do: command
+
+  def project(input, schema) when is_map(input) do
     known_keys = schema_keys(schema)
 
     projected =
-      known_keys
-      |> Enum.reduce(%{}, fn key, acc ->
-        case fetch_known(input, key) do
+      Enum.reduce(known_keys, atom_extras(input, known_keys), fn key, acc ->
+        case BeamWeaver.MapAccess.fetch(input, key) do
           {:ok, value} -> Map.put(acc, key, value)
           :error -> acc
         end
       end)
-      |> Map.merge(atom_extras(input, known_keys))
 
-    raw_input = raw_input(input, known_keys)
-    existing_raw = Map.get(projected, :raw_input)
-    raw_input = merge_raw_input(raw_input, existing_raw)
+    raw_input = merge_raw_input(raw_input(input, known_keys), Map.get(projected, :raw_input))
 
     if map_size(raw_input) == 0 do
       projected
@@ -61,15 +68,11 @@ defmodule BeamWeaver.Agent.State do
     end
   end
 
+  # A turn's own answer: the model call clears an earlier turn's, so a key
+  # holding `nil` means this turn has none yet.
   @spec structured_response?(map()) :: boolean()
   def structured_response?(state) when is_map(state),
-    do: Map.has_key?(state, :structured_response) or Map.has_key?(state, "structured_response")
-
-  @spec structured_response(map()) :: term()
-  def structured_response(state) when is_map(state),
-    do: Map.get(state, :structured_response, Map.get(state, "structured_response"))
-
-  defp schema_keys(nil), do: MapSet.new(@core_keys)
+    do: Map.get(state, :structured_response, Map.get(state, "structured_response")) != nil
 
   defp schema_keys(schema) when is_map(schema) do
     schema
@@ -91,29 +94,11 @@ defmodule BeamWeaver.Agent.State do
 
   defp schema_keys(_schema), do: MapSet.new(@core_keys)
 
-  defp fetch_known(input, key) when is_atom(key) do
-    string_key = Atom.to_string(key)
+  defp atom_extras(input, known_keys),
+    do: for({key, value} <- input, is_atom(key), not MapSet.member?(known_keys, key), into: %{}, do: {key, value})
 
-    cond do
-      Map.has_key?(input, key) -> {:ok, Map.fetch!(input, key)}
-      Map.has_key?(input, string_key) -> {:ok, Map.fetch!(input, string_key)}
-      true -> :error
-    end
-  end
-
-  defp atom_extras(input, known_keys) do
-    input
-    |> Enum.filter(fn {key, _value} -> is_atom(key) and not MapSet.member?(known_keys, key) end)
-    |> Map.new()
-  end
-
-  defp raw_input(input, known_keys) do
-    input
-    |> Enum.filter(fn {key, _value} ->
-      is_binary(key) and not known_string_key?(key, known_keys)
-    end)
-    |> Map.new()
-  end
+  defp raw_input(input, known_keys),
+    do: for({key, value} <- input, is_binary(key), not known_string_key?(key, known_keys), into: %{}, do: {key, value})
 
   defp known_string_key?(key, known_keys) do
     Enum.any?(known_keys, &(is_atom(&1) and Atom.to_string(&1) == key))

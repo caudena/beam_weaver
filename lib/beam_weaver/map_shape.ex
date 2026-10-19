@@ -57,47 +57,46 @@ defmodule BeamWeaver.MapShape do
   def normalize_value(value) when is_atom(value), do: Atom.to_string(value)
   def normalize_value(value), do: value
 
-  @spec assert_atom_keys!(term()) :: term()
-  def assert_atom_keys!(map) when is_map(map) do
-    case Enum.find(map, fn {key, _value} -> not is_atom(key) end) do
-      nil -> map
-      {key, _value} -> raise ArgumentError, "expected atom map keys, got #{inspect(key)}"
-    end
+  @spec assert_atom_keys_in!(list()) :: list()
+  def assert_atom_keys_in!(values) when is_list(values) do
+    Enum.each(values, fn
+      value when is_map(value) and not is_struct(value) -> assert_atom_keys!(value)
+      _value -> :ok
+    end)
+
+    values
   end
 
-  def assert_atom_keys!(value),
-    do: raise(ArgumentError, "expected map with atom keys, got #{inspect(value)}")
+  @spec assert_atom_keys!(term()) :: term()
+  def assert_atom_keys!(value), do: assert_keys!(value, &is_atom/1, "atom")
 
   @spec assert_string_keys!(term()) :: term()
-  def assert_string_keys!(map) when is_map(map) do
-    case Enum.find(map, fn {key, _value} -> not is_binary(key) end) do
+  def assert_string_keys!(value), do: assert_keys!(value, &is_binary/1, "string")
+
+  defp assert_keys!(map, valid_key?, kind) when is_map(map) do
+    case Enum.find(map, fn {key, _value} -> not valid_key?.(key) end) do
       nil -> map
-      {key, _value} -> raise ArgumentError, "expected string map keys, got #{inspect(key)}"
+      {key, _value} -> raise ArgumentError, "expected #{kind} map keys, got #{inspect(key)}"
     end
   end
 
-  def assert_string_keys!(value),
-    do: raise(ArgumentError, "expected map with string keys, got #{inspect(value)}")
+  defp assert_keys!(value, _valid_key?, kind),
+    do: raise(ArgumentError, "expected map with #{kind} keys, got #{inspect(value)}")
 
   @spec assert_atom_keys_deep!(term()) :: term()
-  def assert_atom_keys_deep!(value), do: assert_keys_deep!(value, &is_atom/1, "atom")
-
-  @spec assert_string_keys_deep!(term()) :: term()
-  def assert_string_keys_deep!(value), do: assert_keys_deep!(value, &is_binary/1, "string")
-
-  defp assert_keys_deep!(map, predicate, label) when is_map(map) do
+  def assert_atom_keys_deep!(map) when is_map(map) do
     Enum.each(map, fn {key, value} ->
-      unless predicate.(key), do: raise(ArgumentError, "expected #{label} map keys, got #{inspect(key)}")
-      assert_keys_deep!(value, predicate, label)
+      unless is_atom(key), do: raise(ArgumentError, "expected atom map keys, got #{inspect(key)}")
+      assert_atom_keys_deep!(value)
     end)
 
     map
   end
 
-  defp assert_keys_deep!(list, predicate, label) when is_list(list) do
-    Enum.each(list, &assert_keys_deep!(&1, predicate, label))
+  def assert_atom_keys_deep!(list) when is_list(list) do
+    Enum.each(list, &assert_atom_keys_deep!/1)
     list
   end
 
-  defp assert_keys_deep!(value, _predicate, _label), do: value
+  def assert_atom_keys_deep!(value), do: value
 end

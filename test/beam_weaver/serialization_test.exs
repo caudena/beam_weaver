@@ -1,7 +1,8 @@
 defmodule BeamWeaver.SerializationTest do
   use ExUnit.Case, async: true
 
-  alias BeamWeaver.Adapter.ValueCodec
+  import ExUnit.CaptureLog
+
   alias BeamWeaver.Agent.Subagent.AsyncTask
   alias BeamWeaver.Agent.Usage
   alias BeamWeaver.Core.ContentBlock
@@ -13,6 +14,7 @@ defmodule BeamWeaver.SerializationTest do
   alias BeamWeaver.Core.Messages.ToolCallChunk
   alias BeamWeaver.Filesystem
   alias BeamWeaver.Graph.Command
+  alias BeamWeaver.Graph.Execution.NodeOutput
   alias BeamWeaver.Graph.Execution.TaskRequest
   alias BeamWeaver.Graph.ExecutionInfo
   alias BeamWeaver.Graph.Interrupt
@@ -29,6 +31,16 @@ defmodule BeamWeaver.SerializationTest do
 
   defmodule RegisteredAppStruct do
     defstruct [:id, :value]
+  end
+
+  defmodule RegisteredAppError do
+    defexception [:message]
+  end
+
+  defmodule PlainJSON do
+    # An inner codec that encrypts JSON text as it is given.
+    def dump(json, _opts), do: {:ok, json}
+    def load(json, opts), do: BeamWeaver.Serialization.JSON.load(json, opts)
   end
 
   test "round trips registered BeamWeaver structs through safe JSON tags" do
@@ -73,26 +85,26 @@ defmodule BeamWeaver.SerializationTest do
     assert is_binary(encoded)
     assert {:ok, decoded} = Serialization.load(encoded)
 
-    assert decoded["document"].id == "d1"
-    assert decoded["document"].content == "source text"
-    assert decoded["message"].id == "m1"
-    assert decoded["message"].role == :assistant
-    assert [%ToolCall{id: "call-1", name: "lookup"}] = decoded["message"].tool_calls
-    assert [%InvalidToolCall{id: "bad-1"}] = decoded["message"].metadata["invalid_tool_calls"]
-    assert [%ToolCallChunk{id: "chunk-1"}] = decoded["message"].metadata["tool_call_chunks"]
-    assert decoded["command"].goto == :done
-    assert decoded["send"].node == :worker
-    assert decoded["send"].timeout == 250
-    assert decoded["send_with_policy"].node == :policy_worker
+    assert decoded.document.id == "d1"
+    assert decoded.document.content == "source text"
+    assert decoded.document.metadata == %{source: "test"}
+    assert decoded.message.id == "m1"
+    assert decoded.message.role == :assistant
+    assert [%ToolCall{id: "call-1", name: "lookup", args: %{"q" => "beam"}}] = decoded.message.tool_calls
+    assert [%InvalidToolCall{id: "bad-1"}] = decoded.message.metadata.invalid_tool_calls
+    assert [%ToolCallChunk{id: "chunk-1"}] = decoded.message.metadata.tool_call_chunks
+    assert decoded.command == value.command
+    assert decoded.send == value.send
+    assert decoded.send_with_policy.node == :policy_worker
 
     assert %TimeoutPolicy{idle_timeout: 250, refresh_on: :heartbeat} =
-             decoded["send_with_policy"].timeout
+             decoded.send_with_policy.timeout
 
-    assert decoded["error"].type == :example
-    assert %Filesystem.FileData{content: "agent notes", encoding: "utf-8"} = decoded["file_data"]
-    assert decoded["run"].id == "run_1"
-    assert decoded["run"].started_at == ~U[2026-05-22 00:00:00Z]
-    assert decoded["run"].metadata["provider"] == :openai
+    assert decoded.error == value.error
+    assert %Filesystem.FileData{content: "agent notes", encoding: "utf-8"} = decoded.file_data
+    assert decoded.run.id == "run_1"
+    assert decoded.run.started_at == ~U[2026-05-22 00:00:00Z]
+    assert decoded.run.metadata == %{provider: :openai}
   end
 
   test "restored assistant tool-call content remains provider encodable" do
@@ -202,6 +214,11 @@ defmodule BeamWeaver.SerializationTest do
         }
       ],
       "pending_writes" => [{"task-1", "messages", [%Remove{id: "pending-remove"}]}],
+      # A graph node's output as a cache keeps it.
+      "node_output" => %NodeOutput{
+        raw: %Command{update: %{order: %{id: "A-1001"}}, goto: :notify},
+        projected: %Command{update: %{order: %{id: "A-1001"}}, goto: :notify}
+      },
       "command" => %Command{
         update: %{messages: %Overwrite{value: [Message.user("replacement")]}},
         goto: [%Send{node: :finish, update: %{done: true}}]
@@ -228,7 +245,9 @@ defmodule BeamWeaver.SerializationTest do
     assert [%TaskRequest{node: "worker", kind: :send, timeout: 500}] = decoded["next_tasks"]
     assert [%Interrupt{id: "interrupt-1", resumes: [%Resume{}]}] = decoded["interrupts"]
     assert [{"task-1", "messages", [%Remove{id: "pending-remove"}]}] = decoded["pending_writes"]
-    assert %Command{update: %{"messages" => %Overwrite{value: [%Message{}]}}} = decoded["command"]
+    assert %Command{update: %{messages: %Overwrite{value: [%Message{}]}}} = decoded["command"]
+    assert %Interrupt{value: %{action_requests: [%{name: "lookup", args: %{}}]}} = hd(decoded["interrupts"])
+    assert decoded == value
   end
 
   test "round trips portable scalar edge cases without public ETF loading" do
@@ -245,12 +264,7 @@ defmodule BeamWeaver.SerializationTest do
     refute :binary.match(encoded, <<131>>) != :nomatch
     assert {:ok, decoded} = Serialization.load(encoded)
 
-    assert decoded["binary"] == <<0, 1, 2, 255>>
-    assert decoded["tuple"] == {:ok, [:known, 1]}
-    assert decoded["datetime"] == ~U[2026-05-22 12:00:00Z]
-    assert decoded["naive_datetime"] == ~N[2026-05-22 12:00:00]
-    assert decoded["date"] == ~D[2026-05-22]
-    assert decoded["time"] == ~T[12:00:00]
+    assert decoded == value
   end
 
   test "rejects unregistered structs instead of arbitrary term loading" do
@@ -321,7 +335,7 @@ defmodule BeamWeaver.SerializationTest do
     assert {:ok, decoded} = Serialization.load(encoded)
     assert decoded["plain"] == malicious_secret
     assert decoded["nested"] == [%{"metadata" => malicious_secret}]
-    assert decoded["message"].metadata["secret_like"] == malicious_secret
+    assert decoded["message"].metadata.secret_like == malicious_secret
     refute inspect(decoded) =~ env_value
   end
 
@@ -356,19 +370,70 @@ defmodule BeamWeaver.SerializationTest do
 
     assert {:ok, encoded} = Serialization.dump_value(message)
     assert encoded["__beam_weaver_type__"] == "beam_weaver.core.message"
-    assert encoded["metadata"] == %{"source" => "unit"}
+    assert encoded["metadata"] == %{"source" => "unit", "__beam_weaver_atom_keys__" => true}
 
-    assert {:ok, %Message{role: :user, content: "hello", metadata: %{"source" => "unit"}}} =
+    assert {:ok, %Message{role: :user, content: "hello", metadata: %{source: "unit"}}} =
              Serialization.load_value(encoded)
   end
 
-  test "rejects unknown struct tags, unknown atoms, corrupt JSON, and invalid base64" do
-    assert {:error, %Error{type: :unsupported_serialization_type}} =
-             Serialization.load(~s({"__beam_weaver_type__":"app.unknown","id":"x"}))
+  @tag :capture_log
+  test "a struct whose tag isn't registered loads as a map of its fields, with one warning per tag" do
+    tag = "app.retired_order_#{System.unique_integer([:positive])}"
 
-    assert {:error, %Error{type: :unsupported_serialization_type}} =
-             Serialization.load(~s({"__beam_weaver_type__":"atom","value":"beam_weaver_missing_atom_for_test"}))
+    json =
+      ~s({"__beam_weaver_type__":"#{tag}","id":"A-1001","sent_at":{"__beam_weaver_type__":"date","value":"2026-10-17"}})
 
+    expected = %{"id" => "A-1001", "sent_at" => ~D[2026-10-17]}
+
+    log =
+      capture_log(fn ->
+        assert {:ok, [^expected, ^expected]} = Serialization.load("[#{json},#{json}]")
+        assert {:ok, ^expected} = Serialization.load(json)
+      end)
+
+    assert [_one] = Regex.scan(~r/#{Regex.escape(tag)}/, log)
+    assert log =~ "as a map of its fields"
+  end
+
+  @tag :capture_log
+  test "a struct whose registered module is gone loads as a map of its fields" do
+    registry = Registry.register(Registry.new(), "app.registered", __MODULE__.RemovedStruct)
+
+    json =
+      ~s({"__beam_weaver_type__":"app.registered","id":"A-1001","value":{"qty":2,"__beam_weaver_atom_keys__":true}})
+
+    assert {:ok, %{"id" => "A-1001", "value" => %{qty: 2}}} = Serialization.load(json, registry: registry)
+  end
+
+  @tag :capture_log
+  test "an atom that no loaded code uses loads as its name, with one warning per atom" do
+    name = "retired_status_#{System.unique_integer([:positive])}"
+    atom = %{"__beam_weaver_type__" => "atom", "value" => name}
+
+    log =
+      capture_log(fn ->
+        assert {:ok, [^name, ^name]} = Serialization.load_value([atom, atom])
+        assert {:ok, ^name} = Serialization.load_value(atom)
+      end)
+
+    assert [_one] = Regex.scan(~r/#{name}/, log)
+    assert_raise ArgumentError, fn -> String.to_existing_atom(name) end
+  end
+
+  @tag :capture_log
+  test "an atom key that no loaded code uses loads as its name, with a warning" do
+    name = "retired_field_#{System.unique_integer([:positive])}"
+
+    log =
+      capture_log(fn ->
+        assert {:ok, %{^name => 1}} = Serialization.load_value(%{name => 1, "__beam_weaver_atom_keys__" => true})
+      end)
+
+    assert log =~ name
+    assert_raise ArgumentError, fn -> String.to_existing_atom(name) end
+  end
+
+  test "rejects corrupt JSON and invalid base64" do
     assert {:error, %Error{type: :serialization_error}} = Serialization.load("{not-json")
 
     assert {:error, %Error{type: :serialization_error}} =
@@ -391,11 +456,12 @@ defmodule BeamWeaver.SerializationTest do
       |> Map.put("unknown_external_field", "ignored")
       |> BeamWeaver.JSON.encode!()
 
-    assert {:ok, %RegisteredAppStruct{id: "item-1", value: %{"answer" => 42}}} =
+    assert {:ok, %RegisteredAppStruct{id: "item-1", value: %{answer: 42}}} =
              Serialization.load(payload, registry: registry)
   end
 
-  test "registry allowlist includes curated core structs and blocks app structs until registered" do
+  @tag :capture_log
+  test "registry allowlist includes curated core structs and loads app structs only once registered" do
     registry = Registry.new()
     assert "beam_weaver.core.document" in Registry.tags(registry)
     assert Registry.module_for(registry, "beam_weaver.core.message") == Message
@@ -408,13 +474,13 @@ defmodule BeamWeaver.SerializationTest do
     allowed = Registry.register(registry, "app.registered", RegisteredAppStruct)
     assert {:ok, encoded} = Serialization.dump(value, registry: allowed)
 
-    assert {:error, %Error{type: :unsupported_serialization_type}} =
-             Serialization.load(encoded, registry: registry)
+    assert {:ok, %{"id" => "blocked", "value" => "before-register"}} = Serialization.load(encoded, registry: registry)
 
     assert {:ok, ^value} = Serialization.load(encoded, registry: allowed)
   end
 
-  test "message registry tier allows messages and blocks other core structs" do
+  @tag :capture_log
+  test "message registry tier loads messages and other core structs as their fields" do
     message_registry = Registry.new(:messages)
     assert Registry.tags(message_registry) == ["beam_weaver.core.message"]
 
@@ -427,34 +493,12 @@ defmodule BeamWeaver.SerializationTest do
              Serialization.load(encoded_message, registry: message_registry)
 
     assert {:ok, encoded_document} = Serialization.dump(document)
-
-    assert {:error, %Error{type: :unsupported_serialization_type}} =
-             Serialization.load(encoded_document, registry: message_registry)
+    assert {:ok, %{"content" => "secret"} = fields} = Serialization.load(encoded_document, registry: message_registry)
+    refute is_struct(fields)
   end
 
-  test "adapter value codec shares the safe durable serialization boundary" do
-    value = %{
-      "message" => %Message{id: "m-codec", role: :tool, content: "done"},
-      "tuple" => {:ok, [:known, 1]}
-    }
-
-    assert {:ok, encoded} = ValueCodec.dump(value)
-    refute match?(<<131, _::binary>>, encoded)
-    assert {:ok, decoded} = ValueCodec.load(encoded)
-
-    assert decoded["message"].id == "m-codec"
-    assert decoded["tuple"] == {:ok, [:known, 1]}
-  end
-
-  test "adapter value codec loads plain JSON rows and rejects corrupt tagged payloads" do
-    assert {:ok, %{"plain" => [%{"value" => 1}]}} =
-             ValueCodec.load_json_value(%{"plain" => [%{"value" => 1}]})
-
-    corrupt = %{"__beam_weaver_type__" => "binary", "base64" => "%%%"}
-    assert {:error, %Error{type: :serialization_error}} = ValueCodec.load_json_value(corrupt)
-  end
-
-  test "checkpoint-shaped payloads allow only registered BeamWeaver tags and keep foreign constructors inert" do
+  @tag :capture_log
+  test "checkpoint-shaped payloads build only registered BeamWeaver structs and keep foreign constructors inert" do
     foreign_constructor = %{
       "lc" => 2,
       "type" => "constructor",
@@ -475,7 +519,7 @@ defmodule BeamWeaver.SerializationTest do
       ]
     }
 
-    assert {:ok, decoded} = ValueCodec.load_json_value(checkpoint_value)
+    assert {:ok, decoded} = Serialization.load_value(checkpoint_value)
     assert decoded["channel_values"]["messages"] == [foreign_constructor]
     assert [["task-1", "messages", %Remove{id: "m-1"}]] = decoded["pending_writes"]
 
@@ -486,8 +530,27 @@ defmodule BeamWeaver.SerializationTest do
         [%{"__beam_weaver_type__" => "beam_weaver.graph.unknown", "value" => %{}}]
       )
 
-    assert {:error, %Error{type: :unsupported_serialization_type}} =
-             ValueCodec.load_json_value(unsafe)
+    assert {:ok, %{"channel_values" => %{"messages" => [%{"value" => %{}}]}}} = Serialization.load_value(unsafe)
+  end
+
+  test "adapters keep the encryption key of their serialization config without showing it" do
+    key = :crypto.strong_rand_bytes(32)
+    serialization = [codec: Encrypted, encryption_key: key]
+    checkpointer = BeamWeaver.Checkpoint.Ecto.new(repo: NoRepo, serialization: serialization)
+    cache = BeamWeaver.Cache.Ecto.new(repo: NoRepo, serialization: serialization)
+
+    assert {:ok, sealed} = Serialization.dump(%{"card" => "4111"}, serialization: cache.serialization)
+    refute sealed =~ "4111"
+    assert {:ok, %{"card" => "4111"}} = Serialization.load(sealed, serialization: cache.serialization)
+
+    assert {:ok, sealed} = Serialization.dump_value(%{"card" => "4111"}, serialization: checkpointer.serialization)
+    assert %{"ciphertext" => _ciphertext} = sealed
+
+    assert {:ok, %{"card" => "4111"}} =
+             Serialization.load_value(sealed, serialization: checkpointer.serialization)
+
+    refute inspect(checkpointer, limit: :infinity) =~ "encryption_key"
+    refute inspect(cache, limit: :infinity) =~ "encryption_key"
   end
 
   test "encrypted codec wraps safe JSON serialization with explicit AES-256-GCM keys" do
@@ -506,8 +569,7 @@ defmodule BeamWeaver.SerializationTest do
                serialization: [codec: Encrypted, encryption_key: key]
              )
 
-    assert decoded["message"].content == "secret"
-    assert decoded["tuple"] == {:ok, [:known]}
+    assert decoded == value
 
     assert {:ok, encrypted_with_base64_key} =
              Serialization.dump(value,
@@ -525,7 +587,7 @@ defmodule BeamWeaver.SerializationTest do
                ]
              )
 
-    assert decoded_with_base64_key["message"].content == "secret"
+    assert decoded_with_base64_key == value
   end
 
   test "encrypted codec rejects missing, invalid, and wrong keys" do
@@ -548,6 +610,7 @@ defmodule BeamWeaver.SerializationTest do
              )
   end
 
+  @tag :capture_log
   test "encrypted codec propagates the inner serialization allowlist" do
     key = :crypto.strong_rand_bytes(32)
 
@@ -562,15 +625,30 @@ defmodule BeamWeaver.SerializationTest do
                serialization: [codec: Encrypted, encryption_key: key, registry: registry]
              )
 
-    assert {:error, %Error{type: :unsupported_serialization_type}} =
+    assert {:ok, %{"id" => "secret", "value" => %{safe: true}}} =
              Serialization.load(encrypted,
                serialization: [codec: Encrypted, encryption_key: key]
              )
 
-    assert {:ok, %RegisteredAppStruct{id: "secret", value: %{"safe" => true}}} =
+    assert {:ok, ^value} =
              Serialization.load(encrypted,
                serialization: [codec: Encrypted, encryption_key: key, registry: registry]
              )
+  end
+
+  @tag :capture_log
+  test "encrypted codec loads a struct it can't rebuild and an atom that isn't loaded as plain data" do
+    key = :crypto.strong_rand_bytes(32)
+    name = "retired_status_#{System.unique_integer([:positive])}"
+
+    json =
+      ~s({"order":{"__beam_weaver_type__":"app.retired_order","id":"A-1001"},) <>
+        ~s("status":{"__beam_weaver_type__":"atom","value":"#{name}"},"__beam_weaver_atom_keys__":true})
+
+    assert {:ok, sealed} = Encrypted.dump(json, encryption_key: key, inner_codec: PlainJSON)
+
+    assert {:ok, %{order: %{"id" => "A-1001"}, status: ^name}} =
+             Serialization.load(sealed, serialization: [codec: Encrypted, encryption_key: key])
   end
 
   test "encrypted codec rejects plain payloads instead of running a legacy decode path" do
@@ -614,6 +692,144 @@ defmodule BeamWeaver.SerializationTest do
     refute inspect(decoded) =~ "encrypted-secret-file-content"
   end
 
+  describe "map keys" do
+    test "load back as they were saved, at any depth and inside structs" do
+      line = %{sku: "S-1", qty: 2}
+
+      value = %{
+        order: %{:id => "A-1001", :status => :open, :lines => [line], "gift_note" => "Happy birthday"},
+        totals: %{1 => 40, 2 => 15.5},
+        paid: %{true => ["A-1001"], false => [], nil => []},
+        quantities: %{{:sku, "S-1"} => 2},
+        raw: %{<<0, 255>> => "bytes"},
+        message: Message.user("Refund order A-1001", metadata: %{order: line}),
+        send: %Send{node: :refund, update: %{request: %{line: line}}},
+        interrupt: %Interrupt{id: "interrupt-1", value: %{question: "Refund this line?", line: line}},
+        command: %Command{update: %{refunds: [line]}, goto: :notify}
+      }
+
+      assert {:ok, json} = Serialization.dump(value)
+      assert {:ok, ^value} = Serialization.load(json)
+    end
+
+    test "stay JSON object keys, and the object names its atom keys" do
+      assert {:ok, %{"id" => "A-1001", "__beam_weaver_atom_keys__" => true}} =
+               Serialization.dump_value(%{id: "A-1001"})
+
+      assert {:ok, %{"id" => "A-1001", "gift_note" => "Hi", "__beam_weaver_atom_keys__" => ["id"]}} ==
+               Serialization.dump_value(%{:id => "A-1001", "gift_note" => "Hi"})
+
+      assert {:ok, %{"id" => "A-1001"}} == Serialization.dump_value(%{"id" => "A-1001"})
+
+      # Integer keys can't be JSON object keys: the map is saved as entries.
+      assert {:ok, %{"__beam_weaver_type__" => "map", "entries" => [%{"key" => 1, "value" => 40}]}} ==
+               Serialization.dump_value(%{1 => 40})
+    end
+
+    test "whose atom doesn't exist load as strings, without creating the atom" do
+      name = "retired_field_#{System.unique_integer([:positive])}"
+
+      object = %{"id" => "A-1001", name => 1, "__beam_weaver_atom_keys__" => true}
+      assert {:ok, %{:id => "A-1001", ^name => 1}} = Serialization.load_value(object)
+
+      entries = %{
+        "__beam_weaver_type__" => "map",
+        "entries" => [%{"key" => %{"__beam_weaver_type__" => "atom", "value" => name}, "value" => 1}]
+      }
+
+      assert {:ok, %{^name => 1}} = Serialization.load_value(entries)
+      assert_raise ArgumentError, fn -> String.to_existing_atom(name) end
+    end
+
+    test "saved before keys kept their type load as strings, as before" do
+      json = ~s({"order":{"id":"A-1001","status":{"__beam_weaver_type__":"atom","value":"open"}}})
+      assert {:ok, %{"order" => %{"id" => "A-1001", "status" => :open}}} = Serialization.load(json)
+    end
+
+    test "named like the atom key marker stay plain data" do
+      value = %{:id => "A-1001", "__beam_weaver_atom_keys__" => ["id"]}
+      assert {:ok, json} = Serialization.dump(value)
+      assert {:ok, ^value} = Serialization.load(json)
+
+      value = %{__beam_weaver_atom_keys__: true}
+      assert {:ok, json} = Serialization.dump(value)
+      assert {:ok, ^value} = Serialization.load(json)
+    end
+
+    test "never include an atom __struct__, so stored data can't name a struct of its own" do
+      file_stream = %{
+        "__struct__" => %{"__beam_weaver_type__" => "atom", "value" => "Elixir.File.Stream"},
+        "path" => "/etc/hosts",
+        "modes" => [],
+        "raw" => true,
+        "line_or_bytes" => %{"__beam_weaver_type__" => "atom", "value" => "line"},
+        "node" => %{"__beam_weaver_type__" => "atom", "value" => "nonode@nohost"}
+      }
+
+      for marker <- [true, ["__struct__", "line_or_bytes"]] do
+        object = Map.put(file_stream, "__beam_weaver_atom_keys__", marker)
+
+        assert {:error, %Error{type: :serialization_error, message: "encoded map has a __struct__ key"}} =
+                 Serialization.load_value(object)
+
+        assert {:error, %Error{type: :serialization_error}} =
+                 Serialization.load_value(%{"state" => %{"doc" => [object]}})
+      end
+
+      uri = %{
+        "__beam_weaver_type__" => "map",
+        "entries" => [
+          %{
+            "key" => %{"__beam_weaver_type__" => "atom", "value" => "__struct__"},
+            "value" => %{"__beam_weaver_type__" => "atom", "value" => "Elixir.URI"}
+          },
+          %{"key" => %{"__beam_weaver_type__" => "atom", "value" => "host"}, "value" => "evil.example"}
+        ]
+      }
+
+      assert {:error, %Error{type: :serialization_error}} = Serialization.load_value(uri)
+
+      # As a string key, without the marker, it is plain data.
+      assert {:ok, %{"__struct__" => "Elixir.URI", host: "example.com"}} =
+               Serialization.load_value(%{
+                 "__struct__" => "Elixir.URI",
+                 "host" => "example.com",
+                 "__beam_weaver_atom_keys__" => ["host"]
+               })
+
+      # A plain map named like an exception's fields loads back as it was.
+      value = %{__exception__: true, message: "not an exception"}
+      assert {:ok, json} = Serialization.dump(value)
+      assert {:ok, ^value} = Serialization.load(json)
+    end
+  end
+
+  test "a registered exception takes __exception__ from its module, not from the stored data" do
+    registry = Registry.new() |> Registry.register("app.registered_error", RegisteredAppError)
+
+    assert {:ok, json} = Serialization.dump(%RegisteredAppError{message: "boom"}, registry: registry)
+    assert {:ok, %RegisteredAppError{message: "boom"} = error} = Serialization.load(json, registry: registry)
+    assert is_exception(error)
+
+    tampered = json |> BeamWeaver.JSON.decode!() |> Map.put("__exception__", false) |> BeamWeaver.JSON.encode!()
+    assert {:ok, %RegisteredAppError{__exception__: true} = error} = Serialization.load(tampered, registry: registry)
+    assert is_exception(error)
+  end
+
+  test "an invalid encoded atom, tuple, binary or date is an error, not an exception" do
+    for json <- [
+          ~s({"__beam_weaver_type__":"atom","value":1}),
+          ~s({"__beam_weaver_type__":"atom"}),
+          ~s({"__beam_weaver_type__":"tuple","items":1}),
+          ~s({"__beam_weaver_type__":"binary","base64":1}),
+          ~s({"__beam_weaver_type__":"datetime"}),
+          ~s({"__beam_weaver_type__":"date","value":20261017}),
+          ~s({"__beam_weaver_type__":"map","entries":[{"key":{"__beam_weaver_type__":"atom","value":["__struct__"]},"value":1}]})
+        ] do
+      assert {:error, %Error{type: :serialization_error}} = Serialization.load(json)
+    end
+  end
+
   test "dump errors on a map with colliding atom and string keys instead of dropping one" do
     assert {:error, %Error{type: :unsupported_serialization_type}} =
              Serialization.dump(%{:a => 1, "a" => 2})
@@ -622,6 +838,6 @@ defmodule BeamWeaver.SerializationTest do
   test "dump still succeeds for a map without key collisions" do
     assert {:ok, encoded} = Serialization.dump(%{:a => 1, "b" => 2})
     assert {:ok, decoded} = Serialization.load(encoded)
-    assert decoded == %{"a" => 1, "b" => 2}
+    assert decoded == %{:a => 1, "b" => 2}
   end
 end

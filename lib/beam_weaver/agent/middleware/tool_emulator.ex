@@ -8,49 +8,39 @@ defmodule BeamWeaver.Agent.Middleware.ToolEmulator do
   original tool handler.
   """
 
-  @behaviour BeamWeaver.Agent.Middleware
+  use BeamWeaver.Agent.Middleware
 
+  alias BeamWeaver.Agent.Middleware.Helpers
   alias BeamWeaver.Agent.ToolCallRequest
   alias BeamWeaver.Core.ChatModel
   alias BeamWeaver.Core.Message
   alias BeamWeaver.Core.Tool
-  alias BeamWeaver.Models
   alias BeamWeaver.Models.FakeChatModel
 
-  defstruct tools: nil,
-            emulate_all?: true,
-            model: %FakeChatModel{response: Message.assistant("Emulated response")},
-            prompt_template:
-              "You are emulating a tool call for testing purposes.\n\n" <>
-                "Tool: {tool}\nDescription: {description}\nArguments: {args}\n\n" <>
-                "Generate a realistic response that this tool would return. " <>
-                "Return only the tool output."
+  @default_model %FakeChatModel{response: Message.assistant("Emulated response")}
+
+  @default_prompt_template "You are emulating a tool call for testing purposes.\n\n" <>
+                             "Tool: {tool}\nDescription: {description}\nArguments: {args}\n\n" <>
+                             "Generate a realistic response that this tool would return. " <>
+                             "Return only the tool output."
+
+  defstruct tools: nil, emulate_all?: true, model: @default_model, prompt_template: @default_prompt_template
 
   def new(opts \\ []) do
     tools = Keyword.get(opts, :tools)
 
     %__MODULE__{
-      tools: normalize_tools(tools),
+      tools: Helpers.tool_names(tools),
       emulate_all?: is_nil(tools),
-      model:
-        opts
-        |> Keyword.get(:model, %FakeChatModel{response: Message.assistant("Emulated response")})
-        |> normalize_model(),
-      prompt_template:
-        Keyword.get(
-          opts,
-          :prompt_template,
-          "You are emulating a tool call for testing purposes.\n\n" <>
-            "Tool: {tool}\nDescription: {description}\nArguments: {args}\n\n" <>
-            "Generate a realistic response that this tool would return. " <>
-            "Return only the tool output."
-        )
+      model: opts |> Keyword.get(:model, @default_model) |> Helpers.chat_model!(),
+      prompt_template: Keyword.get(opts, :prompt_template, @default_prompt_template)
     }
   end
 
   @impl true
   def name(_middleware), do: :tool_emulator
 
+  @impl true
   def wrap_tool_call(%__MODULE__{} = middleware, %ToolCallRequest{} = request, handler) do
     if emulate?(middleware, request) do
       emulate_tool(middleware, request)
@@ -71,7 +61,7 @@ defmodule BeamWeaver.Agent.Middleware.ToolEmulator do
     with {:ok, %Message{} = response} <-
            ChatModel.invoke(middleware.model, [Message.user(prompt)], []) do
       Message.tool(Message.text(response),
-        tool_call_id: tool_call_id(request),
+        tool_call_id: Helpers.tool_call_id(request.tool_call),
         name: tool_name(request),
         metadata: %{emulated?: true}
       )
@@ -85,22 +75,6 @@ defmodule BeamWeaver.Agent.Middleware.ToolEmulator do
     |> String.replace("{args}", inspect(tool_args(request)))
   end
 
-  defp normalize_tools(nil), do: nil
-
-  defp normalize_tools(tools) do
-    tools
-    |> List.wrap()
-    |> Enum.map(fn
-      tool when is_binary(tool) -> tool
-      tool when is_atom(tool) -> Atom.to_string(tool)
-      tool -> Tool.name(tool)
-    end)
-    |> MapSet.new()
-  end
-
-  defp normalize_model(model) when is_binary(model), do: Models.init_chat_model!(model)
-  defp normalize_model(model), do: model
-
   defp tool_description(%ToolCallRequest{tool: nil}), do: "No description available"
   defp tool_description(%ToolCallRequest{tool: tool}), do: Tool.description(tool)
 
@@ -111,8 +85,4 @@ defmodule BeamWeaver.Agent.Middleware.ToolEmulator do
   defp tool_args(%ToolCallRequest{tool_call: %{args: args}}), do: args || %{}
   defp tool_args(%ToolCallRequest{tool_call: %{"args" => args}}), do: args || %{}
   defp tool_args(_request), do: %{}
-
-  defp tool_call_id(%ToolCallRequest{tool_call: %{id: id}}), do: id
-  defp tool_call_id(%ToolCallRequest{tool_call: %{"id" => id}}), do: id
-  defp tool_call_id(_request), do: nil
 end

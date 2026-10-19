@@ -1,7 +1,9 @@
 defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
   @moduledoc false
 
-  alias BeamWeaver.Anthropic.Error
+  import BeamWeaver.Provider.Options, only: [option: 3]
+
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Anthropic.ChatModel.ModelResolution
   alias BeamWeaver.Anthropic.Messages
   alias BeamWeaver.Anthropic.Tools
@@ -17,15 +19,16 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     :context_management,
     :diagnostics,
     :effort,
+    :extra_body,
     :fallback_credit_token,
     :fallbacks,
     :inference_geo,
     :max_tokens,
     :metadata,
     :mcp_servers,
-    :model_kwargs,
     :output_config,
     :parallel_tool_calls,
+    :reasoning_effort,
     :response_format,
     :service_tier,
     :speed,
@@ -74,160 +77,72 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     :workspace_id
   ]
 
+  @unsupported "model parameter is not supported by profile"
+
   @spec request_body(term(), [BeamWeaver.Core.Message.t()], keyword()) ::
           {:ok, map()} | {:error, Error.t()}
-  def request_body(model, messages, opts \\ []) do
+  def request_body(model, messages, opts) do
     with {:ok, model} <- ModelResolution.resolve(model, opts),
          :ok <- validate_request_params(model, opts),
+         :ok <- validate_metadata(option(model, opts, :metadata), model.model),
          :ok <- validate_sampling_params(model, opts),
+         :ok <- validate_effort(model, opts),
          :ok <- validate_thinking_params(model, opts),
          :ok <- validate_tool_compatibility(model, opts),
          :ok <- validate_model_features(model, opts),
          :ok <- validate_fallback_credit_params(model, opts),
-         {:ok, {system, formatted_messages}} <-
-           Messages.format_messages(messages, message_format_opts(model)),
-         :ok <- validate_final_turn(model, formatted_messages, opts),
-         :ok <- validate_per_turn_effort(model, formatted_messages, opts),
-         {:ok, output_config} <- output_config(model, opts),
-         :ok <- validate_compaction_params(model, opts, output_config) do
-      model_kwargs = option(model, opts, :model_kwargs) || %{}
-      tools = tools(opts)
-      fallbacks = option(model, opts, :fallbacks)
-      fallback_credit_token = option(model, opts, :fallback_credit_token)
-
-      betas =
-        betas(
-          model,
-          opts,
-          tools,
-          output_config,
-          formatted_messages,
-          fallbacks,
-          fallback_credit_token
-        )
-
-      body =
-        %{
-          "model" => model.model,
-          "max_tokens" => max_tokens(model, opts),
-          "messages" => formatted_messages
-        }
-        |> Options.merge_extra_body(model_kwargs, reserved: @reserved_body_fields)
-        |> Options.put_optional(
-          "cache_control",
-          Options.normalize_option_map(option(model, opts, :cache_control))
-        )
-        |> Options.put_optional(
-          "compaction",
-          Options.normalize_option_map(option(model, opts, :compaction))
-        )
-        |> Options.put_optional("container", option(model, opts, :container))
-        |> Options.put_optional("stream", Keyword.get(opts, :stream))
-        |> Options.put_optional("system", system)
-        |> Options.put_optional(
-          "metadata",
-          Options.normalize_option_map(option(model, opts, :metadata))
-        )
-        |> Options.put_optional("temperature", option(model, opts, :temperature))
-        |> Options.put_optional("top_k", option(model, opts, :top_k))
-        |> Options.put_optional("top_p", option(model, opts, :top_p))
-        |> Options.put_optional(
-          "stop_sequences",
-          option(model, opts, :stop_sequences) || Keyword.get(opts, :stop)
-        )
-        |> Options.put_optional(
-          "service_tier",
-          Options.normalize_value(option(model, opts, :service_tier))
-        )
-        |> Options.put_optional("tools", tools)
-        |> Options.put_optional("tool_choice", tool_choice(model, opts))
-        |> Options.put_optional(
-          "thinking",
-          Options.normalize_option_map(option(model, opts, :thinking))
-        )
-        |> Options.put_optional("output_config", output_config)
-        |> Options.put_optional(
-          "context_management",
-          Options.normalize_option_map(option(model, opts, :context_management))
-        )
-        |> Options.put_optional(
-          "diagnostics",
-          Options.normalize_option_map(option(model, opts, :diagnostics))
-        )
-        |> Options.put_optional(
-          "mcp_servers",
-          Options.normalize_option_list(option(model, opts, :mcp_servers))
-        )
-        |> Options.put_optional("fallbacks", normalize_fallbacks(fallbacks))
-        |> Options.put_optional(
-          "fallback_credit_token",
-          normalize_fallback_credit_token(fallback_credit_token)
-        )
-        |> Options.put_optional(
-          "inference_geo",
-          Options.normalize_value(option(model, opts, :inference_geo))
-        )
-        |> Options.put_optional("speed", Options.normalize_value(option(model, opts, :speed)))
-        |> Options.put_optional("betas", betas)
-        |> maybe_put_container(model, messages, opts)
-        |> Options.merge_extra_body(Keyword.get(opts, :extra_body, %{}),
-          reserved: @reserved_body_fields
-        )
-
-      {:ok, body}
+         fallbacks = option(model, opts, :fallbacks),
+         {:ok, body} <- shared_body(model, messages, opts, fallbacks, option(model, opts, :fallback_credit_token)) do
+      {:ok,
+       body
+       |> Map.put("max_tokens", max_tokens(model, opts))
+       |> put_options(model, opts, [:metadata, :diagnostics, :fallback_credit_token], &Options.normalize_option_map/1)
+       |> put_options(model, opts, [:container, :temperature, :top_k, :top_p])
+       |> put_options(model, opts, [:service_tier, :inference_geo, :fallbacks], &Options.normalize_value/1)
+       |> Options.put_optional("stream", Keyword.get(opts, :stream))
+       |> Options.put_optional("stop_sequences", option(model, opts, :stop_sequences) || Keyword.get(opts, :stop))
+       |> maybe_put_container(model, messages, opts)
+       |> Options.merge_extra_body(Options.extra_body(model, opts), reserved: @reserved_body_fields)}
     end
   end
 
   @spec count_tokens_body(term(), [BeamWeaver.Core.Message.t()], keyword()) ::
           {:ok, map()} | {:error, Error.t()}
-  def count_tokens_body(model, messages, opts \\ []) do
+  def count_tokens_body(model, messages, opts) do
     with {:ok, model} <- ModelResolution.resolve(model, opts),
+         :ok <- validate_effort(model, opts),
          :ok <- validate_thinking_params(model, opts),
          :ok <- validate_tool_compatibility(model, opts),
-         {:ok, {system, formatted_messages}} <-
-           Messages.format_messages(messages, message_format_opts(model)),
+         do: shared_body(model, messages, opts, nil, nil)
+  end
+
+  defp shared_body(model, messages, opts, fallbacks, fallback_credit_token) do
+    message_opts = [mid_conversation_system_messages: profile_extra(model, :mid_conversation_system_messages) == true]
+
+    with {:ok, {system, formatted_messages}} <- Messages.format_messages(messages, message_opts),
          :ok <- validate_final_turn(model, formatted_messages, opts),
          :ok <- validate_per_turn_effort(model, formatted_messages, opts),
          {:ok, output_config} <- output_config(model, opts),
          :ok <- validate_compaction_params(model, opts, output_config) do
       tools = tools(opts)
+      betas = betas(model, opts, tools, output_config, formatted_messages, fallbacks, fallback_credit_token)
 
-      %{
-        "model" => model.model,
-        "messages" => formatted_messages
-      }
-      |> Options.put_optional(
-        "cache_control",
-        Options.normalize_option_map(option(model, opts, :cache_control))
-      )
-      |> Options.put_optional(
-        "compaction",
-        Options.normalize_option_map(option(model, opts, :compaction))
-      )
-      |> Options.put_optional("system", system)
-      |> Options.put_optional("tools", tools)
-      |> Options.put_optional("tool_choice", tool_choice(model, opts))
-      |> Options.put_optional(
-        "thinking",
-        Options.normalize_option_map(option(model, opts, :thinking))
-      )
-      |> Options.put_optional("output_config", output_config)
-      |> Options.put_optional(
-        "context_management",
-        Options.normalize_option_map(option(model, opts, :context_management))
-      )
-      |> Options.put_optional(
-        "mcp_servers",
-        Options.normalize_option_list(option(model, opts, :mcp_servers))
-      )
-      |> Options.put_optional("speed", Options.normalize_value(option(model, opts, :speed)))
-      |> Options.put_optional(
-        "betas",
-        betas(model, opts, tools, output_config, formatted_messages, nil, nil)
-      )
-      |> then(&{:ok, &1})
+      {:ok,
+       %{"model" => model.model, "messages" => formatted_messages}
+       |> put_options(model, opts, [:cache_control, :compaction, :context_management], &Options.normalize_option_map/1)
+       |> put_options(model, opts, [:speed], &Options.normalize_value/1)
+       |> Options.put_optional("system", system)
+       |> Options.put_optional("tools", tools)
+       |> Options.put_optional("tool_choice", tool_choice(model, opts))
+       |> Options.put_optional("thinking", Options.normalize_option_map(thinking(model, opts)))
+       |> Options.put_optional("output_config", output_config)
+       |> Options.put_optional("mcp_servers", Options.normalize_option_list(option(model, opts, :mcp_servers)))
+       |> Options.put_optional("betas", betas)}
     end
   end
+
+  defp put_options(body, model, opts, keys, normalize \\ & &1),
+    do: Enum.reduce(keys, body, &Options.put_optional(&2, Atom.to_string(&1), normalize.(option(model, opts, &1))))
 
   defp validate_request_params(model, opts) do
     model_params =
@@ -235,278 +150,266 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
       |> Map.from_struct()
       |> Map.take(@supported_model_params)
 
-    opts_params =
-      opts
-      |> Map.new()
-      |> Map.take(@supported_model_params ++ [:extra_body, :provider_opts, :stop])
+    # Every model parameter of the call is checked, so a foreign option such
+    # as `frequency_penalty` is an error rather than dropped.
+    params = Map.merge(model_params, Map.new(opts))
 
-    params = Map.merge(model_params, opts_params)
-    policy = Keyword.get(opts, :param_policy, model.param_policy)
+    ParamPolicy.validate(model.profile, params, option(model, opts, :param_policy))
+  end
 
-    case ParamPolicy.validate(model.profile, params, policy, metadata: Keyword.get(opts, :metadata, %{})) do
-      :ok -> :ok
-      {:error, error} -> {:error, Error.new(error.type, error.message, error.details)}
+  @max_user_id_length 512
+
+  @doc false
+  # Anthropic's API reference gives the request `metadata` one field,
+  # `user_id`, a string of at most 512 characters (or null). A model's
+  # metadata is checked when the model is created (see
+  # `BeamWeaver.Anthropic.Provider`) and with each call's.
+  @spec validate_metadata(term(), String.t() | nil) :: :ok | {:error, Error.t()}
+  def validate_metadata(nil, _model), do: :ok
+
+  def validate_metadata(metadata, model) when is_map(metadata) do
+    {user_ids, others} = Map.split(metadata, [:user_id, "user_id"])
+    user_ids = user_ids |> Map.values() |> Enum.reject(&is_nil/1)
+
+    cond do
+      others != %{} ->
+        keys = Map.keys(others)
+
+        request_error(
+          model,
+          [params: [:metadata], keys: keys],
+          "Anthropic metadata takes only :user_id, not #{Enum.map_join(keys, ", ", &inspect/1)}"
+        )
+
+      not Enum.all?(user_ids, &is_binary/1) ->
+        request_error(
+          model,
+          [params: [:metadata], field: "metadata.user_id", expected: :string],
+          "Anthropic metadata :user_id must be a string"
+        )
+
+      Enum.any?(user_ids, &Options.longer_than?(&1, @max_user_id_length)) ->
+        request_error(
+          model,
+          [params: [:metadata], field: "metadata.user_id", max_length: @max_user_id_length],
+          "Anthropic metadata :user_id takes at most #{@max_user_id_length} characters"
+        )
+
+      true ->
+        :ok
     end
   end
 
+  def validate_metadata(_metadata, model),
+    do:
+      request_error(model, [params: [:metadata], expected: :map], "Anthropic metadata must be a map with only :user_id")
+
+  defp request_error(model_name, details, message \\ @unsupported, type \\ :unsupported_model_param),
+    do: {:error, Error.new(type, message, Enum.into(details, %{provider: :anthropic, model: model_name}))}
+
   defp validate_sampling_params(model, opts) do
-    if restricted_sampling_model?(model) do
-      unsupported =
-        [
-          restricted_temperature_param(model, opts),
-          restricted_top_k_param(model, opts),
-          restricted_top_p_param(model, opts)
-        ]
-        |> Enum.reject(&is_nil/1)
-        |> reject_combined_sampling(model, opts)
+    controls = profile_extra(model, :sampling_controls)
+    default_only? = controls in [:default_only, "default_only"]
+    temperature = option(model, opts, :temperature)
+    top_p = option(model, opts, :top_p)
 
-      case unsupported do
-        [] ->
-          :ok
+    params =
+      for {param, true} <- [
+            temperature: temperature not in [nil, 1, 1.0],
+            top_k: not is_nil(option(model, opts, :top_k)),
+            top_p: not is_nil(top_p) and top_p !== 0.99 and (default_only? or not (is_number(top_p) and top_p > 0.99))
+          ],
+          do: param
 
-        params ->
-          {:error,
-           Error.new(:unsupported_model_param, "model parameter is not supported by profile", %{
-             provider: :anthropic,
-             model: model.model,
-             params: params,
-             reason: "Anthropic restricts temperature, top_k, and top_p for this Claude model"
-           })}
-      end
+    params =
+      if default_only? and not is_nil(temperature) and not is_nil(top_p),
+        do: Enum.uniq(params ++ [:temperature, :top_p]),
+        else: params
+
+    if controls in [:restricted, "restricted", :default_only, "default_only"] and params != [] do
+      request_error(model.model,
+        params: params,
+        reason: "Anthropic restricts temperature, top_k, and top_p for this Claude model"
+      )
     else
       :ok
     end
   end
 
   defp validate_thinking_params(model, opts) do
-    with :ok <- validate_thinking_shape(model, opts),
-         :ok <- validate_thinking_mode(model, opts),
-         :ok <- validate_reduced_thinking_effort(model, opts) do
-      validate_thinking_block_binding(model, opts)
+    thinking = thinking(model, opts)
+
+    with :ok <- validate_thinking_shape(model, thinking),
+         :ok <- validate_thinking_mode(model, thinking_type(thinking)),
+         :ok <- validate_reduced_thinking_effort(model, opts, thinking_type(thinking)) do
+      validate_thinking_block_binding(model, thinking)
     end
   end
 
-  defp validate_thinking_shape(model, opts) do
-    case option(model, opts, :thinking) do
-      thinking when is_nil(thinking) or is_map(thinking) ->
-        :ok
+  defp validate_thinking_shape(_model, thinking) when is_nil(thinking) or is_map(thinking), do: :ok
 
-      thinking ->
-        {:error,
-         Error.new(:unsupported_model_param, "model parameter has an invalid shape", %{
-           provider: :anthropic,
-           model: model.model,
-           params: [:thinking],
-           expected: :map,
-           value: inspect(thinking)
-         })}
-    end
+  defp validate_thinking_shape(model, thinking) do
+    request_error(
+      model.model,
+      [params: [:thinking], expected: :map, value: inspect(thinking)],
+      "model parameter has an invalid shape"
+    )
   end
 
-  defp validate_thinking_mode(model, opts) do
-    thinking_type = thinking_type(option(model, opts, :thinking))
+  defp validate_thinking_mode(model, type) do
     supported = profile_extra(model, :thinking_types)
 
     cond do
-      is_list(supported) and not is_nil(thinking_type) ->
-        if Enum.any?(supported, &(thinking_type == &1 or thinking_type == to_string(&1))) do
+      is_list(supported) and not is_nil(type) ->
+        if Enum.any?(supported, &(type == &1 or type == to_string(&1))) do
           :ok
         else
-          {:error,
-           Error.new(:unsupported_model_param, "model parameter is not supported by profile", %{
-             provider: :anthropic,
-             model: model.model,
-             params: [:thinking],
-             reason: "This Claude model supports thinking types: #{Enum.join(supported, ", ")}",
-             supported: supported
-           })}
+          request_error(model.model,
+            params: [:thinking],
+            reason: "This Claude model supports thinking types: #{Enum.join(supported, ", ")}",
+            supported: supported
+          )
         end
 
-      always_on_thinking_model?(model) and thinking_type in [:disabled, "disabled"] ->
-        {:error,
-         Error.new(:unsupported_model_param, "model parameter is not supported by profile", %{
-           provider: :anthropic,
-           model: model.model,
-           params: [:thinking],
-           reason: "Thinking is always on for this Claude model"
-         })}
+      always_on_thinking_model?(model) and type in [:disabled, "disabled"] ->
+        request_error(model.model, params: [:thinking], reason: "Thinking is always on for this Claude model")
 
-      not adaptive_only_thinking_model?(model) ->
-        :ok
-
-      is_nil(thinking_type) or thinking_type in [:adaptive, "adaptive", :disabled, "disabled"] ->
-        :ok
+      adaptive_only_thinking_model?(model) and type not in [nil, :adaptive, "adaptive", :disabled, "disabled"] ->
+        request_error(model.model,
+          params: [:thinking],
+          reason: "This Claude model only supports adaptive thinking or disabled thinking"
+        )
 
       true ->
-        {:error,
-         Error.new(:unsupported_model_param, "model parameter is not supported by profile", %{
-           provider: :anthropic,
-           model: model.model,
-           params: [:thinking],
-           reason: "This Claude model only supports adaptive thinking or disabled thinking"
-         })}
+        :ok
     end
   end
 
-  defp validate_reduced_thinking_effort(model, opts) do
-    thinking_type = thinking_type(option(model, opts, :thinking))
-
+  defp validate_reduced_thinking_effort(model, opts, type) do
     max_effort =
-      case thinking_type do
-        type when type in [:disabled, "disabled"] -> profile_extra(model, :thinking_disabled_max_effort)
-        type when type in [:between_tools, "between_tools"] -> profile_extra(model, :thinking_between_tools_max_effort)
-        _type -> nil
+      cond do
+        type in [:disabled, "disabled"] -> profile_extra(model, :thinking_disabled_max_effort)
+        type in [:between_tools, "between_tools"] -> profile_extra(model, :thinking_between_tools_max_effort)
+        true -> nil
       end
 
-    effort = request_effort(model, opts)
-
-    if effort_above?(effort, max_effort) do
-      {:error,
-       Error.new(:unsupported_model_param, "model parameter is not supported by profile", %{
-         provider: :anthropic,
-         model: model.model,
-         params: [:thinking, :effort],
-         reason: "Thinking type #{thinking_type} is only supported at #{max_effort} effort or below"
-       })}
+    if not is_nil(max_effort) and effort_rank(request_effort(model, opts)) > effort_rank(max_effort) do
+      request_error(model.model,
+        params: [:thinking, :effort],
+        reason: "Thinking type #{type} is only supported at #{max_effort} effort or below"
+      )
     else
       :ok
     end
   end
 
-  defp validate_thinking_block_binding(model, opts) do
-    case thinking_block_binding(option(model, opts, :thinking)) do
+  defp validate_thinking_block_binding(model, thinking) do
+    case MapAccess.get(thinking, :block_binding) do
       nil ->
         :ok
 
-      binding when is_map(binding) ->
-        adaptive? = thinking_type(option(model, opts, :thinking)) in [:adaptive, "adaptive"]
-
-        if adaptive? and thinking_binding_behavior(binding) in [:error, "error", :drop_block, "drop_block"] do
+      binding ->
+        if thinking_type(thinking) in [:adaptive, "adaptive"] and
+             MapAccess.get(binding, :prefix_mismatch_behavior) in [:error, "error", :drop_block, "drop_block"] do
           :ok
         else
-          thinking_block_binding_error(model)
+          request_error(model.model,
+            params: [:thinking],
+            field: "thinking.block_binding.prefix_mismatch_behavior",
+            supported: [:error, :drop_block]
+          )
         end
-
-      _binding ->
-        thinking_block_binding_error(model)
     end
   end
 
   defp validate_per_turn_effort(model, messages, opts) do
-    reduced? = thinking_type(option(model, opts, :thinking)) in [:disabled, "disabled", :between_tools, "between_tools"]
+    reduced? = thinking_type(thinking(model, opts)) in [:disabled, "disabled", :between_tools, "between_tools"]
     effort = request_effort(model, opts)
 
     changed? =
       Enum.any?(messages, fn message ->
-        case output_config_effort(message["output_config"]) do
-          nil -> false
-          per_turn -> to_string(per_turn) != to_string(effort)
-        end
+        per_turn = output_config_effort(message["output_config"])
+        not is_nil(per_turn) and to_string(per_turn) != to_string(effort)
       end)
 
     if reduced? and is_list(profile_extra(model, :thinking_types)) and changed? do
-      {:error,
-       Error.new(:unsupported_model_param, "Effort cannot change per turn with reduced thinking", %{
-         provider: :anthropic,
-         model: model.model,
-         params: [:thinking, :effort]
-       })}
+      request_error(model.model, [params: [:thinking, :effort]], "Effort cannot change per turn with reduced thinking")
     else
       :ok
     end
-  end
-
-  defp thinking_block_binding_error(model) do
-    {:error,
-     Error.new(:unsupported_model_param, "model parameter is not supported by profile", %{
-       provider: :anthropic,
-       model: model.model,
-       params: [:thinking],
-       field: "thinking.block_binding.prefix_mismatch_behavior",
-       supported: [:error, :drop_block]
-     })}
   end
 
   defp validate_tool_compatibility(model, opts) do
-    with :ok <- validate_tool_choice_compatibility(model, opts),
-         :ok <- validate_advisor_compatibility(model, opts) do
-      validate_server_tool_compatibility(model, opts)
-    end
-  end
+    modes = profile_extra(model, :tool_choice_modes)
 
-  defp validate_advisor_compatibility(model, opts) do
-    unsupported = profile_extra(model, :unsupported_advisor_models) || []
-
-    rejected =
-      opts
-      |> tools()
-      |> List.wrap()
-      |> Enum.filter(fn tool ->
-        is_binary(tool["type"]) and String.starts_with?(tool["type"], "advisor_") and
-          tool["model"] in unsupported
-      end)
-      |> Enum.map(& &1["model"])
-      |> Enum.uniq()
-
-    if rejected == [] do
-      :ok
+    if is_list(modes) and :any not in modes and forced_tool_choice?(Keyword.get(opts, :tool_choice)) do
+      request_error(model.model,
+        params: [:tool_choice],
+        reason: "This Claude model supports only auto or none tool choice",
+        supported: modes
+      )
     else
-      {:error,
-       Error.new(:unsupported_feature, "advisor model is not supported by the executor", %{
-         provider: :anthropic,
-         model: model.model,
-         params: [:tools],
-         unsupported_advisor_models: rejected
-       })}
+      tools = List.wrap(tools(opts))
+      unsupported_advisors = profile_extra(model, :unsupported_advisor_models) || []
+      unsupported_server_tools = profile_extra(model, :unsupported_server_tools) || []
+
+      advisors =
+        for %{"type" => "advisor_" <> _version} = tool <- tools,
+            tool["model"] in unsupported_advisors,
+            uniq: true,
+            do: tool["model"]
+
+      server_tools = tools |> Enum.map(&server_tool_family/1) |> Enum.filter(&(&1 in unsupported_server_tools))
+
+      cond do
+        advisors != [] ->
+          request_error(
+            model.model,
+            [params: [:tools], unsupported_advisor_models: advisors],
+            "advisor model is not supported by the executor",
+            :unsupported_feature
+          )
+
+        server_tools != [] ->
+          request_error(
+            model.model,
+            [params: [:tools], unsupported_server_tools: Enum.uniq(server_tools)],
+            "server tool is not supported by model",
+            :unsupported_feature
+          )
+
+        true ->
+          :ok
+      end
     end
   end
 
   defp validate_final_turn(model, messages, opts) do
-    cond do
-      not is_nil(option(model, opts, :compaction)) and final_assistant_tool_call?(messages) ->
-        {:error,
-         Error.new(:invalid_message, "Anthropic compaction requires completed tool results", %{
-           provider: :anthropic,
-           model: model.model,
-           role: :assistant,
-           requirement: :completed_tool_results
-         })}
+    compaction? = not is_nil(option(model, opts, :compaction))
+    last = List.last(messages)
+    final_assistant? = match?(%{"role" => "assistant"}, last)
 
-      is_nil(option(model, opts, :compaction)) and rejects_prefilled_model_turns?(model) and
-        final_assistant_turn?(messages) and not fallback_credit_prefill?(model, opts) ->
-        {:error,
-         Error.new(:invalid_message, "Anthropic model requests cannot end with an assistant turn", %{
-           provider: :anthropic,
-           model: model.model,
-           role: :assistant,
-           requirement: :final_user_tool_or_system_turn
-         })}
+    cond do
+      compaction? and final_assistant? and is_list(last["content"]) and
+          Enum.any?(last["content"], &match?(%{"type" => "tool_use"}, &1)) ->
+        request_error(
+          model.model,
+          [role: :assistant, requirement: :completed_tool_results],
+          "Anthropic compaction requires completed tool results",
+          :invalid_message
+        )
+
+      not compaction? and final_assistant? and profile_extra(model, :prefilled_model_turns) == false and
+          not fallback_credit_prefill?(model, opts) ->
+        request_error(
+          model.model,
+          [role: :assistant, requirement: :final_user_tool_or_system_turn],
+          "Anthropic model requests cannot end with an assistant turn",
+          :invalid_message
+        )
 
       true ->
         :ok
-    end
-  end
-
-  defp rejects_prefilled_model_turns?(model),
-    do: profile_extra(model, :prefilled_model_turns) == false
-
-  defp final_assistant_turn?(messages) do
-    case List.last(messages) do
-      %{"role" => "assistant"} -> true
-      _message -> false
-    end
-  end
-
-  defp final_assistant_tool_call?(messages) do
-    case List.last(messages) do
-      %{"role" => "assistant", "content" => content} when is_list(content) ->
-        Enum.any?(content, fn
-          %{"type" => "tool_use"} -> true
-          _block -> false
-        end)
-
-      _message ->
-        false
     end
   end
 
@@ -515,67 +418,44 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
       not forced_tool_choice?(Keyword.get(opts, :tool_choice)) and
       is_nil(Keyword.get(opts, :response_format)) and
       is_nil(Keyword.get(opts, :structured_output)) and
-      is_nil(output_config_format(option(model, opts, :output_config)))
+      is_nil(MapAccess.get(option(model, opts, :output_config), :format))
   end
-
-  defp output_config_format(output_config) when is_map(output_config),
-    do: MapAccess.get(output_config, :format)
-
-  defp output_config_format(_output_config), do: nil
 
   defp validate_fallback_credit_params(model, opts) do
     token = option(model, opts, :fallback_credit_token)
-    fallbacks = option(model, opts, :fallbacks)
 
     cond do
-      not is_nil(token) and fallbacks not in [nil, []] ->
-        {:error,
-         Error.new(:unsupported_model_param, "Anthropic fallback credit cannot be combined with fallbacks", %{
-           provider: :anthropic,
-           model: model.model,
-           params: [:fallback_credit_token, :fallbacks]
-         })}
+      not is_nil(token) and option(model, opts, :fallbacks) not in [nil, []] ->
+        request_error(
+          model.model,
+          [params: [:fallback_credit_token, :fallbacks]],
+          "Anthropic fallback credit cannot be combined with fallbacks"
+        )
 
       valid_fallback_credit_token?(token) ->
         :ok
 
       true ->
-        {:error,
-         Error.new(:unsupported_model_param, "Anthropic fallback credit token is invalid", %{
-           provider: :anthropic,
-           model: model.model,
-           params: [:fallback_credit_token],
-           expected: :non_empty_string_or_token_map
-         })}
+        request_error(
+          model.model,
+          [params: [:fallback_credit_token], expected: :non_empty_string_or_token_map],
+          "Anthropic fallback credit token is invalid"
+        )
     end
   end
 
   defp validate_model_features(model, opts) do
     unsupported =
-      [
-        if(
-          profile_extra(model, :server_side_fallbacks) == false and
-            option(model, opts, :fallbacks) not in [nil, []],
-          do: :fallbacks
-        ),
-        if(
-          profile_extra(model, :priority_tier) == false and
-            option(model, opts, :service_tier) in [:priority, "priority"],
-          do: :service_tier
-        )
-      ]
-      |> Enum.reject(&is_nil/1)
+      for {param, true} <- [
+            fallbacks:
+              profile_extra(model, :server_side_fallbacks) == false and option(model, opts, :fallbacks) not in [nil, []],
+            service_tier:
+              profile_extra(model, :priority_tier) == false and
+                option(model, opts, :service_tier) in [:priority, "priority"]
+          ],
+          do: param
 
-    if unsupported == [] do
-      :ok
-    else
-      {:error,
-       Error.new(:unsupported_model_param, "model parameter is not supported by profile", %{
-         provider: :anthropic,
-         model: model.model,
-         params: unsupported
-       })}
-    end
+    if unsupported == [], do: :ok, else: request_error(model.model, params: unsupported)
   end
 
   defp valid_fallback_credit_token?(nil), do: true
@@ -603,15 +483,13 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
         instructions = MapAccess.get(compaction, :instructions)
 
         conflicts =
-          [
-            if(not is_nil(option(model, opts, :context_management)), do: :context_management),
-            if(not is_nil(option(model, opts, :stop_sequences)) or Keyword.has_key?(opts, :stop),
-              do: :stop_sequences
-            ),
-            if(not is_nil(output_config_format(output_config)), do: :output_config),
-            if(forced_tool_choice?(Keyword.get(opts, :tool_choice)), do: :tool_choice)
-          ]
-          |> Enum.reject(&is_nil/1)
+          for {option, true} <- [
+                context_management: not is_nil(option(model, opts, :context_management)),
+                stop_sequences: not is_nil(option(model, opts, :stop_sequences)) or Keyword.has_key?(opts, :stop),
+                output_config: not is_nil(MapAccess.get(output_config, :format)),
+                tool_choice: forced_tool_choice?(Keyword.get(opts, :tool_choice))
+              ],
+              do: option
 
         cond do
           type not in [:summarize, "summarize"] or
@@ -631,72 +509,9 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     end
   end
 
-  defp compaction_error(model, params, reason) do
-    {:error,
-     Error.new(:unsupported_model_param, "Anthropic on-demand compaction request is invalid", %{
-       provider: :anthropic,
-       model: model.model,
-       params: params,
-       reason: reason
-     })}
-  end
-
-  defp validate_tool_choice_compatibility(model, opts) do
-    supported = profile_extra(model, :tool_choice_modes)
-    choice = Keyword.get(opts, :tool_choice)
-
-    if is_list(supported) and :any not in supported and forced_tool_choice?(choice) do
-      {:error,
-       Error.new(:unsupported_model_param, "model parameter is not supported by profile", %{
-         provider: :anthropic,
-         model: model.model,
-         params: [:tool_choice],
-         reason: "This Claude model supports only auto or none tool choice",
-         supported: supported
-       })}
-    else
-      :ok
-    end
-  end
-
-  defp validate_server_tool_compatibility(model, opts) do
-    unsupported = profile_extra(model, :unsupported_server_tools) || []
-
-    requested_unsupported =
-      opts
-      |> tools()
-      |> List.wrap()
-      |> Enum.map(&server_tool_family/1)
-      |> Enum.filter(&(&1 in unsupported))
-      |> Enum.uniq()
-
-    case requested_unsupported do
-      [] ->
-        :ok
-
-      server_tools ->
-        {:error,
-         Error.new(:unsupported_feature, "server tool is not supported by model", %{
-           provider: :anthropic,
-           model: model.model,
-           params: [:tools],
-           unsupported_server_tools: server_tools
-         })}
-    end
-  end
-
-  defp restricted_sampling_model?(model),
-    do: profile_extra(model, :sampling_controls) in [:restricted, "restricted", :default_only, "default_only"]
-
-  defp default_only_sampling_model?(model),
-    do: profile_extra(model, :sampling_controls) in [:default_only, "default_only"]
-
-  defp reject_combined_sampling(params, model, opts) do
-    if default_only_sampling_model?(model) and not is_nil(option(model, opts, :temperature)) and
-         not is_nil(option(model, opts, :top_p)),
-       do: Enum.uniq(params ++ [:temperature, :top_p]),
-       else: params
-  end
+  defp compaction_error(model, params, reason),
+    do:
+      request_error(model.model, [params: params, reason: reason], "Anthropic on-demand compaction request is invalid")
 
   defp adaptive_only_thinking_model?(model),
     do: profile_extra(model, :thinking_mode) in [:adaptive_only, "adaptive_only"]
@@ -707,103 +522,91 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
   defp thinking_type(%{type: type}), do: type
   defp thinking_type(_thinking), do: nil
 
-  defp thinking_block_binding(thinking), do: MapAccess.get(thinking, :block_binding)
-
-  defp thinking_binding_behavior(binding), do: MapAccess.get(binding, :prefix_mismatch_behavior)
-
-  defp request_effort(model, opts) do
-    option(model, opts, :effort) ||
+  # The effort a request names: the call's, then the model's, each from
+  # `effort:`, `reasoning_effort:` (`effort:` wins when both are set) or
+  # `output_config`'s `effort`.
+  defp requested_effort(model, opts) do
+    Keyword.get(opts, :effort) || Keyword.get(opts, :reasoning_effort) ||
       output_config_effort(Keyword.get(opts, :output_config)) ||
-      output_config_effort(Map.get(model, :output_config)) ||
-      profile_extra(model, :default_effort)
+      Map.get(model, :effort) || Map.get(model, :reasoning_effort) ||
+      output_config_effort(Map.get(model, :output_config))
+  end
+
+  # The effort a request runs at: the one it names, or the model's default.
+  defp request_effort(model, opts),
+    do: requested_effort(model, opts) || profile_value(model, :reasoning_effort_default)
+
+  # The thinking a request sends: its `thinking`, or, when it names an effort
+  # on a model that takes only adaptive thinking, adaptive thinking with its
+  # summary shown.
+  defp thinking(model, opts) do
+    case option(model, opts, :thinking) do
+      nil ->
+        if adaptive_only_thinking_model?(model) and requested_effort(model, opts),
+          do: %{"type" => "adaptive", "display" => "summarized"}
+
+      thinking ->
+        thinking
+    end
+  end
+
+  # An effort the model's profile doesn't list fails before the request; a
+  # profile without levels leaves the check to Anthropic.
+  defp validate_effort(model, opts) do
+    levels = profile_value(model, :reasoning_effort_levels) || []
+    effort = requested_effort(model, opts)
+
+    if is_nil(effort) or levels == [] or to_string(effort) in Enum.map(levels, &to_string/1) do
+      :ok
+    else
+      request_error(
+        model.model,
+        [params: [:reasoning_effort], value: effort, supported: levels],
+        "#{model.model} does not take reasoning effort #{effort}"
+      )
+    end
   end
 
   defp output_config_effort(%{"effort" => effort}), do: effort
   defp output_config_effort(%{effort: effort}), do: effort
   defp output_config_effort(_output_config), do: nil
 
-  defp effort_above?(_effort, nil), do: false
+  @effort_levels ~w(low medium high xhigh max)
 
-  defp effort_above?(effort, maximum) do
-    effort_rank(effort) > effort_rank(maximum)
-  end
+  defp effort_rank(effort) when is_binary(effort) or is_atom(effort),
+    do: Enum.find_index(@effort_levels, &(&1 == to_string(effort))) || -1
 
-  defp effort_rank(effort) when is_binary(effort) do
-    case effort do
-      "low" -> 0
-      "medium" -> 1
-      "high" -> 2
-      "xhigh" -> 3
-      "max" -> 4
-      _other -> -1
-    end
-  end
-
-  defp effort_rank(effort) when is_atom(effort), do: effort |> Atom.to_string() |> effort_rank()
   defp effort_rank(_effort), do: -1
 
-  defp restricted_temperature_param(model, opts) do
-    case option(model, opts, :temperature) do
-      nil -> nil
-      1 -> nil
-      1.0 -> nil
-      _value -> :temperature
-    end
-  end
-
-  defp restricted_top_k_param(model, opts) do
-    case option(model, opts, :top_k) do
-      nil -> nil
-      _value -> :top_k
-    end
-  end
-
-  defp restricted_top_p_param(model, opts) do
-    case option(model, opts, :top_p) do
-      nil ->
-        nil
-
-      0.99 ->
-        nil
-
-      value when is_number(value) and value > 0.99 ->
-        if default_only_sampling_model?(model), do: :top_p, else: nil
-
-      _value ->
-        :top_p
-    end
-  end
-
   defp server_tool_family(%{"type" => "web_fetch_" <> _version}), do: :web_fetch
-  defp server_tool_family(%{type: "web_fetch_" <> _version}), do: :web_fetch
   defp server_tool_family(%{"type" => "computer_20" <> _version}), do: :legacy_computer
-  defp server_tool_family(%{type: "computer_20" <> _version}), do: :legacy_computer
   defp server_tool_family(_tool), do: nil
 
   defp tools(opts) do
-    case Keyword.get(opts, :tools, []) do
-      [] ->
-        nil
-
-      tools when is_list(tools) ->
-        Tools.to_anthropic_tools(tools, strict: Keyword.get(opts, :strict))
-
-      _other ->
-        nil
+    case Keyword.get(opts, :tools) do
+      [_tool | _rest] = tools -> Tools.to_anthropic_tools(tools, strict: Keyword.get(opts, :strict))
+      _none -> nil
     end
+  end
+
+  @doc false
+  # Whether a call may force a tool call: some Claude models take only `:auto`
+  # or `:none`, and others drop a forced choice while thinking.
+  def forced_tool_choice?(model, opts) do
+    modes = profile_extra(model, :tool_choice_modes)
+    thinking? = thinking_enabled?(thinking(model, opts)) or always_on_thinking_model?(model)
+
+    not (is_list(modes) and :any not in modes) and
+      not (thinking? and profile_extra(model, :forced_tool_choice_with_thinking) != true)
   end
 
   defp tool_choice(model, opts) do
     choice = Keyword.get(opts, :tool_choice)
-    parallel = Keyword.get(opts, :parallel_tool_calls, Map.get(model, :parallel_tool_calls))
-    thinking = option(model, opts, :thinking)
 
-    if forced_tool_choice?(choice) and thinking_enabled?(thinking) and
-         profile_extra(model, :forced_tool_choice_with_thinking) != true do
-      nil
-    else
-      Tools.tool_choice(choice, parallel_tool_calls: parallel)
-    end
+    if forced_tool_choice?(choice) and thinking_enabled?(thinking(model, opts)) and
+         profile_extra(model, :forced_tool_choice_with_thinking) != true,
+       do: nil,
+       else: Tools.tool_choice(choice, parallel_tool_calls: option(model, opts, :parallel_tool_calls))
   end
 
   defp forced_tool_choice?(nil), do: false
@@ -818,12 +621,15 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
   defp thinking_enabled?(%{type: type}), do: type in [:enabled, :adaptive, "enabled", "adaptive"]
   defp thinking_enabled?(_thinking), do: false
 
+  # The call's settings override the model's, and within each, `effort:` (or
+  # `reasoning_effort:`) overrides `output_config`'s `effort`.
   defp output_config(model, opts) do
     output_config =
       %{}
-      |> Options.merge_optional_map(option(model, opts, :output_config))
+      |> Options.merge_optional_map(Map.get(model, :output_config))
+      |> put_effort(Map.get(model, :effort) || Map.get(model, :reasoning_effort))
       |> Options.merge_optional_map(Keyword.get(opts, :output_config))
-      |> put_effort(option(model, opts, :effort))
+      |> put_effort(Keyword.get(opts, :effort) || Keyword.get(opts, :reasoning_effort))
 
     output_config =
       case Keyword.get(opts, :response_format) || Keyword.get(opts, :structured_output) do
@@ -834,83 +640,92 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
           Map.put(output_config, "format", structured_output_format(format))
       end
 
-    {:ok, if(output_config == %{}, do: nil, else: output_config)}
+    {:ok, Options.empty_to_nil(output_config)}
   rescue
     exception -> {:error, Error.new(:invalid_response_format, Exception.message(exception))}
   end
 
-  defp structured_output_format(%{"type" => "json_schema", "schema" => _schema} = format),
-    do: format
+  defp structured_output_format(format) do
+    format =
+      case format do
+        %{"type" => "json_schema", "schema" => _} -> format
+        %{type: "json_schema", schema: _} -> Options.stringify_keys(format)
+        other -> %{"type" => "json_schema", "schema" => Options.stringify_keys(output_schema(other))}
+      end
 
-  defp structured_output_format(%{type: "json_schema", schema: _schema} = format),
-    do: Options.stringify_keys(format)
+    Map.update!(format, "schema", &close_output_objects/1)
+  end
 
-  defp structured_output_format(%{
-         "type" => "json_schema",
-         "json_schema" => %{"schema" => schema}
-       }),
-       do: %{"type" => "json_schema", "schema" => Options.stringify_keys(schema)}
+  # Anthropic requires closed objects even when the application's schema did
+  # not opt into strict field declarations. Keep optional fields optional and
+  # preserve explicit constraints; OpenAI's required/nullable conversion does
+  # not apply to this provider.
+  defp close_output_objects(schema) when is_map(schema) do
+    schema =
+      Map.new(schema, fn
+        {key, children} when key in ["properties", "$defs", "definitions", "patternProperties"] and is_map(children) ->
+          {key, Map.new(children, fn {name, child} -> {name, close_output_objects(child)} end)}
 
-  defp structured_output_format(%{type: "json_schema", json_schema: %{schema: schema}}),
-    do: %{"type" => "json_schema", "schema" => Options.stringify_keys(schema)}
+        {key, children} when key in ["anyOf", "oneOf", "allOf", "prefixItems"] and is_list(children) ->
+          {key, Enum.map(children, &close_output_objects/1)}
 
-  defp structured_output_format(%{"schema" => schema}) when is_map(schema),
-    do: %{"type" => "json_schema", "schema" => Options.stringify_keys(schema)}
+        {key, child} when key in ["items", "additionalProperties"] ->
+          {key, close_output_objects(child)}
 
-  defp structured_output_format(%{schema: schema}) when is_map(schema),
-    do: %{"type" => "json_schema", "schema" => Options.stringify_keys(schema)}
+        pair ->
+          pair
+      end)
 
-  defp structured_output_format({_name, schema}) when is_map(schema),
-    do: %{"type" => "json_schema", "schema" => Options.stringify_keys(schema)}
+    if Enum.any?(List.wrap(schema["type"]), &(&1 in ["object", :object])) or Map.has_key?(schema, "properties"),
+      do: Map.put_new(schema, "additionalProperties", false),
+      else: schema
+  end
 
-  defp structured_output_format(schema) when is_map(schema),
-    do: %{"type" => "json_schema", "schema" => Options.stringify_keys(schema)}
+  defp close_output_objects(value), do: value
 
-  defp structured_output_format(_other),
-    do: raise(ArgumentError, "Anthropic structured output requires a JSON schema map")
+  defp output_schema(%{"type" => "json_schema", "json_schema" => %{"schema" => schema}}), do: schema
+  defp output_schema(%{type: "json_schema", json_schema: %{schema: schema}}), do: schema
+  defp output_schema(%{"schema" => schema}) when is_map(schema), do: schema
+  defp output_schema(%{schema: schema}) when is_map(schema), do: schema
+  defp output_schema({_name, schema}) when is_map(schema), do: schema
+  defp output_schema(schema) when is_map(schema), do: schema
+  defp output_schema(_other), do: raise(ArgumentError, "Anthropic structured output requires a JSON schema map")
 
   defp put_effort(map, nil), do: map
   defp put_effort(map, effort), do: Map.put(map, "effort", Options.normalize_value(effort))
 
   defp betas(model, opts, tools, output_config, messages, fallbacks, fallback_credit_token) do
-    base = option(model, opts, :betas) || []
     tools = tools || []
+    thinking = thinking(model, opts)
+    blocks = Enum.flat_map(messages, &content_blocks/1)
 
-    Tools.required_betas(tools, base)
+    tools
+    |> Tools.required_betas(option(model, opts, :betas) || [])
     |> maybe_add_beta(option(model, opts, :mcp_servers), "mcp-client-2025-11-20")
     |> maybe_add_beta(option(model, opts, :user_profile_id), "user-profiles-2026-08-18")
-    |> maybe_add_beta(task_budget?(output_config), "task-budgets-2026-03-13")
-    |> maybe_add_beta(thinking_updates?(option(model, opts, :thinking)), "thinking-display-updates-2026-08-18")
+    |> maybe_add_beta(not is_nil(output_config["task_budget"]), "task-budgets-2026-03-13")
+    |> maybe_add_beta(MapAccess.get(thinking, :display) in [:updates, "updates"], "thinking-display-updates-2026-08-18")
+    |> maybe_add_beta(MapAccess.get(thinking, :block_binding), "thinking-binding-controls-2026-08-01")
     |> maybe_add_beta(
-      thinking_block_binding(option(model, opts, :thinking)),
-      "thinking-binding-controls-2026-08-01"
+      block_type?(blocks, ["tool_addition", "tool_removal"]),
+      "mid-conversation-tool-changes-2026-07-01"
     )
-    |> maybe_add_beta(tool_changes?(messages), "mid-conversation-tool-changes-2026-07-01")
     |> maybe_upgrade_beta(
-      inline_tool_definition?(messages),
+      inline_tool?(blocks, ["type"], "tool_definition"),
       "mid-conversation-tool-changes-2026-07-01",
       "inline-tools-2026-09-15"
     )
     |> maybe_upgrade_beta(
-      mcp_tool_listing?(messages) or inline_mcp_toolset?(messages) or pinned_mcp_toolset?(tools),
+      block_type?(blocks, ["mcp_tool_listing"]) or inline_tool?(blocks, ["definition", "type"], "mcp_toolset") or
+        pinned_mcp_toolset?(tools),
       "mcp-client-2025-11-20",
       "mcp-client-2026-09-15"
     )
-    |> maybe_add_beta(
-      option(model, opts, :compaction) || compaction_block?(messages),
-      "compact-2026-09-04"
-    )
-    |> maybe_add_beta(system_clear_at?(messages), "mid-conversation-system-clear-at-2026-08-21")
-    |> maybe_add_beta(
-      system_output_config?(messages),
-      "mid-conversation-output-config-2026-07-01"
-    )
+    |> maybe_add_beta(option(model, opts, :compaction) || block_type?(blocks, ["compaction"]), "compact-2026-09-04")
+    |> maybe_add_beta(system_message_field?(messages, "clear_at"), "mid-conversation-system-clear-at-2026-08-21")
+    |> maybe_add_beta(system_message_field?(messages, "output_config"), "mid-conversation-output-config-2026-07-01")
     |> maybe_add_fallback_beta(fallbacks)
     |> maybe_add_beta(fallback_credit_token, "fallback-credit-2026-07-01")
-    |> case do
-      [] -> nil
-      betas -> betas
-    end
   end
 
   defp maybe_add_beta(betas, value, _beta) when value in [nil, false, []], do: betas
@@ -942,44 +757,13 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
 
   defp maybe_add_fallback_beta(betas, _fallbacks), do: betas
 
-  defp task_budget?(%{"task_budget" => task_budget}) when not is_nil(task_budget), do: true
-  defp task_budget?(_output_config), do: false
+  defp block_type?(blocks, types), do: Enum.any?(blocks, &(&1["type"] in types))
 
-  defp thinking_updates?(thinking), do: MapAccess.get(thinking, :display) in [:updates, "updates"]
-
-  defp tool_changes?(messages) do
-    Enum.any?(messages, fn
-      %{"content" => content} when is_list(content) ->
-        Enum.any?(content, fn
-          %{"type" => type} -> type in ["tool_addition", "tool_removal"]
-          _block -> false
-        end)
-
-      _message ->
-        false
+  defp inline_tool?(blocks, path, type) do
+    Enum.any?(blocks, fn block ->
+      Enum.any?([block | List.wrap(block["tool_changes"])], &(get_in(&1, ["tool" | path]) == type))
     end)
   end
-
-  defp inline_tool_definition?(messages) do
-    Enum.any?(message_content_blocks(messages), fn block ->
-      get_in(block, ["tool", "type"]) == "tool_definition" or
-        Enum.any?(List.wrap(block["tool_changes"]), fn change ->
-          get_in(change, ["tool", "type"]) == "tool_definition"
-        end)
-    end)
-  end
-
-  defp inline_mcp_toolset?(messages) do
-    Enum.any?(message_content_blocks(messages), fn block ->
-      get_in(block, ["tool", "definition", "type"]) == "mcp_toolset" or
-        Enum.any?(List.wrap(block["tool_changes"]), fn change ->
-          get_in(change, ["tool", "definition", "type"]) == "mcp_toolset"
-        end)
-    end)
-  end
-
-  defp mcp_tool_listing?(messages),
-    do: Enum.any?(message_content_blocks(messages), &(&1["type"] == "mcp_tool_listing"))
 
   defp pinned_mcp_toolset?(tools) do
     Enum.any?(tools, fn
@@ -988,18 +772,8 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     end)
   end
 
-  defp compaction_block?(messages),
-    do: Enum.any?(message_content_blocks(messages), &(&1["type"] == "compaction"))
-
-  defp message_content_blocks(messages) do
-    Enum.flat_map(messages, fn
-      %{"content" => content} when is_list(content) -> Enum.filter(content, &is_map/1)
-      _message -> []
-    end)
-  end
-
-  defp system_clear_at?(messages), do: system_message_field?(messages, "clear_at")
-  defp system_output_config?(messages), do: system_message_field?(messages, "output_config")
+  defp content_blocks(%{"content" => content}) when is_list(content), do: Enum.filter(content, &is_map/1)
+  defp content_blocks(_message), do: []
 
   defp system_message_field?(messages, field) do
     Enum.any?(messages, fn
@@ -1008,43 +782,18 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     end)
   end
 
-  defp normalize_fallbacks(fallbacks) when fallbacks in [nil, []], do: nil
-  defp normalize_fallbacks(fallbacks) when is_list(fallbacks), do: Options.normalize_option_list(fallbacks)
-  defp normalize_fallbacks(fallbacks), do: Options.normalize_value(fallbacks)
-
-  defp normalize_fallback_credit_token(token) when is_map(token),
-    do: Options.normalize_option_map(token)
-
-  defp normalize_fallback_credit_token(token), do: token
-
-  defp message_format_opts(model) do
-    [
-      mid_conversation_system_messages: profile_extra(model, :mid_conversation_system_messages) == true
-    ]
-  end
-
   defp profile_extra(%{profile: %{extra: extra}}, key) when is_map(extra),
     do: MapAccess.get(extra, key)
 
   defp profile_extra(_model, _key), do: nil
 
-  defp maybe_put_container(body, model, messages, opts) do
-    if Map.has_key?(body, "container") do
-      body
-    else
-      maybe_put_reused_container(body, model, messages, opts)
-    end
-  end
+  defp profile_value(%{profile: %BeamWeaver.Models.Profile{} = profile}, key), do: Map.get(profile, key)
+  defp profile_value(_model, _key), do: nil
 
-  defp maybe_put_reused_container(body, model, messages, opts) do
-    if Keyword.get(opts, :reuse_last_container, model.reuse_last_container) do
-      case last_container(messages) do
-        nil -> body
-        container_id -> Map.put(body, "container", container_id)
-      end
-    else
-      body
-    end
+  defp maybe_put_container(body, model, messages, opts) do
+    if Map.has_key?(body, "container") or !option(model, opts, :reuse_last_container),
+      do: body,
+      else: Options.put_optional(body, "container", last_container(messages))
   end
 
   defp last_container(messages) do
@@ -1063,12 +812,12 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     end)
   end
 
+  # A call's `max_output_tokens` or `max_completion_tokens` is the same cap.
   defp max_tokens(model, opts) do
-    Keyword.get(opts, :max_tokens, model.max_tokens || profile_max_tokens(model) || 4096)
+    Keyword.get(opts, :max_tokens) || Keyword.get(opts, :max_output_tokens) ||
+      Keyword.get(opts, :max_completion_tokens) || model.max_tokens || profile_max_tokens(model) || 4096
   end
 
   defp profile_max_tokens(%{profile: %{max_output_tokens: value}}), do: value
   defp profile_max_tokens(_model), do: nil
-
-  defp option(model, opts, key), do: Keyword.get(opts, key, Map.get(model, key))
 end

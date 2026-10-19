@@ -4,20 +4,28 @@ defmodule BeamWeaver.Schema do
 
   Use this module when a schema is part of your public agent contract:
 
-      defmodule MyApp.Schemas.FactsOutput do
-        use BeamWeaver.Schema
+  ```elixir
+  defmodule MyApp.Schemas.Answer do
+    use BeamWeaver.Schema
 
-        title "facts_output"
-        description "Extracted entity facts and client requests."
-        strict true
+    title "answer"
+    description "A short answer with its confidence."
+    strict true
+    field :answer, :string, required: true
+    field :confidence, :number, required: true
+  end
 
-        field :entity_facts, {:array, MyApp.Schemas.EntityFact}, required: true
-      end
+  schema = BeamWeaver.Schema.to_json_schema(MyApp.Schemas.Answer)
+  schema["properties"]["answer"]["type"]
+  #=> "string"
+  ```
 
   Runtime code consumes schemas through `to_json_schema/1`. Maps are returned as
   JSON schema maps; schema modules can expose `json_schema/0`, `schema/0`, or the
   legacy `__beam_weaver_schema__/0` callback.
   """
+
+  import BeamWeaver.MapShape, only: [put_present: 3, stringify_keys: 1]
 
   @primitive_types [
     :string,
@@ -57,15 +65,24 @@ defmodule BeamWeaver.Schema do
     end
   end
 
+  @doc "Names the schema presented to the model. Defaults to a name derived from the module."
   defmacro title(value), do: quote(do: @beam_weaver_schema_title(unquote(value)))
+  @doc "Describes the structured value the model should produce."
   defmacro description(value), do: quote(do: @beam_weaver_schema_description(unquote(value)))
+  @doc "When true, disallows additional object properties in the declared schema."
   defmacro strict(value), do: quote(do: @beam_weaver_schema_strict(unquote(value)))
 
+  @doc """
+  Declares a named field and its type. Fields are required by default; use
+  `required: false` for optional values. `nullable: true` also accepts null,
+  and adds `nil` to the field's `enum:` values. See
+  [Structured Output](structured_output.md).
+  """
   defmacro field(name_ast, type_ast, opts \\ []) do
     name = literal_field_name!(__CALLER__, name_ast)
     type = literal_field_type!(__CALLER__, type_ast)
 
-    quote bind_quoted: [name: name, type: type, opts: opts] do
+    quote bind_quoted: [name: name, type: Macro.escape(type), opts: opts] do
       @beam_weaver_schema_fields {name, type, opts}
     end
   end
@@ -74,7 +91,7 @@ defmodule BeamWeaver.Schema do
     title = Module.get_attribute(env.module, :beam_weaver_schema_title) || schema_default_title(env.module)
     description = Module.get_attribute(env.module, :beam_weaver_schema_description) || ""
     strict? = Module.get_attribute(env.module, :beam_weaver_schema_strict) == true
-    fields = Module.get_attribute(env.module, :beam_weaver_schema_fields) || []
+    fields = Module.get_attribute(env.module, :beam_weaver_schema_fields)
     schema = object_schema(Enum.reverse(fields), title, description, strict?)
 
     quote do
@@ -85,31 +102,17 @@ defmodule BeamWeaver.Schema do
   end
 
   @spec to_json_schema(term()) :: map()
+  @doc "Returns JSON Schema for a schema module, struct, or schema map. See [Structured Output](structured_output.md)."
   def to_json_schema(schema) when is_map(schema), do: schema
 
   def to_json_schema(type) when type in @primitive_types do
     type
     |> BeamWeaver.Tool.Schema.type_schema()
-    |> stringify_schema()
+    |> stringify_keys()
   end
 
-  def to_json_schema(module) when is_atom(module) do
-    ensure_schema_module_compiled(module)
-
-    cond do
-      function_exported?(module, :json_schema, 0) ->
-        module.json_schema()
-
-      function_exported?(module, :schema, 0) ->
-        module.schema()
-
-      function_exported?(module, :__beam_weaver_schema__, 0) ->
-        module.__beam_weaver_schema__()
-
-      true ->
-        BeamWeaver.Tool.Schema.type_schema(module)
-    end
-  end
+  def to_json_schema(module) when is_atom(module),
+    do: module_schema(module) || BeamWeaver.Tool.Schema.type_schema(module)
 
   def to_json_schema({:array, item_type}) do
     %{"type" => "array", "items" => to_json_schema(item_type)}
@@ -123,7 +126,36 @@ defmodule BeamWeaver.Schema do
     %{"anyOf" => Enum.map(types, &to_json_schema/1)}
   end
 
-  def to_json_schema(type), do: BeamWeaver.Tool.Schema.type_schema(type) |> stringify_schema()
+  def to_json_schema(type), do: BeamWeaver.Tool.Schema.type_schema(type) |> stringify_keys()
+
+  @doc false
+  # A JSON-schema map as it is, or the schema a module declares; anything else
+  # raises.
+  @spec json_schema!(map() | module()) :: map()
+  def json_schema!(schema) when is_map(schema) and not is_struct(schema), do: schema
+
+  def json_schema!(module) when is_atom(module) do
+    module_schema(module) || raise ArgumentError, "#{inspect(module)} does not declare a JSON schema"
+  end
+
+  def json_schema!(other),
+    do: raise(ArgumentError, "expected a JSON Schema map or a schema module, got: #{inspect(other)}")
+
+  @doc """
+  Returns the JSON schema a module declares through `json_schema/0`,
+  `schema/0`, or `use BeamWeaver.Schema`, or `nil` when it declares none.
+  """
+  @spec module_schema(module()) :: map() | nil
+  def module_schema(module) when is_atom(module) do
+    ensure_schema_module_compiled(module)
+
+    cond do
+      function_exported?(module, :json_schema, 0) -> module.json_schema()
+      function_exported?(module, :schema, 0) -> module.schema()
+      function_exported?(module, :__beam_weaver_schema__, 0) -> module.__beam_weaver_schema__()
+      true -> nil
+    end
+  end
 
   defp object_schema(fields, title, description, strict?) do
     {properties, required} =
@@ -132,9 +164,9 @@ defmodule BeamWeaver.Schema do
 
         property =
           type
-          |> field_type_schema()
+          |> to_json_schema()
           |> merge_field_opts(opts)
-          |> stringify_schema()
+          |> stringify_keys()
 
         required =
           if Keyword.get(opts, :required, true),
@@ -149,23 +181,15 @@ defmodule BeamWeaver.Schema do
       "properties" => properties,
       "required" => required
     }
-    |> maybe_put("title", title)
-    |> maybe_put("description", description)
+    |> put_present("title", title)
+    |> put_present("description", description)
     |> maybe_put("additionalProperties", false, strict?)
   end
 
-  defp field_type_schema({:array, item_type}) do
-    %{"type" => "array", "items" => to_json_schema(item_type)}
-  end
-
-  defp field_type_schema({:object, fields}) when is_list(fields), do: object_schema(fields, nil, nil, false)
-  defp field_type_schema({:union, types}) when is_list(types), do: %{"anyOf" => Enum.map(types, &to_json_schema/1)}
-  defp field_type_schema(type), do: to_json_schema(type)
-
   defp merge_field_opts(schema, opts) do
     schema
-    |> maybe_put("description", Keyword.get(opts, :description))
-    |> maybe_put("enum", Keyword.get(opts, :enum))
+    |> put_present("description", Keyword.get(opts, :description))
+    |> put_present("enum", Keyword.get(opts, :enum))
     |> maybe_put_default(opts)
     |> maybe_nullable(Keyword.get(opts, :nullable, false))
     |> maybe_put("additionalProperties", false, Keyword.get(opts, :strict, false))
@@ -178,19 +202,10 @@ defmodule BeamWeaver.Schema do
   end
 
   defp maybe_nullable(schema, false), do: schema
+  defp maybe_nullable(schema, true), do: BeamWeaver.Tool.Schema.Fields.nullable(schema)
 
-  defp maybe_nullable(schema, true) do
-    type = Map.get(schema, "type")
-    Map.put(schema, "type", Enum.uniq(List.wrap(type) ++ ["null"]))
-  end
-
-  defp maybe_put(schema, _key, nil), do: schema
-  defp maybe_put(schema, key, value), do: Map.put(schema, key, value)
-
-  defp maybe_put(schema, key, value, true), do: maybe_put(schema, key, value)
+  defp maybe_put(schema, key, value, true), do: put_present(schema, key, value)
   defp maybe_put(schema, _key, _value, false), do: schema
-
-  defp stringify_schema(schema), do: BeamWeaver.MapShape.stringify_keys(schema)
 
   defp schema_default_title(module), do: module |> Module.split() |> List.last() |> Macro.underscore()
 

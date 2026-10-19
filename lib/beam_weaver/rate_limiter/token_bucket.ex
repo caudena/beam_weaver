@@ -4,6 +4,9 @@ defmodule BeamWeaver.RateLimiter.TokenBucket do
 
   The bucket supports immediate rejection, queued waiting with explicit timeout,
   burst capacity, periodic refill, and queued-caller cancellation.
+
+  As a child of a supervisor, a bucket's child id is its `:name`, so several
+  named buckets can share one supervisor. Pass `:id` to choose another id.
   """
 
   use GenServer
@@ -46,6 +49,14 @@ defmodule BeamWeaver.RateLimiter.TokenBucket do
     GenServer.start_link(__MODULE__, opts, name: opts[:name])
   end
 
+  @doc false
+  def child_spec(opts) do
+    %{
+      id: Keyword.get_lazy(opts, :id, fn -> Keyword.get(opts, :name, __MODULE__) end),
+      start: {__MODULE__, :start_link, [Keyword.delete(opts, :id)]}
+    }
+  end
+
   @spec acquire(GenServer.server(), pos_integer(), keyword()) :: :ok | {:error, Error.t()}
   def acquire(limiter, amount \\ 1, opts \\ []) do
     GenServer.call(limiter, {:acquire, amount, opts}, :infinity)
@@ -85,7 +96,7 @@ defmodule BeamWeaver.RateLimiter.TokenBucket do
 
   @impl true
   def handle_call({:acquire, amount, opts}, from, state) do
-    mode = mode(opts)
+    mode = Keyword.get(opts, :mode, :wait)
     timeout = Keyword.get(opts, :timeout, 5_000)
 
     cond do
@@ -130,13 +141,8 @@ defmodule BeamWeaver.RateLimiter.TokenBucket do
 
   @impl true
   def handle_info(:refill, state) do
-    state =
-      state
-      |> add_tokens()
-      |> drain_queue()
-      |> schedule_refill()
-
-    {:noreply, state}
+    state = %{state | tokens: min(state.capacity, state.tokens + state.refill_amount)}
+    {:noreply, state |> drain_queue() |> schedule_refill()}
   end
 
   def handle_info({:acquire_timeout, id}, state) do
@@ -166,61 +172,23 @@ defmodule BeamWeaver.RateLimiter.TokenBucket do
 
   defp enqueue_waiter(state, {pid, _tag} = from, amount, timeout) do
     id = make_ref()
-    monitor = Process.monitor(pid)
-    timer = timeout_timer(id, timeout)
-
-    waiter = %{
-      id: id,
-      from: from,
-      amount: amount,
-      monitor: monitor,
-      timer: timer
-    }
-
+    timer = if timeout != :infinity, do: Process.send_after(self(), {:acquire_timeout, id}, timeout)
+    waiter = %{id: id, from: from, amount: amount, monitor: Process.monitor(pid), timer: timer}
     %{state | queue: :queue.in(waiter, state.queue)}
-  end
-
-  defp timeout_timer(_id, :infinity), do: nil
-
-  defp timeout_timer(id, timeout) when is_integer(timeout) and timeout >= 0 do
-    Process.send_after(self(), {:acquire_timeout, id}, timeout)
-  end
-
-  defp timeout_timer(id, _timeout) do
-    Process.send_after(self(), {:acquire_timeout, id}, 5_000)
-  end
-
-  defp add_tokens(state) do
-    %{state | tokens: min(state.capacity, state.tokens + state.refill_amount)}
-  end
-
-  defp mode(opts) do
-    Keyword.get(opts, :mode, :wait)
   end
 
   defp drain_queue(state) do
     case :queue.out(state.queue) do
       {{:value, waiter}, queue} when waiter.amount <= state.tokens ->
-        complete_waiter(waiter)
+        Process.demonitor(waiter.monitor, [:flush])
+        if waiter.timer, do: Process.cancel_timer(waiter.timer)
+        GenServer.reply(waiter.from, :ok)
 
-        state
-        |> Map.put(:queue, queue)
-        |> Map.put(:tokens, state.tokens - waiter.amount)
-        |> drain_queue()
+        drain_queue(%{state | queue: queue, tokens: state.tokens - waiter.amount})
 
       _empty_or_blocked ->
         state
     end
-  end
-
-  defp complete_waiter(waiter) do
-    Process.demonitor(waiter.monitor, [:flush])
-
-    if waiter.timer do
-      Process.cancel_timer(waiter.timer)
-    end
-
-    GenServer.reply(waiter.from, :ok)
   end
 
   defp pop_waiter(queue, matcher) do
@@ -240,27 +208,15 @@ defmodule BeamWeaver.RateLimiter.TokenBucket do
     %{state | tick_ref: Process.send_after(self(), :refill, state.refill_interval)}
   end
 
-  defp positive_integer(_name, value) when is_integer(value) and value > 0 do
-    :ok
-  end
+  defp positive_integer(_name, value) when is_integer(value) and value > 0, do: :ok
+  defp positive_integer(name, value), do: invalid_option(name, value, "a positive integer")
 
-  defp positive_integer(name, value) do
-    {:error, Error.new(:invalid_option, "#{name} must be a positive integer", %{value: value})}
-  end
+  defp positive_number(_name, value) when is_number(value) and value > 0, do: :ok
+  defp positive_number(name, value), do: invalid_option(name, value, "a positive number")
 
-  defp positive_number(_name, value) when is_number(value) and value > 0 do
-    :ok
-  end
+  defp non_negative_number(_name, value) when is_number(value) and value >= 0, do: :ok
+  defp non_negative_number(name, value), do: invalid_option(name, value, "a non-negative number")
 
-  defp positive_number(name, value) do
-    {:error, Error.new(:invalid_option, "#{name} must be a positive number", %{value: value})}
-  end
-
-  defp non_negative_number(_name, value) when is_number(value) and value >= 0 do
-    :ok
-  end
-
-  defp non_negative_number(name, value) do
-    {:error, Error.new(:invalid_option, "#{name} must be a non-negative number", %{value: value})}
-  end
+  defp invalid_option(name, value, expected),
+    do: {:error, Error.new(:invalid_option, "#{name} must be #{expected}", %{value: value})}
 end

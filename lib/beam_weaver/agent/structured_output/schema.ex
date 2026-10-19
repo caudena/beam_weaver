@@ -8,11 +8,7 @@ defmodule BeamWeaver.Agent.StructuredOutput.Schema do
   def schema_specs(%{oneOf: variants}), do: variant_specs(variants)
   def schema_specs(schema), do: [schema_spec(schema)]
 
-  defp variant_specs(variants) do
-    variants
-    |> Enum.with_index()
-    |> Enum.map(fn {variant, index} -> variant_spec(variant, index) end)
-  end
+  defp variant_specs(variants), do: Enum.with_index(variants, &variant_spec/2)
 
   defp variant_spec(variant, index) when is_map(variant) do
     case Map.get(variant, :title) || Map.get(variant, "title") do
@@ -45,67 +41,12 @@ defmodule BeamWeaver.Agent.StructuredOutput.Schema do
   end
 
   def schema_spec(module, opts) when is_atom(module) do
-    ensure_schema_module_compiled(module)
+    name = module |> Module.split() |> List.last()
 
-    cond do
-      function_exported?(module, :json_schema, 0) ->
-        schema_spec(
-          module.json_schema(),
-          Keyword.put_new(opts, :name, module |> Module.split() |> List.last())
-        )
-
-      function_exported?(module, :schema, 0) ->
-        schema_spec(
-          module.schema(),
-          Keyword.put_new(opts, :name, module |> Module.split() |> List.last())
-        )
-
-      true ->
-        schema_spec(
-          %{"title" => module |> Module.split() |> List.last(), "type" => "object"},
-          opts
-        )
+    case BeamWeaver.Schema.module_schema(module) do
+      nil -> schema_spec(%{"title" => name, "type" => "object"}, opts)
+      schema -> schema_spec(schema, Keyword.put_new(opts, :name, name))
     end
-  end
-
-  defp ensure_schema_module_compiled(module) do
-    case Code.ensure_compiled(module) do
-      {:module, _module} ->
-        :ok
-
-      {:error, :nofile} ->
-        :error
-
-      {:error, reason} ->
-        raise ArgumentError, "schema module #{inspect(module)} could not be loaded: #{inspect(reason)}"
-    end
-  end
-
-  def provider_supported?(model, tools) do
-    profile =
-      if is_map(model), do: BeamWeaver.MapAccess.get(model, :profile), else: nil
-
-    cond do
-      tool_enabled?(tools) and not provider_supports_structured_output_with_tools?(model, profile) ->
-        false
-
-      is_map(model) and Map.get(model, :supports_structured_output) ->
-        true
-
-      is_map(profile) and BeamWeaver.MapAccess.get(profile, :structured_output) ->
-        true
-
-      true ->
-        false
-    end
-  end
-
-  defp tool_enabled?(tools), do: List.wrap(tools) != []
-
-  defp provider_supports_structured_output_with_tools?(model, profile) do
-    (is_map(model) and Map.get(model, :supports_structured_output_with_tools)) ||
-      (is_map(profile) and BeamWeaver.MapAccess.get(profile, :structured_output_with_tools)) ||
-      false
   end
 
   def nonempty_description(description) when is_binary(description) and description != "",

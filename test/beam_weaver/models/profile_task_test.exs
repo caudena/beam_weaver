@@ -13,12 +13,12 @@ defmodule BeamWeaver.Models.ProfileTaskTest do
   end
 
   test "profiles Mix task prints deterministic provider-scoped text output" do
-    Mix.Task.rerun("beam_weaver.models.profiles", ["--provider", "openai"])
+    Mix.Task.rerun("beam_weaver.models.profiles", ["--provider", "fake"])
 
     assert_receive {:mix_shell, :info, [output]}
-    assert output =~ "openai:gpt-6-astra"
-    assert output =~ "openai:gpt-5.5"
-    refute output =~ "fake:chat"
+    assert output =~ "fake:chat"
+    assert output =~ "fake:embedding"
+    refute output =~ "openai:"
   end
 
   test "profiles Mix task can emit JSON-compatible profile data" do
@@ -54,7 +54,7 @@ defmodule BeamWeaver.Models.ProfileTaskTest do
     artifact = Path.join(data_dir, "profiles.json")
     assert File.exists?(artifact)
 
-    assert {:ok, %{"provider" => "anthropic", "profiles" => [%{"id" => "claude-3-opus"}]}} =
+    assert {:ok, %{"provider" => "anthropic", "profiles" => [%{"id" => "fixture-model"}]}} =
              artifact |> File.read!() |> BeamWeaver.JSON.decode()
   end
 
@@ -63,9 +63,9 @@ defmodule BeamWeaver.Models.ProfileTaskTest do
       "anthropic" => %{
         "id" => "anthropic",
         "models" => %{
-          "claude-3-opus" => %{
-            "id" => "claude-3-opus",
-            "name" => "Claude 3 Opus",
+          "fixture-model" => %{
+            "id" => "fixture-model",
+            "name" => "Fixture model",
             "tool_call" => true,
             "limit" => %{"context" => 200_000, "output" => 4_096},
             "modalities" => %{"input" => ["text", "image"], "output" => ["text"]}

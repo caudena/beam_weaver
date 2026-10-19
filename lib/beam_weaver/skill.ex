@@ -16,6 +16,8 @@ defmodule BeamWeaver.Skill do
 
   alias BeamWeaver.Core.Error
 
+  require Logger
+
   @schema_version 1
   @max_document_bytes 524_288
   @max_frontmatter_bytes 16_384
@@ -95,8 +97,7 @@ defmodule BeamWeaver.Skill do
          :ok <- validate_fields(frontmatter),
          {:ok, name} <- required_string(frontmatter, "name", 64),
          :ok <- validate_name(name, Keyword.get(opts, :expected_name)),
-         {:ok, description} <-
-           required_string(frontmatter, "description", @max_description_bytes),
+         {:ok, description} <- description(frontmatter, name),
          {:ok, license} <-
            optional_string(frontmatter, "license", @max_optional_string_bytes),
          {:ok, compatibility} <-
@@ -108,8 +109,7 @@ defmodule BeamWeaver.Skill do
          {:ok, disable_model_invocation} <-
            optional_boolean(frontmatter, "disable-model-invocation", false),
          {:ok, user_invocable} <- optional_boolean(frontmatter, "user-invocable", true),
-         {:ok, context} <- context(frontmatter),
-         :ok <- valid_text(body, :body) do
+         {:ok, context} <- context(frontmatter) do
       {:ok,
        %__MODULE__{
          name: name,
@@ -154,7 +154,9 @@ defmodule BeamWeaver.Skill do
   def render(_skill, _arguments), do: invalid("skill and arguments are invalid")
 
   defp validate_options(opts) do
-    if Keyword.keyword?(opts), do: validate_keyword_options(opts), else: invalid_options()
+    if Keyword.keyword?(opts),
+      do: validate_keyword_options(opts),
+      else: invalid("skill parser options must be a keyword list")
   end
 
   defp validate_keyword_options(opts) do
@@ -175,8 +177,6 @@ defmodule BeamWeaver.Skill do
     end
   end
 
-  defp invalid_options, do: invalid("skill parser options must be a keyword list")
-
   defp invalid_expected_name?(nil), do: false
   defp invalid_expected_name?(value), do: not (is_binary(value) and valid_name?(value))
 
@@ -194,29 +194,22 @@ defmodule BeamWeaver.Skill do
   defp split_document(_document), do: invalid("skill document must start with YAML frontmatter")
 
   defp split_after_open(rest, newline) do
-    closing = newline <> "---" <> newline
+    closing_at_eof = newline <> "---"
 
-    case :binary.match(rest, closing) do
-      {offset, length} ->
-        yaml = binary_part(rest, 0, offset)
-        body_offset = offset + length
-        {:ok, yaml, binary_part(rest, body_offset, byte_size(rest) - body_offset)}
+    case :binary.split(rest, closing_at_eof <> newline) do
+      [yaml, body] ->
+        {:ok, yaml, body}
 
-      :nomatch ->
-        closing_at_eof = newline <> "---"
-
-        if String.ends_with?(rest, closing_at_eof) do
-          yaml_size = byte_size(rest) - byte_size(closing_at_eof)
-          {:ok, binary_part(rest, 0, yaml_size), ""}
-        else
-          invalid("skill frontmatter is not terminated")
-        end
+      [_unterminated] ->
+        if String.ends_with?(rest, closing_at_eof),
+          do: {:ok, String.replace_suffix(rest, closing_at_eof, ""), ""},
+          else: invalid("skill frontmatter is not terminated")
     end
   end
 
   defp validate_frontmatter_bytes(yaml) do
     if byte_size(yaml) <= @max_frontmatter_bytes,
-      do: valid_text(yaml, :frontmatter),
+      do: :ok,
       else: invalid("skill frontmatter exceeds the byte limit")
   end
 
@@ -235,16 +228,13 @@ defmodule BeamWeaver.Skill do
       yaml
       |> String.split(~r/\r?\n/u)
       |> Enum.reject(&(String.trim(&1) == "" or String.starts_with?(String.trim(&1), "#")))
-      |> Enum.reject(&starts_with_whitespace?/1)
+      |> Enum.reject(&String.starts_with?(&1, [" ", "\t"]))
 
     cond do
       Enum.any?(top_level_fields, &(not Regex.match?(~r/^[a-z][a-z0-9-]*:(?:\s|$)/, &1))) ->
         invalid("skill frontmatter contains unsupported YAML syntax")
 
-      Regex.match?(~r/(?:^|[\s\[\{,])(?:[&*][A-Za-z0-9_-]+|![^\s]+)/m, yaml) ->
-        invalid("skill frontmatter contains unsupported YAML features")
-
-      Regex.match?(~r/^\s*<<\s*:/m, yaml) ->
+      Regex.match?(~r/(?:^|[\s\[\{,])(?:[&*][A-Za-z0-9_-]+|![^\s]+)/m, yaml) or Regex.match?(~r/^\s*<<\s*:/m, yaml) ->
         invalid("skill frontmatter contains unsupported YAML features")
 
       true ->
@@ -252,30 +242,14 @@ defmodule BeamWeaver.Skill do
     end
   end
 
-  defp starts_with_whitespace?(<<character, _rest::binary>>) when character in [32, 9],
-    do: true
-
-  defp starts_with_whitespace?(_line), do: false
-
   defp decode_frontmatter(yaml) do
-    documents = :yamerl_constr.string(String.to_charlist(yaml), keep_duplicate_keys: true)
-
-    case documents do
-      [document] ->
-        with :ok <- validate_yaml_unique_keys(document) do
-          case normalize_yaml(document) do
-            %{} = frontmatter -> {:ok, frontmatter}
-            _other -> invalid("skill frontmatter must be a map")
-          end
-        end
-
-      _other ->
-        invalid("skill frontmatter must contain exactly one YAML document")
+    case BeamWeaver.YAML.decode(yaml, unique_keys: true) do
+      {:ok, %{} = frontmatter} -> {:ok, frontmatter}
+      {:ok, _other} -> invalid("skill frontmatter must be a map")
+      {:error, :duplicate_keys} -> invalid("skill frontmatter contains duplicate fields")
+      {:error, :not_one_document} -> invalid("skill frontmatter must contain exactly one YAML document")
+      {:error, {:invalid, _reason}} -> invalid("skill frontmatter is invalid YAML")
     end
-  rescue
-    _exception -> invalid("skill frontmatter is invalid YAML")
-  catch
-    _kind, _reason -> invalid("skill frontmatter is invalid YAML")
   end
 
   defp validate_fields(frontmatter) do
@@ -288,18 +262,37 @@ defmodule BeamWeaver.Skill do
     end
   end
 
+  # A description over the limit is cut to it, so a skill whose description
+  # runs long still loads: the description is only the text the model picks
+  # skills by.
+  defp description(frontmatter, name) do
+    with {:ok, description} <- required_string(frontmatter, "description", @max_frontmatter_bytes),
+         do: {:ok, cut_description(description, name)}
+  end
+
+  defp cut_description(description, _name) when byte_size(description) <= @max_description_bytes,
+    do: description
+
+  defp cut_description(description, name) do
+    cut = description |> binary_part(0, @max_description_bytes) |> whole_characters() |> String.trim_trailing()
+
+    Logger.warning(
+      "Skill #{inspect(name)} has a #{byte_size(description)}-byte description, over the limit of " <>
+        "#{@max_description_bytes}; only its first #{byte_size(cut)} bytes are kept."
+    )
+
+    cut
+  end
+
+  # Drops the bytes of a character the cut split.
+  defp whole_characters(text) do
+    if String.valid?(text), do: text, else: whole_characters(binary_part(text, 0, byte_size(text) - 1))
+  end
+
   defp required_string(frontmatter, field, maximum) do
-    case Map.get(frontmatter, field) do
-      value when is_binary(value) ->
-        value = String.trim(value)
-
-        if byte_size(value) in 1..maximum and String.valid?(value),
-          do: {:ok, value},
-          else: invalid("skill #{field} is invalid", field)
-
-      _other ->
-        invalid("skill #{field} is required", field)
-    end
+    if is_binary(Map.get(frontmatter, field)),
+      do: optional_string(frontmatter, field, maximum),
+      else: invalid("skill #{field} is required", field)
   end
 
   defp optional_string(frontmatter, field, maximum) do
@@ -310,9 +303,16 @@ defmodule BeamWeaver.Skill do
       value when is_binary(value) ->
         value = String.trim(value)
 
-        if byte_size(value) in 1..maximum and String.valid?(value),
-          do: {:ok, value},
-          else: invalid("skill #{field} is invalid", field)
+        cond do
+          byte_size(value) > maximum ->
+            invalid("skill #{field} is #{byte_size(value)} bytes, over the limit of #{maximum}", field)
+
+          value != "" and String.valid?(value) ->
+            {:ok, value}
+
+          true ->
+            invalid("skill #{field} is invalid", field)
+        end
 
       _other ->
         invalid("skill #{field} must be a string", field)
@@ -362,28 +362,39 @@ defmodule BeamWeaver.Skill do
     end
   end
 
+  # A string of names separated by spaces or commas, or a YAML list of names.
   defp allowed_tools(frontmatter) do
     case Map.get(frontmatter, "allowed-tools") do
       nil ->
         {:ok, []}
 
       value when is_binary(value) ->
-        values = String.split(value, ~r/[\s,]+/u, trim: true)
+        value |> String.split(~r/[\s,]+/u, trim: true) |> valid_allowed_tools()
 
-        if length(values) <= @max_allowed_tools and
-             length(values) == MapSet.size(MapSet.new(values)) and
-             Enum.all?(values, fn tool ->
-               byte_size(tool) in 1..@max_allowed_tool_bytes and String.valid?(tool)
-             end) do
-          {:ok, values}
-        else
-          invalid("skill allowed-tools is invalid", "allowed-tools")
-        end
+      values when is_list(values) ->
+        if Enum.all?(values, &is_binary/1),
+          do: values |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == "")) |> valid_allowed_tools(),
+          else: invalid_allowed_tools_shape()
 
       _other ->
-        invalid("skill allowed-tools must be a string", "allowed-tools")
+        invalid_allowed_tools_shape()
     end
   end
+
+  defp valid_allowed_tools(values) do
+    if length(values) <= @max_allowed_tools and
+         length(values) == MapSet.size(MapSet.new(values)) and
+         Enum.all?(values, fn tool ->
+           byte_size(tool) in 1..@max_allowed_tool_bytes and String.valid?(tool)
+         end) do
+      {:ok, values}
+    else
+      invalid("skill allowed-tools is invalid", "allowed-tools")
+    end
+  end
+
+  defp invalid_allowed_tools_shape,
+    do: invalid("skill allowed-tools must be a string or a list of strings", "allowed-tools")
 
   defp context(frontmatter) do
     case Map.get(frontmatter, "context", "inline") do
@@ -411,12 +422,8 @@ defmodule BeamWeaver.Skill do
     |> length()
   end
 
-  defp replace_arguments(body, arguments) do
-    Regex.replace(~r/\$ARGUMENTS(?![A-Za-z0-9_\[\{])/u, body, fn _match -> arguments end)
-  end
-
   defp render_body(body, arguments, occurrences) when occurrences > 0,
-    do: replace_arguments(body, arguments)
+    do: Regex.replace(~r/\$ARGUMENTS(?![A-Za-z0-9_\[\{])/u, body, fn _match -> arguments end)
 
   defp render_body(body, "", 0), do: body
   defp render_body("", arguments, 0), do: "ARGUMENTS:\n" <> arguments
@@ -430,65 +437,4 @@ defmodule BeamWeaver.Skill do
     details = if is_binary(field), do: %{field: field}, else: %{}
     {:error, Error.new(:invalid_skill, message, details)}
   end
-
-  defp normalize_yaml(value) when is_list(value) do
-    cond do
-      yaml_mapping?(value) ->
-        Map.new(value, fn {key, map_value} ->
-          {normalize_yaml_key(key), normalize_yaml(map_value)}
-        end)
-
-      charlist?(value) ->
-        List.to_string(value)
-
-      true ->
-        Enum.map(value, &normalize_yaml/1)
-    end
-  end
-
-  defp normalize_yaml(value) when is_binary(value), do: value
-  defp normalize_yaml(value) when is_integer(value), do: value
-  defp normalize_yaml(value) when is_float(value), do: value
-  defp normalize_yaml(true), do: true
-  defp normalize_yaml(false), do: false
-  defp normalize_yaml(:null), do: nil
-  defp normalize_yaml(value) when is_atom(value), do: to_string(value)
-  defp normalize_yaml(value), do: value
-
-  defp yaml_mapping?(value), do: Enum.all?(value, &match?({_key, _value}, &1))
-  defp charlist?(value), do: Enum.all?(value, &is_integer/1)
-
-  defp normalize_yaml_key(value) when is_binary(value), do: value
-
-  defp normalize_yaml_key(value) when is_list(value) do
-    if charlist?(value), do: List.to_string(value), else: value
-  end
-
-  defp normalize_yaml_key(value), do: value
-
-  defp validate_yaml_unique_keys(value) when is_list(value) do
-    if yaml_mapping?(value) do
-      keys = Enum.map(value, fn {key, _map_value} -> normalize_yaml_key(key) end)
-
-      if length(keys) == MapSet.size(MapSet.new(keys)) do
-        Enum.reduce_while(value, :ok, fn {_key, map_value}, :ok ->
-          case validate_yaml_unique_keys(map_value) do
-            :ok -> {:cont, :ok}
-            {:error, %Error{}} = error -> {:halt, error}
-          end
-        end)
-      else
-        invalid("skill frontmatter contains duplicate fields")
-      end
-    else
-      Enum.reduce_while(value, :ok, fn item, :ok ->
-        case validate_yaml_unique_keys(item) do
-          :ok -> {:cont, :ok}
-          {:error, %Error{}} = error -> {:halt, error}
-        end
-      end)
-    end
-  end
-
-  defp validate_yaml_unique_keys(_value), do: :ok
 end

@@ -5,6 +5,7 @@ defmodule BeamWeaver.VectorStore.ETS do
 
   @behaviour BeamWeaver.VectorStore
 
+  alias BeamWeaver.VectorStore
   alias BeamWeaver.Core.Document
   alias BeamWeaver.Core.EmbeddingModel
   alias BeamWeaver.Core.Error
@@ -34,8 +35,8 @@ defmodule BeamWeaver.VectorStore.ETS do
 
   @impl true
   def add_documents(%__MODULE__{} = store, documents, opts) do
-    with :ok <- validate_documents(documents),
-         {:ok, vectors} <- embed_documents(store.embedding, documents, opts) do
+    with :ok <- VectorStore.validate_documents(documents),
+         {:ok, vectors} <- VectorStore.embed_documents(store.embedding, documents, opts) do
       explicit_ids = Keyword.get(opts, :ids, [])
 
       ids =
@@ -43,7 +44,7 @@ defmodule BeamWeaver.VectorStore.ETS do
         |> Enum.zip(vectors)
         |> Enum.with_index()
         |> Enum.map(fn {{document, vector}, index} ->
-          id = id_for(document, explicit_ids, index)
+          id = VectorStore.id_for(document, explicit_ids, index)
 
           :ets.insert(
             store.table,
@@ -65,13 +66,9 @@ defmodule BeamWeaver.VectorStore.ETS do
 
   def get_by_ids(%__MODULE__{} = store, ids, _opts) do
     documents =
-      ids
-      |> Enum.flat_map(fn id ->
-        case :ets.lookup(store.table, {store.namespace, to_string(id)}) do
-          [{_key, %{document: document}}] -> [document]
-          [] -> []
-        end
-      end)
+      for id <- ids,
+          {_key, %{document: document}} <- :ets.lookup(store.table, {store.namespace, to_string(id)}),
+          do: document
 
     {:ok, documents}
   end
@@ -102,16 +99,8 @@ defmodule BeamWeaver.VectorStore.ETS do
 
     case BeamWeaver.JSON.encode(payload) do
       {:ok, json} ->
-        case File.write(path, json) do
-          :ok ->
-            :ok
-
-          {:error, reason} ->
-            {:error,
-             Error.new(:vector_store_dump_failed, "failed to write vector store dump", %{
-               reason: reason
-             })}
-        end
+        with {:error, reason} <- File.write(path, json),
+             do: {:error, Error.new(:vector_store_dump_failed, "failed to write vector store dump", %{reason: reason})}
 
       {:error, reason} ->
         {:error,
@@ -150,11 +139,8 @@ defmodule BeamWeaver.VectorStore.ETS do
   end
 
   @impl true
-  def similarity_search(%__MODULE__{} = store, query, opts) do
-    with {:ok, scored} <- similarity_search_with_score(store, query, opts) do
-      {:ok, Enum.map(scored, &elem(&1, 0))}
-    end
-  end
+  def similarity_search(%__MODULE__{} = store, query, opts),
+    do: store |> similarity_search_with_score(query, opts) |> VectorStore.drop_scores()
 
   @impl true
   def similarity_search_with_score(%__MODULE__{} = store, query, opts) do
@@ -199,7 +185,7 @@ defmodule BeamWeaver.VectorStore.ETS do
       |> Enum.sort_by(fn {_doc, _vector, score} -> -score end)
       |> Enum.take(fetch_k)
 
-    {:ok, query_vector |> Scoring.mmr(candidates, k, lambda, []) |> Enum.map(&elem(&1, 0))}
+    {:ok, candidates |> Scoring.mmr(k, lambda) |> Enum.map(&elem(&1, 0))}
   end
 
   defp scored_documents(store, vector, opts) do
@@ -215,22 +201,10 @@ defmodule BeamWeaver.VectorStore.ETS do
     |> Enum.take(k)
   end
 
-  defp entries(%__MODULE__{} = store, filter) do
-    store.table
-    |> :ets.tab2list()
-    |> Enum.flat_map(fn
-      {{namespace, _id}, entry} when namespace == store.namespace ->
-        if filter_match?(entry.document, filter), do: [entry], else: []
-
-      _other ->
-        []
-    end)
-  end
-
-  defp embed_documents(embedding, documents, opts) do
-    documents
-    |> Enum.map(& &1.content)
-    |> then(&EmbeddingModel.embed_documents(embedding, &1, opts))
+  defp entries(%__MODULE__{namespace: namespace} = store, filter) do
+    for {{^namespace, _id}, entry} <- :ets.tab2list(store.table),
+        filter_match?(entry.document, filter),
+        do: entry
   end
 
   defp filter_match?(_document, filter) when filter in [%{}, nil], do: true
@@ -244,16 +218,8 @@ defmodule BeamWeaver.VectorStore.ETS do
   defp filter_match?(%Document{} = document, filter), do: Filter.match?(document.metadata, filter)
 
   defp read_dump(path) do
-    case File.read(path) do
-      {:ok, body} ->
-        {:ok, body}
-
-      {:error, reason} ->
-        {:error,
-         Error.new(:vector_store_load_failed, "failed to read vector store dump", %{
-           reason: reason
-         })}
-    end
+    with {:error, reason} <- File.read(path),
+         do: {:error, Error.new(:vector_store_load_failed, "failed to read vector store dump", %{reason: reason})}
   end
 
   defp decode_dump(body) do
@@ -276,24 +242,4 @@ defmodule BeamWeaver.VectorStore.ETS do
 
   defp dump_entries(_payload),
     do: {:error, Error.new(:vector_store_load_failed, "vector store dump missing entries")}
-
-  defp validate_documents(documents) do
-    if Enum.all?(documents, &match?(%Document{}, &1)),
-      do: :ok,
-      else: {:error, Error.new(:invalid_documents, "expected BeamWeaver documents")}
-  end
-
-  defp id_for(%Document{} = document, explicit_ids, index) do
-    explicit_ids
-    |> Enum.at(index)
-    |> Kernel.||(document.id)
-    |> Kernel.||(stable_id(document))
-    |> to_string()
-  end
-
-  defp stable_id(%Document{} = document) do
-    :sha256
-    |> :crypto.hash(:erlang.term_to_binary({document.content, document.metadata}))
-    |> Base.encode16(case: :lower)
-  end
 end

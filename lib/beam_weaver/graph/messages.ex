@@ -1,6 +1,16 @@
 defmodule BeamWeaver.Graph.Messages do
   @moduledoc """
-  LangGraph-compatible message reducers for graph state.
+  Message list reducers for graph state.
+
+  `add_messages/2` appends new messages, replaces messages that share an id,
+  and deletes messages marked with `remove/1` (or everything before a
+  `remove_all/0` marker). Messages without an id get one. `channel/1` and
+  `state_schema/1` set up a `:messages` state key that uses it.
+
+  `delta_channel/1` sets up a key that checkpoints save as the messages each
+  step adds. Each write to it becomes messages with ids before it is applied
+  and saved, the messages in a `BeamWeaver.Graph.Overwrite` included, so
+  every read of the thread gives a message the same id.
   """
 
   alias BeamWeaver.Core.ContentBlock
@@ -8,6 +18,7 @@ defmodule BeamWeaver.Graph.Messages do
   alias BeamWeaver.Graph
   alias BeamWeaver.Graph.Channels.BinaryOperatorAggregate
   alias BeamWeaver.Graph.Channels.DeltaChannel
+  alias BeamWeaver.Graph.Overwrite
 
   @remove_all "__remove_all__"
 
@@ -28,14 +39,14 @@ defmodule BeamWeaver.Graph.Messages do
   @spec state_schema(keyword()) :: map()
   def state_schema(opts \\ []), do: %{messages: channel(opts)}
 
-  @spec channel(keyword()) :: Graph.ChannelSpec.t()
+  @spec channel(keyword()) :: Graph.channel_spec()
   def channel(opts \\ []) do
     Graph.channel({BinaryOperatorAggregate, &add_messages/2}, Keyword.put_new(opts, :initial, []))
   end
 
-  @spec delta_channel(keyword()) :: Graph.ChannelSpec.t()
+  @spec delta_channel(keyword()) :: Graph.channel_spec()
   def delta_channel(opts \\ []) do
-    Graph.channel({DeltaChannel, &delta_reducer/2}, opts)
+    Graph.channel({DeltaChannel, &delta_reducer/2}, Keyword.put_new(opts, :prepare, &prepare_delta_write/1))
   end
 
   @spec add_messages(term(), term()) :: [Message.t()]
@@ -48,7 +59,7 @@ defmodule BeamWeaver.Graph.Messages do
 
     case last_remove_all_index(right) do
       nil -> merge_messages(left, right)
-      index -> right |> Enum.drop(index + 1) |> reject_remove_markers()
+      index -> right |> Enum.drop(index + 1) |> Enum.reject(&match?(%Remove{}, &1))
     end
     |> maybe_format(Keyword.get(opts, :format))
   end
@@ -70,15 +81,10 @@ defmodule BeamWeaver.Graph.Messages do
         index -> {[], Enum.drop(write_messages, index + 1)}
       end
 
-    {result, index} =
-      Enum.reduce(Enum.with_index(state_messages), {state_messages, %{}}, fn {message, index}, {messages, acc} ->
-        if is_binary(message.id),
-          do: {messages, Map.put(acc, message.id, index)},
-          else: {messages, acc}
-      end)
+    index = for {%{id: id}, position} <- Enum.with_index(state_messages), is_binary(id), into: %{}, do: {id, position}
 
     {result, _index} =
-      Enum.reduce(write_messages, {result, index}, fn
+      Enum.reduce(write_messages, {state_messages, index}, fn
         %Remove{id: id}, {messages, index} ->
           case Map.fetch(index, id) do
             {:ok, position} ->
@@ -98,40 +104,45 @@ defmodule BeamWeaver.Graph.Messages do
     Enum.reject(result, &is_nil/1)
   end
 
+  @doc """
+  Turns a value written to a messages key into a message or a removal marker.
+
+  Accepts what `BeamWeaver.Core.Message.from/1` accepts (a message, a string,
+  a `{role, content}` tuple or a message map), plus `remove/1` markers and
+  their map form `%{"type" => "remove", "id" => id}`. Raises `ArgumentError`
+  for anything else.
+  """
   @spec normalize(term()) :: Message.t() | Remove.t()
   def normalize(%Message{} = message), do: message
   def normalize(%Remove{} = remove), do: remove
-
-  def normalize({role, content}) when role in [:system, :user, :assistant, :tool] do
-    Message.new!(role, content)
-  end
-
-  def normalize({role, content}) when is_binary(role) do
-    role |> role_atom() |> Message.new!(content)
-  end
-
   def normalize(%{"type" => "remove", "id" => id}), do: remove(id)
   def normalize(%{type: :remove, id: id}), do: remove(id)
 
-  def normalize(%{"role" => role, "content" => content} = map),
-    do: message_from_map(map, role, content)
+  def normalize(value) do
+    case Message.from(value) do
+      {:ok, message} ->
+        message
 
-  def normalize(%{role: role, content: content} = map), do: message_from_map(map, role, content)
-  def normalize(content) when is_binary(content), do: Message.user(content)
-
-  def normalize(other) do
-    raise ArgumentError, "unsupported message representation: #{inspect(other)}"
+      {:error, error} ->
+        raise ArgumentError,
+              "unsupported message representation: #{inspect(value)} (#{error.message})"
+    end
   end
 
-  defp message_from_map(map, role, content) do
-    Message.new!(role_atom(role), content,
-      id: map_value(map, :id),
-      name: map_value(map, :name),
-      metadata: map_value(map, :metadata, %{}),
-      tool_calls: map_value(map, :tool_calls, []),
-      tool_call_id: map_value(map, :tool_call_id)
-    )
+  # A write as the delta channel saves it: its messages normalized, with ids.
+  # A write that doesn't hold messages stays as it is and fails when applied.
+  defp prepare_delta_write(write) do
+    case Overwrite.get(write) do
+      {:ok, value} -> Overwrite.new(prepare_messages(value))
+      :error -> prepare_messages(write)
+    end
+  rescue
+    ArgumentError -> write
   end
+
+  defp prepare_messages(nil), do: nil
+  defp prepare_messages(messages) when is_list(messages), do: messages |> message_list() |> ensure_ids()
+  defp prepare_messages(message), do: [message] |> message_list() |> ensure_ids() |> hd()
 
   defp message_list(nil), do: []
   defp message_list(list) when is_list(list), do: Enum.map(list, &normalize/1)
@@ -154,13 +165,10 @@ defmodule BeamWeaver.Graph.Messages do
   end
 
   defp merge_messages(left, right) do
-    {merged, by_id, removals} =
-      Enum.reduce(Enum.with_index(left), {left, %{}, MapSet.new()}, fn {message, index}, {messages, ids, removals} ->
-        {messages, Map.put(ids, message.id, index), removals}
-      end)
+    by_id = left |> Enum.with_index() |> Map.new(fn {message, index} -> {message.id, index} end)
 
     {merged, _by_id, removals} =
-      Enum.reduce(right, {merged, by_id, removals}, fn
+      Enum.reduce(right, {left, by_id, MapSet.new()}, fn
         %Remove{id: id}, {messages, by_id, removals} ->
           if Map.has_key?(by_id, id) do
             {messages, by_id, MapSet.put(removals, id)}
@@ -182,13 +190,8 @@ defmodule BeamWeaver.Graph.Messages do
     Enum.reject(merged, &MapSet.member?(removals, &1.id))
   end
 
-  defp reject_remove_markers(messages) do
-    Enum.reject(messages, &match?(%Remove{}, &1))
-  end
-
   defp maybe_format(messages, nil), do: messages
   defp maybe_format(messages, :openai), do: Enum.map(messages, &format_openai/1)
-  defp maybe_format(messages, "langchain-openai"), do: Enum.map(messages, &format_openai/1)
 
   defp maybe_format(_messages, format) do
     raise ArgumentError, "unsupported message format: #{inspect(format)}"
@@ -242,8 +245,11 @@ defmodule BeamWeaver.Graph.Messages do
   defp format_content_block(%{"type" => "text", "text" => _text} = block), do: block
 
   defp format_content_block(%{type: :text, text: text} = block) do
-    %{"type" => "text", "text" => text}
-    |> put_if_present("cache_control", Map.get(block, :cache_control))
+    BeamWeaver.MapShape.put_present(
+      %{"type" => "text", "text" => text},
+      "cache_control",
+      Map.get(block, :cache_control)
+    )
   end
 
   defp format_content_block(%{
@@ -263,23 +269,4 @@ defmodule BeamWeaver.Graph.Messages do
   end
 
   defp format_content_block(block), do: block
-
-  defp put_if_present(map, _key, nil), do: map
-  defp put_if_present(map, key, value), do: Map.put(map, key, value)
-
-  defp role_atom("human"), do: :user
-  defp role_atom("user"), do: :user
-  defp role_atom("ai"), do: :assistant
-  defp role_atom("assistant"), do: :assistant
-  defp role_atom("system"), do: :system
-  defp role_atom("tool"), do: :tool
-  defp role_atom(role) when role in [:system, :user, :assistant, :tool], do: role
-
-  defp role_atom(role) do
-    raise ArgumentError, "unsupported message role: #{inspect(role)}"
-  end
-
-  defp map_value(map, key, default \\ nil) do
-    Map.get(map, key, Map.get(map, to_string(key), default))
-  end
 end

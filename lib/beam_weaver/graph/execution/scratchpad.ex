@@ -1,14 +1,8 @@
 defmodule BeamWeaver.Graph.Execution.Scratchpad do
-  @moduledoc """
-  Per-task graph execution scratchpad.
+  @moduledoc false
 
-  LangGraph uses a scratchpad to track resume values, interrupt counters, call
-  counters, and subgraph counters. In BeamWeaver this is an immutable struct
-  stored in the executing process dictionary only for the lifetime of one node
-  invocation, so `BeamWeaver.Graph.interrupt/1` can be called without passing a
-  runtime argument through every user function.
-  """
-
+  alias BeamWeaver.Core.Error
+  alias BeamWeaver.Core.Tool.Schema, as: ToolSchema
   alias BeamWeaver.Graph.Interrupt
   alias BeamWeaver.Graph.Resume
 
@@ -18,22 +12,20 @@ defmodule BeamWeaver.Graph.Execution.Scratchpad do
     :task_id,
     :node,
     :step,
+    :first_state,
     resume_values: [],
     consumed_resume_values: [],
-    interrupt_counter: 0,
-    call_counter: 0,
-    subgraph_counter: 0
+    interrupt_counter: 0
   ]
 
   @type t :: %__MODULE__{
           task_id: String.t(),
           node: String.t(),
           step: non_neg_integer(),
+          first_state: term(),
           resume_values: list(),
           consumed_resume_values: list(),
-          interrupt_counter: non_neg_integer(),
-          call_counter: non_neg_integer(),
-          subgraph_counter: non_neg_integer()
+          interrupt_counter: non_neg_integer()
         }
 
   @spec new(keyword()) :: t()
@@ -42,100 +34,87 @@ defmodule BeamWeaver.Graph.Execution.Scratchpad do
       task_id: Keyword.fetch!(opts, :task_id),
       node: Keyword.fetch!(opts, :node),
       step: Keyword.fetch!(opts, :step),
-      resume_values: List.wrap(Keyword.get(opts, :resume_values, []))
+      resume_values: Keyword.get(opts, :resume_values, [])
     }
   end
 
-  @spec install(t()) :: :ok
-  def install(%__MODULE__{} = scratchpad) do
-    Process.put(@process_key, scratchpad)
-    :ok
-  end
-
-  @spec clear() :: :ok
-  def clear do
-    Process.delete(@process_key)
-    :ok
-  end
+  @doc "The scratchpad of the node this process runs, or `nil`."
+  @spec current() :: t() | nil
+  def current, do: Process.get(@process_key)
 
   @spec with(t(), (-> term())) :: term()
   def with(%__MODULE__{} = scratchpad, fun) when is_function(fun, 0) do
-    install(scratchpad)
+    Process.put(@process_key, scratchpad)
 
     try do
       fun.()
     after
-      clear()
+      Process.delete(@process_key)
     end
   end
 
-  @spec next_call() :: non_neg_integer()
-  def next_call do
-    next_counter(:call_counter)
-  end
+  @spec interrupt(term(), keyword()) :: term() | no_return()
+  def interrupt(value, opts \\ []) do
+    opts = Keyword.validate!(opts, [:response_schema])
 
-  @spec next_subgraph() :: non_neg_integer()
-  def next_subgraph do
-    next_counter(:subgraph_counter)
-  end
-
-  @spec interrupt(term()) :: term() | no_return()
-  def interrupt(value) do
     case Process.get(@process_key) do
-      %__MODULE__{resume_values: [%Resume{null?: true} | rest]} = scratchpad ->
-        consume_resume(scratchpad, rest, %Resume{null?: true})
-        nil
-
-      %__MODULE__{resume_values: [%Resume{value: resume} | rest]} = scratchpad ->
-        consume_resume(scratchpad, rest, %Resume{value: resume})
-        resume
-
-      %__MODULE__{resume_values: [resume | rest]} = scratchpad ->
-        consume_resume(scratchpad, rest, resume)
-        resume
-
       %__MODULE__{} = scratchpad ->
-        id = interrupt_id(scratchpad, scratchpad.interrupt_counter)
-
-        interrupt = %Interrupt{
-          id: id,
-          value: value,
-          task_id: scratchpad.task_id,
-          node: scratchpad.node,
-          step: scratchpad.step,
-          resumes: scratchpad.consumed_resume_values
-        }
-
-        Process.put(@process_key, %{
-          scratchpad
-          | interrupt_counter: scratchpad.interrupt_counter + 1
-        })
-
-        throw({:beam_weaver_graph_interrupt, interrupt})
+        answer_or_pause(scratchpad, value, response_schema(opts[:response_schema]))
 
       _missing ->
-        raise RuntimeError, "BeamWeaver.Graph.interrupt/1 can only be called inside a graph node"
+        raise RuntimeError, "BeamWeaver.Graph.interrupt/2 can only be called inside a graph node"
     end
   end
 
-  @spec interrupt_id(t(), non_neg_integer()) :: String.t()
-  def interrupt_id(%__MODULE__{} = scratchpad, counter) do
+  defp answer_or_pause(%__MODULE__{resume_values: [resume | rest]} = scratchpad, _value, schema) do
+    answer = resume |> resume_value() |> check_answer(schema, scratchpad)
+    consume_resume(scratchpad, rest, resume)
+    answer
+  end
+
+  defp answer_or_pause(%__MODULE__{} = scratchpad, value, schema) do
+    interrupt = %Interrupt{
+      id: interrupt_id(scratchpad),
+      value: value,
+      response_schema: schema,
+      task_id: scratchpad.task_id,
+      node: scratchpad.node,
+      step: scratchpad.step,
+      resumes: scratchpad.consumed_resume_values
+    }
+
+    Process.put(@process_key, %{scratchpad | interrupt_counter: scratchpad.interrupt_counter + 1})
+    throw({:beam_weaver_graph_interrupt, interrupt})
+  end
+
+  defp resume_value(%Resume{null?: true}), do: nil
+  defp resume_value(%Resume{value: value}), do: value
+  defp resume_value(resume), do: resume
+
+  defp interrupt_id(scratchpad) do
     payload =
-      :erlang.term_to_binary({scratchpad.task_id, scratchpad.node, scratchpad.step, counter})
+      :erlang.term_to_binary({scratchpad.task_id, scratchpad.node, scratchpad.step, scratchpad.interrupt_counter})
 
     "interrupt_" <> Base.encode16(:crypto.hash(:sha256, payload), case: :lower)
   end
 
-  defp next_counter(field) do
-    case Process.get(@process_key) do
-      %__MODULE__{} = scratchpad ->
-        value = Map.fetch!(scratchpad, field)
-        Process.put(@process_key, Map.put(scratchpad, field, value + 1))
-        value
+  defp response_schema(nil), do: nil
+  defp response_schema(schema), do: BeamWeaver.Schema.json_schema!(schema)
 
-      _missing ->
-        raise RuntimeError,
-              "graph execution scratchpad counters can only be used inside a graph node"
+  # An answer that doesn't match the schema fails the node, which stays
+  # paused at this interrupt: the run returns an `:invalid_resume` error and
+  # the next resume answers again. Retrying the node can't change the answer.
+  defp check_answer(answer, nil, _scratchpad), do: answer
+
+  defp check_answer(answer, schema, scratchpad) do
+    case ToolSchema.normalize_value(schema, answer) do
+      {:ok, answer} ->
+        answer
+
+      {:error, %Error{details: details}} ->
+        details = Map.merge(details, %{interrupt_id: interrupt_id(scratchpad), node: scratchpad.node, retryable: false})
+        error = Error.new(:invalid_resume, "resume value doesn't match the interrupt's response_schema", details)
+        throw({:beam_weaver_graph_error, error})
     end
   end
 

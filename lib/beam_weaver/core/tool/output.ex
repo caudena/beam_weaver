@@ -2,9 +2,12 @@ defmodule BeamWeaver.Core.Tool.Output do
   @moduledoc false
 
   alias BeamWeaver.Core.Message
+  alias BeamWeaver.Core.Tool.Passthrough
   alias BeamWeaver.Core.ToolResult
 
-  def format(content, opts \\ []) do
+  @content_block_types ~w(text image_url image json search_result custom_tool_call_output document file)
+
+  def format(content, opts) do
     tool_call_id = Keyword.get(opts, :tool_call_id)
     name = Keyword.get(opts, :name)
     artifact = Keyword.get(opts, :artifact)
@@ -40,50 +43,24 @@ defmodule BeamWeaver.Core.Tool.Output do
 
   defp tool_output?(%Message{role: :tool}), do: true
   defp tool_output?(%ToolResult{}), do: true
-  defp tool_output?(_content), do: false
+  defp tool_output?(content), do: Passthrough.passthrough?(content)
 
   defp message_content(content) when is_binary(content), do: content
 
-  defp message_content([]), do: stringify_content([])
-
-  defp message_content(content) when is_list(content) do
-    if Enum.all?(content, &message_content_block?/1),
+  defp message_content(content) do
+    if is_list(content) and content != [] and Enum.all?(content, &message_content_block?/1),
       do: content,
-      else: stringify_content(content)
+      else: BeamWeaver.JSON.encode_or_inspect(content)
   end
-
-  defp message_content(content), do: stringify_content(content)
 
   defp message_content_block?(text) when is_binary(text), do: true
 
   defp message_content_block?(block) when is_map(block) do
-    type = Map.get(block, :type) || Map.get(block, "type")
-
-    type in [
-      :text,
-      "text",
-      :image_url,
-      "image_url",
-      :image,
-      "image",
-      :json,
-      "json",
-      :search_result,
-      "search_result",
-      :custom_tool_call_output,
-      "custom_tool_call_output",
-      :document,
-      "document",
-      :file,
-      "file"
-    ]
+    case Map.get(block, :type) || Map.get(block, "type") do
+      type when is_atom(type) -> Atom.to_string(type) in @content_block_types
+      type -> type in @content_block_types
+    end
   end
 
   defp message_content_block?(_block), do: false
-
-  defp stringify_content(content) do
-    BeamWeaver.JSON.encode!(content)
-  rescue
-    _exception -> inspect(content)
-  end
 end

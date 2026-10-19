@@ -1,6 +1,7 @@
 defmodule BeamWeaver.Anthropic.Middleware.Bash do
   @moduledoc """
-  Convenience helper for Anthropic's bash server tool.
+  Declares Anthropic's Bash client tool. The application executes commands and
+  returns their results; this helper does not start a shell.
   """
 
   alias BeamWeaver.Anthropic.Tools

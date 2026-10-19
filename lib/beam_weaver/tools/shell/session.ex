@@ -1,21 +1,19 @@
 defmodule BeamWeaver.Tools.Shell.Session do
-  @moduledoc """
-  GenServer-backed shell session for agent shell middleware.
+  @moduledoc false
 
-  The session keeps the public boundary native to BeamWeaver: callers interact
-  with a supervised process and an explicit `ShellPolicy`. The implementation
-  preserves practical shell state between commands by carrying forward the
-  working directory and exported environment after each successful command.
-  """
-
-  use GenServer
+  # Temporary: a session is lazily (re)started by the shell tool, never
+  # restarted by its supervisor.
+  use GenServer, restart: :temporary
 
   alias BeamWeaver.Core.Error
-  alias BeamWeaver.Core.ID
+  alias BeamWeaver.Sandbox.CommandRunner
   alias BeamWeaver.ShellPolicy
-  alias BeamWeaver.Tools.Shell.CommandRunner
-  alias BeamWeaver.Tracing.Redactor
+  alias BeamWeaver.Tools.Shell.HostExecutor
 
+  # `env` carries the session's variables, including any the policy sets for
+  # the commands (secrets among them) and whatever they export; keep it out of
+  # inspected and crash-logged state.
+  @derive {Inspect, except: [:env]}
   defstruct [
     :policy,
     :initial_cwd,
@@ -23,20 +21,14 @@ defmodule BeamWeaver.Tools.Shell.Session do
     :temp_root,
     startup_commands: [],
     shutdown_commands: [],
-    env: %{}
+    env: %{},
+    idle_timeout: :infinity
   ]
 
   @type t :: pid()
 
   @spec start_link(keyword()) :: GenServer.on_start()
-  def start_link(opts) do
-    GenServer.start_link(__MODULE__, opts)
-  end
-
-  @spec start(keyword()) :: GenServer.on_start()
-  def start(opts) do
-    GenServer.start(__MODULE__, opts)
-  end
+  def start_link(opts), do: GenServer.start_link(__MODULE__, opts, Keyword.take(opts, [:name]))
 
   @spec execute(t(), String.t(), keyword()) :: {:ok, map()} | {:error, Error.t()}
   def execute(pid, command, opts \\ []) when is_pid(pid) do
@@ -60,28 +52,47 @@ defmodule BeamWeaver.Tools.Shell.Session do
     Process.flag(:trap_exit, true)
 
     with {:ok, policy} <- ShellPolicy.new(Keyword.fetch!(opts, :policy)),
+         :ok <- check_executor(policy),
          {:ok, state} <- build_state(policy, opts),
          {:ok, state} <- run_startup_commands(state) do
-      {:ok, state}
+      {:ok, state, state.idle_timeout}
     else
       {:error, %Error{} = error} -> {:stop, error}
     end
   end
 
+  # A session is a persistent host shell: `cd` and `export` carry over because
+  # each command runs in the same host process group. A custom `:executor`
+  # (one that runs commands "in a container", say) has no session semantics,
+  # so a session can't honour one and refuses to start rather than silently
+  # running the commands on the host. Use the one-shot `BeamWeaver.Tools.Shell`
+  # for a custom executor, or a `BeamWeaver.Sandbox` for container execution.
+  defp check_executor(%ShellPolicy{executor: HostExecutor}), do: :ok
+
+  defp check_executor(%ShellPolicy{executor: executor}) do
+    {:error,
+     Error.new(
+       :shell_session_executor_unsupported,
+       "a shell session runs commands on the host and cannot use a custom executor; " <>
+         "use BeamWeaver.Tools.Shell for a custom executor, or a BeamWeaver.Sandbox for container execution",
+       %{executor: inspect(executor)}
+     )}
+  end
+
   @impl true
   def handle_call({:execute, command, opts}, _from, state) do
     case run_command(state, command, opts) do
-      {:ok, result, state} -> {:reply, {:ok, result}, state}
-      {:error, %Error{} = error, state} -> {:reply, {:error, error}, state}
+      {:ok, result, state} -> {:reply, {:ok, result}, state, state.idle_timeout}
+      {:error, %Error{} = error, state} -> {:reply, {:error, error}, state, state.idle_timeout}
     end
   end
 
   def handle_call({:restart, _opts}, _from, state) do
-    state = %{state | cwd: state.initial_cwd, env: policy_env(state.policy)}
+    state = %{state | cwd: state.initial_cwd, env: state.policy.env}
 
     case run_startup_commands(state) do
-      {:ok, state} -> {:reply, :ok, state}
-      {:error, %Error{} = error} -> {:reply, {:error, error}, state}
+      {:ok, state} -> {:reply, :ok, state, state.idle_timeout}
+      {:error, %Error{} = error} -> {:reply, {:error, error}, state, state.idle_timeout}
     end
   end
 
@@ -92,13 +103,20 @@ defmodule BeamWeaver.Tools.Shell.Session do
   end
 
   def handle_call(:policy_timeout, _from, state) do
-    {:reply, state.policy.timeout, state}
+    {:reply, state.policy.timeout, state, state.idle_timeout}
   end
 
   @impl true
-  def handle_info({:EXIT, _pid, :normal}, state), do: {:noreply, state}
+  def handle_info(:timeout, state) do
+    # No command for `idle_timeout` ms: stop so a run that never reaches
+    # `after_agent` (a pause, an error) doesn't leave a session (and its temp
+    # workspace) behind forever. A later command lazily starts a fresh one.
+    state = run_shutdown_commands(state)
+    cleanup_temp_root(state)
+    {:stop, :normal, state}
+  end
 
-  def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
+  def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state, state.idle_timeout}
 
   @impl true
   def terminate(_reason, state) do
@@ -106,19 +124,37 @@ defmodule BeamWeaver.Tools.Shell.Session do
     :ok
   end
 
-  defp build_state(policy, opts) do
-    workspace = Keyword.get(opts, :workspace_root) || Keyword.get(opts, :workspace)
+  # Keep the session's variables out of the state a crash or `:sys.get_status/1`
+  # would print.
+  @impl true
+  def format_status(%{state: %__MODULE__{} = state} = status),
+    do: %{status | state: %{state | env: :redacted}}
 
-    with {:ok, cwd, temp_root} <- workspace_root(workspace, policy) do
+  def format_status(status), do: status
+
+  # The environment for one command: the session's carried-over variables with
+  # the policy's removals (`env: %{"KEY" => nil}`) re-applied every time, so a
+  # variable the policy drops can't come back after the first command printed
+  # the surviving environment back into `state.env`.
+  defp run_env(%__MODULE__{env: env, policy: policy}) do
+    Enum.reduce(policy.env, env, fn
+      {key, nil}, acc -> Map.put(acc, key, nil)
+      {_key, _value}, acc -> acc
+    end)
+  end
+
+  defp build_state(policy, opts) do
+    with {:ok, cwd, temp_root} <- workspace_root(Keyword.get(opts, :workspace_root), policy) do
       {:ok,
        %__MODULE__{
          policy: policy,
          initial_cwd: cwd,
          cwd: cwd,
          temp_root: temp_root,
-         env: policy_env(policy),
+         env: policy.env,
          startup_commands: normalize_commands(Keyword.get(opts, :startup_commands, [])),
-         shutdown_commands: normalize_commands(Keyword.get(opts, :shutdown_commands, []))
+         shutdown_commands: normalize_commands(Keyword.get(opts, :shutdown_commands, [])),
+         idle_timeout: Keyword.get(opts, :idle_timeout, :infinity)
        }}
     end
   end
@@ -156,8 +192,6 @@ defmodule BeamWeaver.Tools.Shell.Session do
   defp normalize_commands(command) when is_binary(command), do: [command]
   defp normalize_commands(commands) when is_list(commands), do: Enum.map(commands, &to_string/1)
 
-  defp run_startup_commands(%__MODULE__{startup_commands: []} = state), do: {:ok, state}
-
   defp run_startup_commands(%__MODULE__{} = state) do
     Enum.reduce_while(state.startup_commands, {:ok, state}, fn command, {:ok, state} ->
       case run_command(state, command, timeout: state.policy.timeout) do
@@ -178,8 +212,6 @@ defmodule BeamWeaver.Tools.Shell.Session do
     end)
   end
 
-  defp run_shutdown_commands(%__MODULE__{shutdown_commands: []} = state), do: state
-
   defp run_shutdown_commands(%__MODULE__{} = state) do
     Enum.reduce(state.shutdown_commands, state, fn command, state ->
       case run_command(state, command, timeout: state.policy.timeout) do
@@ -194,49 +226,41 @@ defmodule BeamWeaver.Tools.Shell.Session do
   end
 
   defp run_command(state, command, opts) do
-    cond do
-      String.trim(command) == "" ->
-        {:error, Error.new(:invalid_shell_command, "shell command cannot be empty"), state}
-
-      not ShellPolicy.allowed?(state.policy, command) ->
-        {:error, Error.new(:shell_command_rejected, "shell command is not allowed", %{command: command}), state}
-
-      true ->
-        run_allowed(state, command, opts)
+    if String.trim(command) == "" do
+      {:error, Error.new(:invalid_shell_command, "shell command cannot be empty"), state}
+    else
+      case ShellPolicy.check(state.policy, command) do
+        :ok -> run_allowed(state, command, opts)
+        {:error, %Error{} = error} -> {:error, error, state}
+      end
     end
   end
 
   defp run_allowed(state, command, opts) do
     timeout = Keyword.get(opts, :timeout, state.policy.timeout)
-    command_metadata = command_metadata(:session, command, timeout, opts)
-    scratch = scratch_dir()
+    command_metadata = CommandRunner.metadata(:session, command, timeout, opts)
+    scratch = CommandRunner.scratch_dir()
     metadata_path = Path.join(scratch, "metadata")
     env_path = Path.join(scratch, "env")
     stderr_path = Path.join(scratch, "stderr")
 
     result =
-      case CommandRunner.run(session_script(command, metadata_path, env_path),
-             shell: shell(),
-             cd: state.cwd,
-             env: env_list(state.env),
-             stderr: stderr_option(stderr_path, state.policy),
-             timeout: timeout
-           ) do
-        {:ok, output, status} ->
-          metadata = read_metadata(metadata_path)
-          env = read_env(env_path, state.env)
-          stderr = read_stderr(stderr_path, state.policy)
+      CommandRunner.run(session_script(command, metadata_path, env_path),
+        shell: CommandRunner.shell(),
+        cd: state.cwd,
+        env: run_env(state),
+        inherit_env: state.policy.inherit_env,
+        stderr: CommandRunner.stderr_option(stderr_path, state.policy),
+        timeout: timeout
+      )
 
-          {:ok, {output, status, metadata, env, stderr}}
-
-        other ->
-          other
-      end
-
+    metadata = read_metadata(metadata_path)
+    env = read_env(env_path, state.env)
+    stderr = CommandRunner.read_stderr(stderr_path, state.policy)
     File.rm_rf(scratch)
 
     case result do
-      {:ok, {output, status, metadata, env, stderr}} ->
+      {:ok, output, status} ->
         status = Map.get(metadata, :status, status)
 
         state =
@@ -246,23 +270,11 @@ defmodule BeamWeaver.Tools.Shell.Session do
 
         {:ok,
          command
-         |> base_result(status, output, state.policy, Map.put(command_metadata, :exit_code, status))
-         |> maybe_put_stderr(stderr, state.policy), state}
+         |> CommandRunner.result(status, output, state.policy, Map.put(command_metadata, :exit_code, status))
+         |> CommandRunner.put_stderr(stderr, state.policy), state}
 
-      :timeout ->
-        {:error,
-         Error.new(:shell_timeout, "shell command timed out", %{
-           command: command,
-           metadata: Map.merge(command_metadata, %{kill_attempted: true, error: "timeout"})
-         }), state}
-
-      {:error, reason} ->
-        {:error,
-         Error.new(:shell_execution_error, "shell command failed", %{
-           command: command,
-           reason: inspect(reason),
-           metadata: Map.put(command_metadata, :reason, inspect(reason))
-         }), state}
+      failure ->
+        {:error, CommandRunner.failure(command, failure, command_metadata), state}
     end
   end
 
@@ -271,36 +283,18 @@ defmodule BeamWeaver.Tools.Shell.Session do
       command,
       "\n__beam_weaver_status=$?\n",
       "printf '%s\\n' \"$__beam_weaver_status\" > ",
-      shell_quote(metadata),
+      CommandRunner.shell_quote(metadata),
       "\n",
       "pwd >> ",
-      shell_quote(metadata),
+      CommandRunner.shell_quote(metadata),
       "\n",
       "env -0 > ",
-      shell_quote(env_path),
+      CommandRunner.shell_quote(env_path),
       "\n",
       "exit $__beam_weaver_status\n"
     ]
     |> IO.iodata_to_binary()
   end
-
-  defp stderr_option(path, %ShellPolicy{stderr: :separate}), do: {:file, path}
-  defp stderr_option(_path, %ShellPolicy{stderr: :discard}), do: :discard
-  defp stderr_option(_path, _policy), do: :merge
-
-  defp base_result(command, status, output, policy, metadata) do
-    %{
-      command: command,
-      status: status,
-      output: format_output(output, policy),
-      metadata: Redactor.redact(metadata)
-    }
-  end
-
-  defp maybe_put_stderr(result, nil, _policy), do: result
-
-  defp maybe_put_stderr(result, stderr, policy),
-    do: Map.put(result, :stderr, format_output(stderr, policy))
 
   defp read_metadata(path) do
     case File.read(path) do
@@ -330,15 +324,6 @@ defmodule BeamWeaver.Tools.Shell.Session do
     end
   end
 
-  defp read_stderr(path, %ShellPolicy{stderr: :separate}) do
-    case File.read(path) do
-      {:ok, data} -> data
-      {:error, _reason} -> ""
-    end
-  end
-
-  defp read_stderr(_path, _policy), do: nil
-
   defp maybe_update_cwd(state, nil), do: state
 
   defp maybe_update_cwd(state, cwd) do
@@ -346,45 +331,8 @@ defmodule BeamWeaver.Tools.Shell.Session do
     if File.dir?(cwd), do: %{state | cwd: cwd}, else: state
   end
 
-  defp format_output(output, policy) do
-    output
-    |> redact(policy.redactions)
-    |> truncate(policy.max_output_bytes, policy.truncation_indicator)
-    |> maybe_empty_output(policy.empty_output)
-  end
-
-  defp redact(output, redactions) do
-    Enum.reduce(redactions, output, fn {regex, replacement}, acc ->
-      Regex.replace(regex, acc, replacement)
-    end)
-  end
-
-  defp maybe_empty_output("", replacement) when is_binary(replacement), do: replacement
-  defp maybe_empty_output(output, _replacement), do: output
-
-  defp truncate(output, max_bytes, _indicator) when byte_size(output) <= max_bytes, do: output
-  defp truncate(output, max_bytes, nil), do: binary_part(output, 0, max_bytes)
-
-  defp truncate(output, max_bytes, true) do
-    binary_part(output, 0, max_bytes) <> "\n[Output truncated to #{max_bytes} bytes]"
-  end
-
-  defp truncate(output, max_bytes, indicator) when is_binary(indicator) do
-    binary_part(output, 0, max_bytes) <> indicator
-  end
-
   defp cleanup_temp_root(%__MODULE__{temp_root: nil}), do: :ok
   defp cleanup_temp_root(%__MODULE__{temp_root: root}), do: File.rm_rf(root)
-
-  defp policy_env(%ShellPolicy{} = policy) do
-    policy.env
-    |> Enum.filter(fn {key, _value} ->
-      policy.env_allowlist == [] or to_string(key) in policy.env_allowlist
-    end)
-    |> Map.new(fn {key, value} -> {to_string(key), to_string(value)} end)
-  end
-
-  defp env_list(env), do: Enum.map(env, fn {key, value} -> {to_string(key), to_string(value)} end)
 
   defp call_timeout(pid, opts) do
     timeout =
@@ -396,25 +344,14 @@ defmodule BeamWeaver.Tools.Shell.Session do
     case timeout do
       nil -> :infinity
       :infinity -> :infinity
-      timeout when is_integer(timeout) -> timeout + 1_000
+      timeout when is_integer(timeout) -> timeout + CommandRunner.stop_budget() + 1_000
     end
   catch
     :exit, _reason -> :infinity
   end
 
-  defp scratch_dir do
-    dir =
-      Path.join(
-        System.tmp_dir!(),
-        "beam_weaver_shell_scratch_#{System.unique_integer([:positive])}"
-      )
-
-    File.mkdir_p!(dir)
-    dir
-  end
-
   defp safe_int(value) do
-    case Integer.parse(String.trim(to_string(value))) do
+    case Integer.parse(String.trim(value)) do
       {int, ""} -> int
       _other -> nil
     end
@@ -423,20 +360,4 @@ defmodule BeamWeaver.Tools.Shell.Session do
   defp blank_to_nil(nil), do: nil
   defp blank_to_nil(""), do: nil
   defp blank_to_nil(value), do: String.trim(value)
-
-  defp shell_quote(value) do
-    "'" <> String.replace(value, "'", "'\"'\"'") <> "'"
-  end
-
-  defp shell, do: System.find_executable("sh") || "/bin/sh"
-
-  defp command_metadata(backend, command, timeout, opts) do
-    %{
-      backend: backend,
-      command: command,
-      command_id: Keyword.get_lazy(opts, :command_id, fn -> ID.uuidv7() end),
-      timeout_ms: timeout
-    }
-    |> Redactor.redact()
-  end
 end

@@ -1,27 +1,13 @@
-defmodule BeamWeaver.Graph.EdgeSpec do
-  @moduledoc false
-
-  defstruct [:source, :target, metadata: %{}]
-end
-
 defmodule BeamWeaver.Graph.GuardedEdgeSpec do
   @moduledoc false
 
-  defstruct [
-    :id,
-    :source,
-    :target,
-    :match,
-    max_runs: nil,
-    default?: false,
-    metadata: %{}
-  ]
+  defstruct [:id, :source, :target, :match, max_runs: nil, default?: false]
 end
 
 defmodule BeamWeaver.Graph.BranchSpec do
   @moduledoc false
 
-  defstruct [:source, :router, path_map: %{}, then: nil, metadata: %{}]
+  defstruct [:source, :router, path_map: %{}]
 end
 
 defmodule BeamWeaver.Graph.WaitingEdgeSpec do

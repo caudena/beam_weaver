@@ -1,15 +1,28 @@
 defmodule BeamWeaver.Anthropic.ChatModel do
-  @moduledoc """
-  Anthropic Messages API chat model implementation.
+  @moduledoc ~S"""
+  Anthropic chat model implementing the BeamWeaver chat contract.
+
+  Prefer `BeamWeaver.Models.init_chat_model/2` for provider-prefixed identifiers,
+  then call `BeamWeaver.Core.ChatModel` or declare the model in an agent.
+  Construction does not contact the provider. Model/profile options describe
+  local compatibility; account access is established only by a real request.
+
+  See [Anthropic](providers/anthropic.md) for endpoint-specific parameters, reasoning,
+  media and tools. Preserve complete messages for multi-turn replay. Streaming
+  consumers must enumerate once and handle terminal errors; display text is not
+  a lossless representation of a native provider turn.
   """
+
+  use BeamWeaver.Provider.RedactedInspect
 
   alias BeamWeaver.Anthropic.ChatModel.RequestBuilder
   alias BeamWeaver.Anthropic.ChatModel.ModelResolution
   alias BeamWeaver.Anthropic.Client
-  alias BeamWeaver.Anthropic.Error
+  alias BeamWeaver.Core.Error
   alias BeamWeaver.Anthropic.Messages
   alias BeamWeaver.Core.LanguageModel
   alias BeamWeaver.Provider.ChatModel.Options, as: ChatOptions
+  alias BeamWeaver.Provider.OpenAICompatibleClient, as: Compat
   alias BeamWeaver.Provider.StructuredOutput
 
   @default_model "claude-haiku-4-5-20251001"
@@ -23,7 +36,7 @@ defmodule BeamWeaver.Anthropic.ChatModel do
             anthropic_version: "2023-06-01",
             betas: [],
             default_headers: [],
-            model_kwargs: %{},
+            extra_body: %{},
             cache_control: nil,
             compaction: nil,
             container: nil,
@@ -36,6 +49,7 @@ defmodule BeamWeaver.Anthropic.ChatModel do
             service_tier: nil,
             thinking: nil,
             output_config: nil,
+            reasoning_effort: nil,
             effort: nil,
             mcp_servers: nil,
             context_management: nil,
@@ -60,11 +74,20 @@ defmodule BeamWeaver.Anthropic.ChatModel do
 
   @type t :: %__MODULE__{}
 
-  use BeamWeaver.Provider.ChatModel
+  use BeamWeaver.Provider.ChatModel, exact_stream_events: true
 
+  @doc """
+  Builds a chat model from keyword options: the struct's fields, plus
+  `:base_url`, the API root (such as `"https://api.anthropic.com"`), as an
+  alternative to the full `:endpoint` and `:count_tokens_endpoint` URLs.
+  """
   @spec new(keyword() | map()) :: t()
   def new(opts \\ []) do
-    opts = ChatOptions.keyword_options(opts)
+    opts =
+      opts
+      |> ChatOptions.keyword_options()
+      |> Compat.expand_base_url(endpoint: "v1/messages", count_tokens_endpoint: "v1/messages/count_tokens")
+
     model = Keyword.get(opts, :model, @default_model)
     profile = ChatOptions.profile_option(opts, :anthropic, model)
     max_tokens = Keyword.get(opts, :max_tokens)
@@ -74,7 +97,7 @@ defmodule BeamWeaver.Anthropic.ChatModel do
       opts
       |> Keyword.put(:model, model)
       |> Keyword.put(:profile, profile)
-      |> ChatOptions.put_present(:max_tokens, max_tokens || profile.max_output_tokens || 4096)
+      |> Keyword.put(:max_tokens, max_tokens || profile.max_output_tokens || 4096)
     )
   end
 
@@ -83,42 +106,35 @@ defmodule BeamWeaver.Anthropic.ChatModel do
     do: ModelResolution.resolve(model, opts)
 
   @spec count_tokens(t(), term(), keyword()) :: {:ok, non_neg_integer()} | {:error, Error.t()}
+  @doc """
+  Asks Anthropic to count normalized input tokens. Returns a count or provider error without generating an answer.
+  """
   def count_tokens(%__MODULE__{} = model, input, opts \\ []) do
     with {:ok, model} <- resolve_invocation_model(model, opts),
          {:ok, messages} <- LanguageModel.normalize_chat_input(input),
          {:ok, body} <- RequestBuilder.count_tokens_body(model, messages, opts),
          {body, opts} = thread_betas(body, opts),
          {:ok, response} <- Client.count_tokens(client(model), body, opts) do
-      {:ok, response["input_tokens"] || response[:input_tokens] || 0}
-    else
-      {:error, %BeamWeaver.Core.Error{} = error} ->
-        {:error, Error.new(error.type, error.message, error.details)}
-
-      {:error, _error} = error ->
-        error
+      {:ok, response["input_tokens"] || 0}
     end
   end
 
   @impl true
-  def stream_events(%__MODULE__{} = model, messages, opts \\ []) do
-    with {:ok, model} <- resolve_invocation_model(model, opts),
-         {:ok, body} <- request_body(model, messages, Keyword.put(opts, :stream, true)) do
-      {body, opts} = thread_betas(body, opts)
-      Client.messages_stream_events(client(model), body, opts)
-    end
-  end
+  def stream_events(%__MODULE__{} = model, messages, opts \\ []), do: stream_call(:stream_events, model, messages, opts)
 
   @impl true
-  def stream_typed_events(%__MODULE__{} = model, messages, opts \\ []) do
+  def stream_typed_events(%__MODULE__{} = model, messages, opts \\ []),
+    do: stream_call(:exact_stream_events, model, messages, opts)
+
+  defp stream_call(call, model, messages, opts) do
     with {:ok, model} <- resolve_invocation_model(model, opts),
-         {:ok, body} <- request_body(model, messages, Keyword.put(opts, :stream, true)) do
-      {body, opts} = thread_betas(body, opts)
-      Client.messages_stream_typed_events(client(model), body, opts)
-    end
+         {:ok, body} <- request_body(model, messages, Keyword.put(opts, :stream, true)),
+         do: send_request(call, model, body, opts)
   end
 
   @spec request_body(t(), [BeamWeaver.Core.Message.t()], keyword()) ::
           {:ok, map()} | {:error, Error.t()}
+  @impl true
   def request_body(%__MODULE__{} = model, messages, opts \\ []),
     do: RequestBuilder.request_body(model, messages, opts)
 
@@ -157,33 +173,27 @@ defmodule BeamWeaver.Anthropic.ChatModel do
 
   defp thread_betas(body, opts), do: {body, opts}
 
-  defp runtime_adapter do
-    %ChatRuntime.Adapter{
-      request: &request_body/3,
-      invoke: fn model, body, opts ->
-        {body, opts} = thread_betas(body, opts)
-        Client.messages(client(model), body, opts)
-      end,
-      stream: fn model, body, opts ->
-        {body, opts} = thread_betas(body, opts)
-        Client.messages_stream(client(model), body, opts)
-      end,
-      stream_response: fn model, body, opts ->
-        {body, opts} = thread_betas(body, opts)
-        Client.messages_stream_response(client(model), body, opts)
-      end,
-      exact_stream_events: fn model, body, opts ->
-        {body, opts} = thread_betas(body, opts)
-        Client.messages_stream_typed_events(client(model), body, opts)
-      end,
-      decode: fn response, _opts -> Messages.response_to_message(response) end,
-      parse: fn message, opts ->
-        StructuredOutput.maybe_parse(message, opts,
-          error_module: Error,
-          provider_name: "Anthropic",
-          on_decode_error: :ok
-        )
-      end
-    }
+  @impl true
+  def send_request(call, model, body, opts) do
+    {body, opts} = thread_betas(body, opts)
+    client = client(model)
+
+    case call do
+      :invoke -> Client.messages(client, body, opts)
+      :stream -> Client.messages_stream(client, body, opts)
+      :stream_response -> Client.messages_stream_response(client, body, opts)
+      :stream_events -> Client.messages_stream_events(client, body, opts)
+      :exact_stream_events -> Client.messages_stream_typed_events(client, body, opts)
+    end
   end
+
+  @impl true
+  def forced_tool_choice?(%__MODULE__{} = model, opts), do: RequestBuilder.forced_tool_choice?(model, opts)
+
+  @impl true
+  def decode_response(response, _opts), do: Messages.response_to_message(response)
+
+  @impl true
+  def parse_response(_model, message, opts),
+    do: StructuredOutput.maybe_parse(message, opts, provider_name: "Anthropic", on_decode_error: :ok)
 end

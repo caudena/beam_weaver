@@ -1,9 +1,6 @@
 defmodule BeamWeaver.TestSupport.Conformance.AgentCase do
   @moduledoc """
   Shared ExUnit checks for user-defined `BeamWeaver.Agent` modules.
-
-  This keeps standard-test style coverage idiomatic to ExUnit: test modules opt
-  into capability checks rather than inheriting Python test classes.
   """
 
   defmacro __using__(opts) do

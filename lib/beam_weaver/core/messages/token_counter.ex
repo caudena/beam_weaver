@@ -50,12 +50,15 @@ defmodule BeamWeaver.Core.Messages.TokenCounter do
       %ContentBlock.PlainText{text: text}, {chars, images} ->
         {chars + String.length(to_string(text || "")), images}
 
-      %ContentBlock.Image{}, {chars, images} ->
+      # A media block counts as a fixed number of tokens, as an image does: the
+      # length of its base64 data says nothing about what the model reads.
+      %media{}, {chars, images}
+      when media in [ContentBlock.Image, ContentBlock.File, ContentBlock.Audio, ContentBlock.Video] ->
         {chars, images + tokens_per_image}
 
       block, {chars, images} when is_map(block) ->
-        case block_type(block) do
-          type when type in [:image, :image_url, :input_image] ->
+        case Map.get(block, :type) do
+          type when type in [:image, :image_url, :input_image, :file, :input_file, :audio, :input_audio, :video] ->
             {chars, images + tokens_per_image}
 
           type when type in [:text, :plain_text, :input_text, :output_text] ->
@@ -72,9 +75,7 @@ defmodule BeamWeaver.Core.Messages.TokenCounter do
 
   defp content_token_parts(content, _tokens_per_image), do: {String.length(inspect(content)), 0}
 
-  defp block_type(block), do: Map.get(block, :type)
-
-  defp add_role_chars(chars, %Message{role: role}), do: chars + String.length(role_name(role))
+  defp add_role_chars(chars, %Message{role: role}), do: chars + String.length(Atom.to_string(role))
 
   defp add_name_chars(chars, %Message{name: name}, true) when is_binary(name),
     do: chars + String.length(name)
@@ -93,30 +94,16 @@ defmodule BeamWeaver.Core.Messages.TokenCounter do
 
   defp add_tool_call_id_chars(chars, _message), do: chars
 
-  defp tool_token_count(nil, _chars_per_token), do: 0.0
-  defp tool_token_count([], _chars_per_token), do: 0.0
-
   defp tool_token_count(tools, chars_per_token) do
     tools
     |> List.wrap()
-    |> Enum.map(&json_length/1)
-    |> Enum.sum()
+    |> Enum.sum_by(&(&1 |> BeamWeaver.Tool.Renderer.declaration() |> json_length()))
     |> ceil_tokens(chars_per_token)
   end
 
-  defp json_length(value) do
-    value
-    |> BeamWeaver.JSON.encode!()
-    |> String.length()
-  rescue
-    _exception -> value |> inspect() |> String.length()
-  end
+  defp json_length(value), do: value |> BeamWeaver.JSON.encode_or_inspect() |> String.length()
 
-  defp ceil_tokens(chars, chars_per_token) do
-    chars
-    |> Kernel./(chars_per_token)
-    |> Float.ceil()
-  end
+  defp ceil_tokens(chars, chars_per_token), do: Float.ceil(chars / chars_per_token)
 
   defp scaling_state do
     %{
@@ -128,7 +115,7 @@ defmodule BeamWeaver.Core.Messages.TokenCounter do
   end
 
   defp update_scaling(scaling, %Message{role: :assistant} = message, token_count) do
-    provider = metadata_value(message.response_metadata, :model_provider)
+    provider = Map.get(message.response_metadata || %{}, :model_provider)
 
     scaling =
       cond do
@@ -142,8 +129,8 @@ defmodule BeamWeaver.Core.Messages.TokenCounter do
           scaling
       end
 
-    case metadata_value(message.usage_metadata || %{}, :total_tokens) do
-      total_tokens when is_integer(total_tokens) ->
+    case message.usage_metadata do
+      %{total_tokens: total_tokens} when is_integer(total_tokens) ->
         %{scaling | last_ai_total_tokens: total_tokens, approx_at_last_ai: token_count}
 
       _other ->
@@ -152,10 +139,6 @@ defmodule BeamWeaver.Core.Messages.TokenCounter do
   end
 
   defp update_scaling(scaling, _message, _token_count), do: scaling
-
-  defp metadata_value(map, key) when is_map(map), do: Map.get(map, key)
-
-  defp metadata_value(_map, _key), do: nil
 
   defp maybe_scale_token_count(token_count, scaling, opts, messages) do
     scaled? = Keyword.get(opts, :use_usage_metadata_scaling, false)
@@ -176,9 +159,4 @@ defmodule BeamWeaver.Core.Messages.TokenCounter do
     |> Float.ceil()
     |> trunc()
   end
-
-  defp role_name(:user), do: "user"
-  defp role_name(:assistant), do: "assistant"
-  defp role_name(:system), do: "system"
-  defp role_name(:tool), do: "tool"
 end

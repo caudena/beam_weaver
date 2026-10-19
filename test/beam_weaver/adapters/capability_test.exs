@@ -1,10 +1,8 @@
 defmodule BeamWeaver.Adapters.CapabilityTest do
   use ExUnit.Case, async: true
 
-  alias BeamWeaver.Adapter.Introspect
   alias BeamWeaver.Adapter.Retainable
   alias BeamWeaver.Adapter.Sweepable
-  alias BeamWeaver.Adapter.Transactional
   alias BeamWeaver.Cache
   alias BeamWeaver.Core.Document
   alias BeamWeaver.Core.Error
@@ -87,24 +85,6 @@ defmodule BeamWeaver.Adapters.CapabilityTest do
     ]
 
     assert Enum.count(remaining, &match?({:ok, _}, &1)) == 1
-  end
-
-  test "Transactional executes local adapters directly" do
-    assert {:ok, :done} =
-             Transactional.transaction(
-               Cache.ETS.new(visibility: :private),
-               fn -> {:ok, :done} end,
-               []
-             )
-  end
-
-  test "Introspect protocol exposes adapter metadata" do
-    cache = BeamWeaver.Cache.Ecto.new(repo: BeamWeaver.Test.PostgresRepo, table: "bw_cache_test")
-
-    assert %{
-             adapter: BeamWeaver.Cache.Ecto,
-             table: "bw_cache_test"
-           } = Introspect.metadata(cache)
   end
 
   test "adapter operations emit stable telemetry metadata maps" do

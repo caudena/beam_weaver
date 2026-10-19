@@ -2,31 +2,22 @@ defmodule BeamWeaver.TextSplitter.SharedTest do
   use ExUnit.Case, async: true
 
   alias BeamWeaver.Core.Document
-  alias BeamWeaver.TextSplitter.Shared
+  alias BeamWeaver.TextSplitter
 
-  test "chunks_to_documents reports character start_index for non-ascii text" do
-    text = "héllo wörld foo"
-    document = Document.new!(text)
-    chunks = ["wörld", "foo"]
-
-    docs = Shared.chunks_to_documents(chunks, document, true)
-
-    assert Enum.map(docs, & &1.metadata.start_index) == [
-             String.length("héllo "),
-             String.length("héllo wörld ")
-           ]
-
-    assert Enum.map(docs, &String.slice(text, &1.metadata.start_index, String.length(&1.content))) ==
-             chunks
+  defp start_indexes(text, opts) do
+    splitter = TextSplitter.character([separator: " ", add_start_index: true] ++ opts)
+    {:ok, stream} = TextSplitter.split_documents(splitter, [Document.new!(text)])
+    Enum.map(stream, &{&1.content, &1.metadata.start_index})
   end
 
-  test "chunks_to_documents advances start_index through repeated overlapping chunks" do
-    text = "foo foo foo"
-    document = Document.new!(text)
-    chunks = ["foo foo", "foo foo"]
+  test "start_index counts characters in non-ascii text" do
+    assert start_indexes("héllo wörld foo", chunk_size: 11, chunk_overlap: 0) == [
+             {"héllo wörld", 0},
+             {"foo", String.length("héllo wörld ")}
+           ]
+  end
 
-    docs = Shared.chunks_to_documents(chunks, document, true)
-
-    assert Enum.map(docs, & &1.metadata.start_index) == [0, 4]
+  test "start_index advances through repeated overlapping chunks" do
+    assert start_indexes("foo foo foo", chunk_size: 7, chunk_overlap: 4) == [{"foo foo", 0}, {"foo foo", 4}]
   end
 end

@@ -4,8 +4,8 @@ defmodule BeamWeaver.Agent.StructuredOutput.AutoStrategy do
   """
 
   # `opts` keeps the declaration's `name`, `description`, `strict`,
-  # `tool_message_content` and `handle_errors`, so the strategy the policy
-  # resolves to (provider or tool) is configured as declared.
+  # `tool_message_content`, `handle_errors` and `max_retries`, so the strategy
+  # the policy resolves to (provider or tool) is configured as declared.
   defstruct schema: nil, opts: []
 
   @type t :: %__MODULE__{schema: term(), opts: keyword()}
@@ -14,14 +14,19 @@ end
 defmodule BeamWeaver.Agent.StructuredOutput.ToolStrategy do
   @moduledoc """
   Strategy that requests structured output through a synthetic tool call.
+
+  With `handle_errors`, an answer that fails the schema goes back to the model
+  as an error tool message, and the model answers again, up to `max_retries`
+  times.
   """
 
-  defstruct [:schema, :tool_message_content, handle_errors: true, schema_specs: []]
+  defstruct [:schema, :tool_message_content, handle_errors: true, max_retries: 2, schema_specs: []]
 
   @type t :: %__MODULE__{
           schema: term(),
           tool_message_content: String.t() | nil,
-          handle_errors: boolean(),
+          handle_errors: boolean() | String.t() | atom() | [atom()] | (BeamWeaver.Core.Error.t() -> String.t()),
+          max_retries: non_neg_integer(),
           schema_specs: [BeamWeaver.Agent.StructuredOutput.SchemaSpec.t()]
         }
 end
