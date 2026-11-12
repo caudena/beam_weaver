@@ -1,8 +1,9 @@
 # xAI
 
-Use xAI Grok through Responses (default) or Chat Completions. Responses
+Use xAI Grok through Responses, the BeamWeaver default. Responses
 preserves provider-native reasoning state and supports hosted search tools.
-BeamWeaver supplies chat integration, not an xAI embedding adapter.
+xAI has deprecated Chat Completions and documents it as a legacy endpoint.
+[xAI text API guidance](https://docs.x.ai/developers/model-capabilities/text/best-practices)
 
 ## Setup and first request
 

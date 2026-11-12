@@ -905,6 +905,118 @@ defmodule BeamWeaver.Anthropic.ChatModelTest do
     end
   end
 
+  test "the October API version rejects sampling and incompatible message blocks locally" do
+    legacy = ChatModel.new(model: "claude-sonnet-4-6", temperature: 0.2)
+    messages = [Message.user("hello")]
+
+    assert {:ok, %{"temperature" => 0.2}} = ChatModel.request_body(legacy, messages)
+
+    assert {:error, %{details: %{params: [:temperature]}}} =
+             ChatModel.request_body(legacy, messages, anthropic_version: "2026-10-21")
+
+    current = ChatModel.new(model: "claude-sonnet-4-6", anthropic_version: "2026-10-21")
+    doc = BeamWeaver.Core.ContentBlock.file(url: "https://example.test/doc.pdf", mime_type: "application/pdf")
+
+    assert {:error, %{type: :invalid_messages, message: reason}} =
+             ChatModel.request_body(current, [Message.user("hello"), Message.assistant([doc])])
+
+    assert reason =~ "direct document blocks"
+
+    cited =
+      BeamWeaver.Core.ContentBlock.unknown("text", %{
+        "type" => "text",
+        "text" => "Evidence",
+        "citations" => [%{"type" => "char_location"}]
+      })
+
+    assert {:error, %{type: :invalid_messages, message: reason}} =
+             ChatModel.request_body(current, [Message.user([cited])])
+
+    assert reason =~ "citations on user text"
+    assert {:ok, _} = ChatModel.request_body(current, [Message.user([doc])])
+  end
+
+  test "Message Threads sends the beta header, returns the response ID, and accepts an empty continuation" do
+    response = %{
+      "id" => "msg_next",
+      "model" => "claude-haiku-5-5",
+      "type" => "message",
+      "role" => "assistant",
+      "content" => [%{"type" => "text", "text" => "done"}],
+      "stop_reason" => "end_turn",
+      "usage" => %{"input_tokens" => 2, "output_tokens" => 1}
+    }
+
+    model =
+      Models.init_chat_model!("anthropic:claude-haiku-5-5",
+        api_key: "fixture-key",
+        transport: BeamWeaver.TestSupport.Conformance.Fakes.Transport,
+        transport_opts: [parent: self(), body: response]
+      )
+
+    assert {:ok, %Message{id: "msg_next"}} =
+             CoreChatModel.invoke(model, "start", thread: :create, trace?: false)
+
+    assert_received {:fake_transport_request, create}
+    assert create.json["thread"] == %{"type" => "create"}
+    assert {"anthropic-beta", "message-threads-2026-08-12"} in create.headers
+    refute Map.has_key?(create.json, "betas")
+
+    assert {:ok, %Message{}} =
+             CoreChatModel.invoke(model, [], thread: {:continue, "msg_next"}, trace?: false)
+
+    assert_received {:fake_transport_request, continue}
+    assert continue.json["thread"] == %{"type" => "continue", "previous_message_id" => "msg_next"}
+    assert continue.json["messages"] == []
+    refute Map.has_key?(continue.json, "system")
+    refute Map.has_key?(continue.json, "tools")
+
+    cached = Models.cached(model, BeamWeaver.Cache.ETS.new(visibility: :private))
+
+    for _ <- 1..2 do
+      assert {:ok, %Message{}} =
+               CoreChatModel.invoke(cached, "start", extra_body: %{thread: %{type: :create}}, trace?: false)
+
+      assert_received {:fake_transport_request, request}
+      assert request.json["thread"] == %{"type" => "create"}
+    end
+
+    assert {:error, %{details: %{params: [:thread]}}} =
+             ChatModel.request_body(model, [Message.system("changed"), Message.user("next")],
+               thread: {:continue, "msg_next"}
+             )
+
+    assert {:error, %{details: %{params: [:thread]}}} =
+             ChatModel.count_tokens(model, "next", thread: {:continue, "msg_next"})
+  end
+
+  test "Claude Fable and Mythos 5.2 use adaptive thinking and require a 5.2 advisor" do
+    messages = [Message.user("hello")]
+
+    for id <- ["claude-fable-5-2", "claude-mythos-5-2"] do
+      model = Models.init_chat_model!("anthropic:#{id}")
+
+      assert {:ok, body} =
+               ChatModel.request_body(model, messages,
+                 effort: :high,
+                 tools: [Tools.advisor(model: "claude-fable-5-2")]
+               )
+
+      assert body["model"] == id
+      assert body["output_config"] == %{"effort" => "high"}
+      assert [%{"model" => "claude-fable-5-2"}] = body["tools"]
+
+      assert {:error, %{details: %{params: [:thinking]}}} =
+               ChatModel.request_body(model, messages, thinking: %{type: :disabled})
+
+      assert {:error, %{details: %{params: [:tool_choice]}}} =
+               ChatModel.request_body(model, messages, tool_choice: :any)
+
+      assert {:error, %{details: %{unsupported_advisor_models: ["claude-fable-5-1"]}}} =
+               ChatModel.request_body(model, messages, tools: [Tools.advisor(model: "claude-fable-5-1")])
+    end
+  end
+
   test "Claude 5.1 thinking binding controls infer their beta and validate mismatch behavior" do
     model = ChatModel.new(model: "claude-fable-5-1")
     messages = [Message.user("hello")]

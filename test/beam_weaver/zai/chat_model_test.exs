@@ -14,6 +14,17 @@ defmodule BeamWeaver.ZAI.ChatModelTest do
   alias BeamWeaver.ZAI.Messages
   alias BeamWeaver.ZAI.Streaming
 
+  test "GLM-5.3-FlashX-Legal is a priced vision chat model" do
+    model = BeamWeaver.Models.init_chat_model!("zai:glm-5.3-flashx-legal")
+    assert model.profile.image_inputs
+    assert model.profile.extra.input_price_per_mtok == 0.37
+    assert model.profile.extra.cached_input_price_per_mtok == 0.075
+    assert model.profile.extra.output_price_per_mtok == 1.25
+
+    assert {:ok, %{"model" => "glm-5.3-flashx-legal", "reasoning_effort" => "low"}} =
+             model.__struct__.request_body(model, [BeamWeaver.Core.Message.user("hello")], reasoning_effort: :low)
+  end
+
   test "namespace and client constructors read Z.ai config defaults and derive endpoints" do
     BeamWeaver.TestSupport.ConfigHelper.put_config(:zai,
       api_key: "zai-secret",

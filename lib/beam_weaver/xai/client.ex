@@ -19,12 +19,9 @@ defmodule BeamWeaver.XAI.Client do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.OpenAI.Client, as: OpenAIClient
   alias BeamWeaver.OpenAI.Client.ResponseDecoder
-  alias BeamWeaver.OpenAI.Streaming
   alias BeamWeaver.Provider.HTTPClient
   alias BeamWeaver.Provider.OpenAICompatibleClient, as: Compat
   alias BeamWeaver.Provider.Options, as: ProviderOptions
-  alias BeamWeaver.Stream.Envelope
-  alias BeamWeaver.Stream.Events
   alias BeamWeaver.Transport.Request
   alias BeamWeaver.XAI.Messages
 
@@ -120,21 +117,7 @@ defmodule BeamWeaver.XAI.Client do
   def responses_stream_typed_events(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
     client
     |> http(client.endpoint, opts)
-    |> OpenAIClient.stream_typed(body, opts, decoder(), &responses_typed_events/1)
-  end
-
-  # The stream ends with the complete reply, which carries the same xAI
-  # metadata as a reply from `responses/3`.
-  defp responses_typed_events(events) do
-    events
-    |> Streaming.typed_events()
-    |> Enum.map(fn
-      %Envelope{event: %Events.Message{message: message} = event} = envelope ->
-        %{envelope | event: %{event | message: Messages.put_responses_metadata(message)}}
-
-      envelope ->
-        envelope
-    end)
+    |> OpenAIClient.stream_responses(body, opts, decoder(), &Messages.responses_to_message/1)
   end
 
   @doc """

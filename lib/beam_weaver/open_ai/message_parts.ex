@@ -83,9 +83,22 @@ defmodule BeamWeaver.OpenAI.MessageParts do
       input_tokens: input_tokens || 0,
       output_tokens: output_tokens || 0,
       total_tokens: total_tokens(usage["total_tokens"], input_tokens, output_tokens),
-      input_token_details: token_details(input_details, @input_token_details),
+      input_token_details: input_token_details(input_details),
       output_token_details: token_details(output_details, @output_token_details)
     })
+  end
+
+  @doc false
+  def input_token_details(details) do
+    base = token_details(details, @input_token_details)
+
+    case details do
+      %{"cache_write_tokens_details" => %{} = writes} ->
+        Map.merge(base, token_details(writes, cache_write_30m: "ttl_30m_tokens", cache_write_12h: "ttl_12h_tokens"))
+
+      _ ->
+        base
+    end
   end
 
   defp total_tokens(total, _input, _output) when is_integer(total), do: total

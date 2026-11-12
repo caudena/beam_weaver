@@ -19,6 +19,10 @@ defmodule BeamWeaver.Google do
   @spec chat_model(keyword() | map()) :: ChatModel.t()
   def chat_model(opts \\ []), do: ChatModel.new(opts)
 
+  @doc "Builds a Gemini Decisions API model."
+  @spec decision_model(keyword() | map()) :: BeamWeaver.Google.DecisionModel.t()
+  def decision_model(opts \\ []), do: BeamWeaver.Google.DecisionModel.new(opts)
+
   @doc "Returns provider tool helpers."
   def tools, do: BeamWeaver.Google.Tools
 end

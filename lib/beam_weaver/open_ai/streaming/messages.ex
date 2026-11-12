@@ -26,14 +26,19 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
 
   def message_chunks(_body), do: []
 
-  @spec typed_events(binary() | [map()] | term()) :: [BeamWeaver.Stream.Envelope.t()]
-  def typed_events(body) when is_binary(body) do
+  @spec typed_events(binary() | [map()] | term(), keyword()) :: [BeamWeaver.Stream.Envelope.t()]
+  def typed_events(body, opts \\ [])
+
+  def typed_events(body, opts) when is_binary(body) do
     body
     |> BeamWeaver.Provider.SSE.events()
-    |> typed_events()
+    |> typed_events(opts)
   end
 
-  def typed_events(parsed_events) when is_list(parsed_events) do
+  def typed_events(parsed_events, opts) when is_list(parsed_events) do
+    provider = Keyword.get(opts, :provider, :openai)
+    decode = Keyword.get(opts, :decode_response, &BeamWeaver.OpenAI.Messages.response_to_message/1)
+
     chunks =
       parsed_events
       |> positioned_message_chunks()
@@ -45,15 +50,16 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
       parsed_events
       |> Enum.with_index()
       |> Enum.flat_map(fn {event, position} ->
-        Enum.flat_map(Map.get(chunks, position, []), &chunk_to_events/1) ++ custom_events(event) ++ done_event(event)
+        Enum.flat_map(Map.get(chunks, position, []), &chunk_to_events/1) ++
+          custom_events(event) ++ done_event(event, decode)
       end)
-      |> Enum.map(&Stream.envelope(&1, metadata: %{provider: :openai}))
+      |> Enum.map(&Stream.envelope(&1, metadata: %{provider: provider}))
       |> Enum.split_with(&match?(%Stream.Envelope{event: %Events.Done{}}, &1))
 
     events ++ OpenAICompatibleStreaming.merge_done(done)
   end
 
-  def typed_events(_body), do: []
+  def typed_events(_body, _opts), do: []
 
   defp positioned_message_chunks(parsed_events) do
     parsed_events
@@ -207,22 +213,29 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
     |> reject_nil_values()
   end
 
-  defp done_event(%{"data" => %{"type" => "response.completed", "response" => response}}) do
-    terminal_events(response, %Events.Done{result: response, usage: response["usage"]})
+  defp done_event(%{"data" => %{"type" => "response.completed", "response" => response}}, decode) do
+    terminal_events(response, %Events.Done{result: response, usage: response["usage"]}, decode)
   end
 
-  defp done_event(%{
-         "data" => %{"type" => "response.incomplete", "response" => response} = data
-       })
+  defp done_event(
+         %{
+           "data" => %{"type" => "response.incomplete", "response" => response} = data
+         },
+         decode
+       )
        when is_map(response) do
-    terminal_events(response, %Events.Done{
-      result: response,
-      usage: response["usage"],
-      metadata: terminal_metadata(data, response, "incomplete")
-    })
+    terminal_events(
+      response,
+      %Events.Done{
+        result: response,
+        usage: response["usage"],
+        metadata: terminal_metadata(data, response, "incomplete")
+      },
+      decode
+    )
   end
 
-  defp done_event(%{"data" => %{"type" => "response.failed", "response" => response} = data})
+  defp done_event(%{"data" => %{"type" => "response.failed", "response" => response} = data}, _decode)
        when is_map(response) do
     metadata = terminal_metadata(data, response, "failed")
     provider_error = if is_map(response["error"]), do: response["error"], else: %{}
@@ -239,22 +252,22 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
     [%Events.Error{error: error, metadata: metadata}]
   end
 
-  defp done_event(%{"data" => %{"usage" => usage} = data}) when is_map(usage) do
+  defp done_event(%{"data" => %{"usage" => usage} = data}, _decode) when is_map(usage) do
     [%Events.Done{result: data, usage: usage}]
   end
 
-  defp done_event(%{"data" => %{"choices" => choices}}) when is_list(choices) do
+  defp done_event(%{"data" => %{"choices" => choices}}, _decode) when is_list(choices) do
     if Enum.any?(choices, &(get_in(&1, ["finish_reason"]) != nil)),
       do: [%Events.Done{result: nil}],
       else: []
   end
 
-  defp done_event(_event), do: []
+  defp done_event(_event, _decode), do: []
 
-  defp terminal_events(%{"output" => output} = response, done) when is_list(output) do
+  defp terminal_events(%{"output" => output} = response, done, decode) when is_list(output) do
     # Chunks carry the executable call_id, but only the complete response keeps
     # the distinct function-call item ID, replayable reasoning, and metadata.
-    case BeamWeaver.OpenAI.Messages.response_to_message(response) do
+    case decode.(response) do
       {:ok, message} -> [%Events.Message{message: message}, done]
       {:error, error} -> [%Events.Error{error: error}]
     end
@@ -262,7 +275,7 @@ defmodule BeamWeaver.OpenAI.Streaming.Messages do
 
   # Some compatible endpoints send usage-only terminals. They must not replace
   # already collected chunks with an empty assistant message.
-  defp terminal_events(_response, done), do: [done]
+  defp terminal_events(_response, done, _decode), do: [done]
 
   defp terminal_metadata(data, response, default_status) do
     %{

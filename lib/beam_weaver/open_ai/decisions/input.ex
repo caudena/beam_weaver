@@ -3,19 +3,19 @@ defmodule BeamWeaver.OpenAI.Decisions.Input do
 
   # The `input` and `questions` of a Decisions API request. A string goes as
   # it is, and user messages as user messages. Any other state, such as a
-  # conversation or a map, goes as JSON text in one user message, with the
-  # images of its messages as image parts where they appear in the text.
+  # conversation or a map, goes as JSON text in one user message. Use an
+  # explicit input_json state to request native structured evidence.
 
   import BeamWeaver.MapShape, only: [put_optional: 3]
 
   alias BeamWeaver.Core.{Error, Message}
-  alias BeamWeaver.Core.Messages.ToolCall
+  alias BeamWeaver.Core.DecisionModel.State
   alias BeamWeaver.MapAccess
   alias BeamWeaver.OpenAI.Decisions.Question
   alias BeamWeaver.OpenAI.Messages.Request
   alias BeamWeaver.Result
 
-  @max_questions 200
+  @max_questions 400
   @max_choices 255
   @max_images 128
 
@@ -26,7 +26,7 @@ defmodule BeamWeaver.OpenAI.Decisions.Input do
     with :ok <- check_questions(questions),
          {:ok, questions} <- Result.traverse(questions, fn {name, question} -> question(name, question) end),
          {:ok, input} <- input(state),
-         :ok <- check_images(input) do
+         :ok <- check_images(input, questions) do
       {:ok, %{"input" => input, "questions" => questions}}
     end
   end
@@ -44,7 +44,7 @@ defmodule BeamWeaver.OpenAI.Decisions.Input do
   defp question(name, %Question{type: type, instructions: instructions} = question)
        when type in [:predicate, :choice, :score] do
     with {:ok, name} <- name(name),
-         :ok <- check_instructions(instructions, name),
+         {:ok, instructions} <- encode_instructions(instructions, name),
          {:ok, fields} <- fields(question, name) do
       {:ok, Map.merge(%{"type" => Atom.to_string(type), "name" => name, "instructions" => instructions}, fields)}
     end
@@ -57,11 +57,24 @@ defmodule BeamWeaver.OpenAI.Decisions.Input do
   defp name(name) when is_atom(name) and not is_nil(name) and not is_boolean(name), do: {:ok, Atom.to_string(name)}
   defp name(name), do: invalid("question names must be strings or atoms", %{question: name})
 
-  defp check_instructions(instructions, name) do
-    if is_binary(instructions) and String.trim(instructions) != "",
-      do: :ok,
-      else: invalid("a question's instructions must be a non-empty string", %{question: name})
+  defp encode_instructions(instructions, name) when is_binary(instructions) do
+    if String.trim(instructions) != "",
+      do: {:ok, instructions},
+      else: invalid("a question's instructions must contain text or images", %{question: name})
   end
+
+  defp encode_instructions([_ | _] = instructions, name) do
+    with {:ok, message} <- Message.new(:user, instructions),
+         {:ok, [_ | _] = parts} <- encode_user_content(message) do
+      {:ok, parts}
+    else
+      {:error, _} = error -> error
+      _ -> invalid("a question's instructions must contain text or images", %{question: name})
+    end
+  end
+
+  defp encode_instructions(_instructions, name),
+    do: invalid("a question's instructions must contain text or images", %{question: name})
 
   defp fields(%Question{type: :predicate}, _name), do: {:ok, %{}}
 
@@ -130,6 +143,15 @@ defmodule BeamWeaver.OpenAI.Decisions.Input do
     if String.valid?(text), do: {:ok, text}, else: invalid("state must be valid UTF-8")
   end
 
+  defp input({:input_json, data}) do
+    with {:ok, data} <- State.json(data),
+         true <- is_map(data) or (is_list(data) and Enum.all?(data, &is_map/1)) do
+      {:ok, [%{"role" => "user", "content" => [%{"type" => "input_json", "data" => data}]}]}
+    else
+      _ -> invalid("OpenAI Decisions input_json takes an object or an array of objects without media blocks")
+    end
+  end
+
   defp input(state) do
     if user_messages?(state),
       do: Result.traverse(List.wrap(state), &user_message/1),
@@ -141,12 +163,17 @@ defmodule BeamWeaver.OpenAI.Decisions.Input do
   defp user_messages?(_state), do: false
 
   defp user_message(message) do
+    with {:ok, content} <- encode_user_content(message),
+         do: {:ok, %{"role" => "user", "content" => content}}
+  end
+
+  defp encode_user_content(message) do
     case Request.to_responses_input([message]) do
       {:ok, [%{"type" => "message", "content" => text}]} when is_binary(text) ->
-        {:ok, %{"role" => "user", "content" => text}}
+        {:ok, text}
 
-      {:ok, [%{"type" => "message", "content" => parts}]} ->
-        with {:ok, parts} <- Result.traverse(parts, &user_part/1), do: {:ok, %{"role" => "user", "content" => parts}}
+      {:ok, [%{"type" => "message", "content" => parts}]} when is_list(parts) ->
+        Result.traverse(parts, &user_part/1)
 
       {:ok, _items} ->
         invalid("OpenAI Decisions takes text and images in user messages")
@@ -169,119 +196,52 @@ defmodule BeamWeaver.OpenAI.Decisions.Input do
   defp image_url?(url) when is_binary(url), do: String.starts_with?(url, ["data:", "https://", "http://"])
   defp image_url?(_url), do: false
 
-  # Each image in a message becomes a numbered marker in the JSON text, which
-  # is then split at the markers to put the images there.
   defp json_message(state) do
-    marker = "bw-image-" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
-
-    with {:ok, data, images} <- json(state, marker, []) do
-      [text | rest] = data |> BeamWeaver.JSON.encode!() |> String.split(marker <> "-")
-      images = images |> Enum.reverse() |> List.to_tuple()
-
-      parts =
-        Enum.flat_map(rest, fn segment ->
-          {index, text} = Integer.parse(segment)
-          [elem(images, index) | text_part(text)]
+    with {:ok, parts} <- State.parts(state, &evidence_image/1) do
+      content =
+        Enum.flat_map(parts, fn
+          "" -> []
+          text when is_binary(text) -> [%{"type" => "input_text", "text" => text}]
+          part -> [part]
         end)
 
-      {:ok, [%{"role" => "user", "content" => text_part(text) ++ parts}]}
+      {:ok, [%{"role" => "user", "content" => content}]}
     end
   end
 
-  defp text_part(""), do: []
-  defp text_part(text), do: [%{"type" => "input_text", "text" => text}]
-
-  defp json(%Message{} = message, marker, images) do
-    with {:ok, content, images} <- json_content(message.content, marker, images),
-         {:ok, calls, images} <- json(message.tool_calls, marker, images) do
-      message =
-        %{"role" => Atom.to_string(message.role), "content" => content}
-        |> put_optional("name", message.name)
-        |> put_optional("tool_call_id", message.tool_call_id)
-        |> put_optional("tool_calls", calls)
-
-      {:ok, message, images}
+  defp evidence_image(%{type: type} = block) when type in [:image, :image_url] do
+    case encode_user_content(%Message{role: :user, content: [block]}) do
+      {:ok, [%{"type" => "input_image"} = part]} -> {:ok, part}
+      {:ok, _content} -> invalid("OpenAI Decisions requires a valid image block")
+      {:error, _} = error -> error
     end
   end
 
-  defp json(%ToolCall{} = call, marker, images) do
-    with {:ok, args, images} <- json(call.args, marker, images),
-         do: {:ok, %{"id" => call.id, "name" => call.name, "args" => args}, images}
-  end
-
-  defp json(%_{} = struct, _marker, _images),
-    do:
-      invalid("state contains a struct OpenAI Decisions can't send; convert it to JSON data first", %{
-        struct: struct.__struct__
-      })
-
-  defp json(map, marker, images) when is_map(map) do
-    with {:ok, entries, images} <- json_all(map, marker, images, &json_entry/3), do: {:ok, Map.new(entries), images}
-  end
-
-  defp json(list, marker, images) when is_list(list), do: json_all(list, marker, images, &json/3)
-
-  defp json(value, _marker, images) when is_nil(value) or is_boolean(value) or is_number(value),
-    do: {:ok, value, images}
-
-  defp json(value, _marker, images) when is_atom(value), do: {:ok, Atom.to_string(value), images}
-
-  defp json(value, _marker, images) when is_binary(value) do
-    if String.valid?(value), do: {:ok, value, images}, else: invalid("state must be valid UTF-8")
-  end
-
-  defp json(_value, _marker, _images), do: invalid("state contains a value that isn't JSON data")
-
-  defp json_entry({key, value}, marker, images) when is_binary(key) or is_atom(key) do
-    with {:ok, value, images} <- json(value, marker, images), do: {:ok, {to_string(key), value}, images}
-  end
-
-  defp json_entry(_entry, _marker, _images), do: invalid("state map keys must be strings or atoms")
-
-  defp json_content(blocks, marker, images) when is_list(blocks), do: json_all(blocks, marker, images, &json_block/3)
-  defp json_content(content, marker, images), do: json(content, marker, images)
-
-  defp json_block(text, _marker, images) when is_binary(text), do: {:ok, %{"type" => "text", "text" => text}, images}
-
-  defp json_block(%{type: type, text: text}, _marker, images) when type in [:text, :plain_text] and is_binary(text),
-    do: {:ok, %{"type" => "text", "text" => text}, images}
-
-  defp json_block(%{type: type} = block, marker, images) when type in [:image, :image_url] do
-    with {:ok, [%{"content" => [part]}]} <- Request.to_responses_input([%Message{role: :user, content: [block]}]),
-         {:ok, part} <- user_part(part) do
-      {:ok, %{"type" => "text", "text" => "#{marker}-#{length(images)}"}, [part | images]}
-    end
-  end
-
-  defp json_block(block, _marker, _images) do
+  defp evidence_image(block) do
     type = if is_map(block), do: Map.get(block, :type)
 
     invalid("OpenAI Decisions takes text and images in messages; convert other content to text first", %{block: type})
   end
 
-  defp json_all(values, marker, images, fun) do
-    values
-    |> Enum.reduce_while({:ok, [], images}, fn value, {:ok, acc, images} ->
-      case fun.(value, marker, images) do
-        {:ok, value, images} -> {:cont, {:ok, [value | acc], images}}
-        {:error, _error} = error -> {:halt, error}
-      end
-    end)
-    |> case do
-      {:ok, values, images} -> {:ok, Enum.reverse(values), images}
-      {:error, _error} = error -> error
-    end
-  end
-
-  defp check_images(input) when is_list(input) do
-    count = input |> Enum.flat_map(&List.wrap(&1["content"])) |> Enum.count(&match?(%{"type" => "input_image"}, &1))
+  defp check_images(input, questions) do
+    count =
+      Enum.reduce(questions, input_image_count(input), fn question, count ->
+        count + image_count(question["instructions"])
+      end)
 
     if count <= @max_images,
       do: :ok,
       else: invalid("OpenAI Decisions takes at most #{@max_images} images in a request", %{images: count})
   end
 
-  defp check_images(_text), do: :ok
+  defp input_image_count(messages) when is_list(messages) do
+    Enum.reduce(messages, 0, fn message, count -> count + image_count(message["content"]) end)
+  end
+
+  defp input_image_count(_text), do: 0
+
+  defp image_count(parts) when is_list(parts), do: Enum.count(parts, &match?(%{"type" => "input_image"}, &1))
+  defp image_count(_text), do: 0
 
   defp invalid(message, details \\ %{}), do: {:error, Error.new(:invalid_decision_input, message, details)}
 end

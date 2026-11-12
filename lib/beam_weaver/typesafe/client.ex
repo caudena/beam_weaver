@@ -14,7 +14,7 @@ defmodule BeamWeaver.TypeSafe.Client do
   alias BeamWeaver.Config
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Provider.{HTTPClient, ResponseDecoder}
-  alias BeamWeaver.Transport.Response
+  alias BeamWeaver.Transport.{Request, Response}
   alias BeamWeaver.TypeSafe.Decoder
 
   defstruct [:http, base_url: "https://api.typesafe.ai"]
@@ -44,8 +44,31 @@ defmodule BeamWeaver.TypeSafe.Client do
 
   @doc false
   def evaluate(%__MODULE__{} = client, body, opts) do
-    with {:ok, raw, request_id} <- decode(HTTPClient.post_json(client.http, body, opts)) do
+    with {:ok, raw, request_id} <- decode(HTTPClient.post_json(client.http, body, with_feature_headers(opts))) do
       Decoder.decode(raw, body["questions"], body["model"], request_id, opts)
+    end
+  end
+
+  defp with_feature_headers(opts) do
+    flags =
+      for {option, header} <- [
+            images: "typesafe-danger-zone-images",
+            long_context: "typesafe-danger-zone-long-context"
+          ],
+          Keyword.get(opts, option) == true,
+          into: %{},
+          do: {header, "true"}
+
+    if flags == %{} do
+      opts
+    else
+      headers =
+        opts
+        |> Keyword.get(:headers, [])
+        |> Request.normalize_headers()
+        |> Enum.reject(fn {key, _value} -> Map.has_key?(flags, key) end)
+
+      Keyword.put(opts, :headers, headers ++ Map.to_list(flags))
     end
   end
 
@@ -69,9 +92,20 @@ defmodule BeamWeaver.TypeSafe.Client do
   defp valid_model?(_), do: false
 
   defp decode(result) do
-    with {:ok, body} <- ResponseDecoder.json(result, provider: :typesafe, request_id_header: "x-typesafe-request-id") do
+    with {:ok, body} <-
+           ResponseDecoder.json(result,
+             provider: :typesafe,
+             request_id_header: "x-typesafe-request-id",
+             error_payload: &error_payload/1
+           ) do
       {:ok, %Response{headers: headers}} = result
       {:ok, body, Map.new(headers)["x-typesafe-request-id"]}
     end
   end
+
+  defp error_payload(%{"detail" => %{"message" => message} = detail}) when is_binary(message),
+    do: Map.put_new(detail, "type", detail["error_type"])
+
+  defp error_payload(%{"detail" => message}) when is_binary(message), do: %{"message" => message}
+  defp error_payload(_body), do: nil
 end

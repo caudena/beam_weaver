@@ -184,7 +184,7 @@ terminal `Error` event carries the failure.
 | `:transport_error`, `:http_error` | Inspect transport/status details |
 
 Add `ModelRetry` to an agent or implement a bounded direct-call policy for
-failed requests. [Gemini Argon](providers/google.md#gemini-4-argon) also resumes
+failed requests. [Gemini 4 Argon and Carbon](providers/google.md#gemini-4-argon-and-carbon) also resume
 interrupted long-decode hops within a call. `ModelFallback` can choose
 another model after failure. With fallback outside retry, each model gets
 its own retry budget; see [Built-in Middleware](builtin_middleware.md).
@@ -290,11 +290,11 @@ window and is used for summarization decisions.
 ## Decision models
 
 Decision models answer typed questions instead of generating chat text.
-`init_decision_model/2` supports the OpenAI and TypeSafe integrations.
+`init_decision_model/2` supports OpenAI, Gemini, and TypeSafe.
 `BeamWeaver.Core.DecisionModel` supplies question constructors, `choose/4` and
 `probability/4`; handle refusal as well as successful answers and errors.
-Use the complete [OpenAI](providers/openai.md#decisions) or
-[TypeSafe](providers/typesafe.md) example for its native question contract.
+The provider guides describe the native question contracts.
+[OpenAI](providers/openai.md#decisions) · [Gemini](providers/google.md#decisions) · [TypeSafe](providers/typesafe.md)
 
 A decision model returns a typed probability rather than a chat sentence:
 

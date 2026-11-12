@@ -77,6 +77,15 @@ defmodule BeamWeaver.Google.Client do
     end
   end
 
+  @doc "Submits a native request to the Gemini Developer Decisions API."
+  @spec decisions(t(), map(), keyword()) :: {:ok, map()} | {:error, Error.t()}
+  def decisions(%__MODULE__{} = client, body, opts \\ []) when is_map(body) do
+    client
+    |> http("", :decisions, opts)
+    |> HTTPClient.post_json(body, opts)
+    |> decode_result(opts)
+  end
+
   @doc """
   Calls the provider counting/estimation endpoint with a native body; returns decoded provider data or an error.
   """
@@ -197,6 +206,7 @@ defmodule BeamWeaver.Google.Client do
       :generate_content -> "#{base}/models/#{encoded_model}:generateContent"
       :stream_generate_content -> "#{base}/models/#{encoded_model}:streamGenerateContent?alt=sse"
       :count_tokens -> "#{base}/models/#{encoded_model}:countTokens"
+      :decisions -> "#{base}/decisions"
     end
   end
 

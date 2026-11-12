@@ -181,14 +181,8 @@ defmodule BeamWeaver.Google.Messages do
   end
 
   defp part(%ContentBlock.ToolResult{} = block) do
-    [
-      %{
-        "functionResponse" => %{
-          "name" => block.metadata[:name] || block.tool_call_id || "tool",
-          "response" => tool_response(block.content)
-        }
-      }
-    ]
+    name = block.metadata[:name] || block.tool_call_id || "tool"
+    [function_response_part(name, nil, block.content)]
   end
 
   defp part(%ContentBlock.Unknown{value: value}) when is_map(value),
@@ -258,15 +252,11 @@ defmodule BeamWeaver.Google.Messages do
 
   defp normalize_function_call_args(args), do: %{"input" => args}
 
-  defp media_part(nil, data, mime_type) when is_binary(data) do
-    [%{"inlineData" => %{"mimeType" => mime_type, "data" => data}}]
-  end
+  defp media_part(uri, data, mime_type), do: List.wrap(media_source(uri, data, %{"mimeType" => mime_type}))
 
-  defp media_part(uri, _data, mime_type) when is_binary(uri) do
-    [%{"fileData" => %{"mimeType" => mime_type, "fileUri" => uri}}]
-  end
-
-  defp media_part(_uri, _data, _mime_type), do: []
+  defp media_source(nil, data, media) when is_binary(data), do: %{"inlineData" => Map.put(media, "data", data)}
+  defp media_source(uri, _data, media) when is_binary(uri), do: %{"fileData" => Map.put(media, "fileUri", uri)}
+  defp media_source(_uri, _data, _media), do: nil
 
   defp message_tool_call_parts(content, %Message{} = message) do
     if ChatCompletionsWire.content_has_tool_call?(content), do: [], else: tool_call_parts(message)
@@ -296,65 +286,81 @@ defmodule BeamWeaver.Google.Messages do
   defp invalid_tool_calls(_message), do: []
 
   defp tool_result_parts(%Message{role: :tool} = message) do
-    {response, media_parts} = tool_response_with_media(message.content)
-
-    function_response =
-      %{
-        "id" => message.tool_call_id || message.id,
-        "name" => message.name || message.tool_call_id || message.id || "tool",
-        "response" => response
-      }
-      |> Options.reject_nil_values()
-      |> Options.put_optional("parts", media_parts)
-
-    [
-      %{
-        "functionResponse" => function_response
-      }
-    ]
+    id = message.tool_call_id || message.id
+    name = message.name || id || "tool"
+    [function_response_part(name, id, message.content)]
   end
 
   defp tool_result_parts(_message), do: []
+
+  defp function_response_part(name, id, content) do
+    {response, media_parts} = tool_response_with_media(content)
+
+    function_response =
+      %{"name" => name, "response" => response}
+      |> Options.put_optional("id", id)
+      |> Options.put_optional("parts", media_parts)
+
+    %{"functionResponse" => function_response}
+  end
 
   defp tool_response(content) when is_map(content), do: Options.stringify_keys(content)
   defp tool_response(content) when is_binary(content), do: %{"content" => content}
   defp tool_response(content), do: %{"content" => inspect(content)}
 
-  # Gemini takes images and documents such as PDFs inline in a function
-  # response's parts; the rest of the result goes in its `response`.
   defp tool_response_with_media(content) when is_list(content) do
     {media, ordinary} =
-      Enum.split_with(content, fn
-        %ContentBlock.Image{data: data} when is_binary(data) -> true
-        %ContentBlock.File{data: data} when is_binary(data) -> true
-        %{type: type, data: data} when type in [:image, :file] and is_binary(data) -> true
-        _block -> false
+      Enum.reduce(content, {[], []}, fn block, {media, ordinary} ->
+        case tool_media_part(block) do
+          nil -> {media, [tool_response_block(block) | ordinary]}
+          part -> {[part | media], ordinary}
+        end
       end)
 
     response =
-      case ordinary do
+      case Enum.reverse(ordinary) do
         [] -> %{"content" => ""}
-        [single] -> %{"content" => tool_response_block(single)}
-        many -> %{"content" => Enum.map(many, &tool_response_block/1)}
+        [single] -> %{"content" => single}
+        many -> %{"content" => many}
       end
 
-    media_parts =
-      Enum.map(media, fn block ->
-        %{
-          "inlineData" => %{
-            "mimeType" => Map.get(block, :mime_type) || default_tool_mime_type(block.type),
-            "data" => Map.fetch!(block, :data)
-          }
-        }
-      end)
-
-    {response, media_parts}
+    {response, Enum.reverse(media)}
   end
 
   defp tool_response_with_media(content), do: {tool_response(content), []}
 
+  defp tool_media_part(%{type: type} = block) when type in [:image, :file, :audio, :video] do
+    metadata = Map.get(block, :metadata) || %{}
+
+    media =
+      %{"mimeType" => Map.get(block, :mime_type) || default_tool_mime_type(type)}
+      |> Options.put_optional("displayName", MapAccess.get(metadata, :display_name))
+
+    data = Map.get(block, :data)
+    uri = if is_binary(data), do: nil, else: Map.get(block, :file_id) || Map.get(block, :url)
+
+    case media_source(uri, data, media) do
+      nil -> nil
+      part -> tool_media_processing(part, type, metadata)
+    end
+  end
+
+  defp tool_media_part(_block), do: nil
+
+  defp tool_media_processing(part, :video, metadata) do
+    case MapAccess.get(metadata, :media_processing) do
+      value when value in [:static, "static", "STATIC"] -> Map.put(part, "mediaProcessing", "STATIC")
+      value when value in [:agentic, "agentic", "AGENTIC"] -> Map.put(part, "mediaProcessing", "AGENTIC")
+      _ -> part
+    end
+  end
+
+  defp tool_media_processing(part, _type, _metadata), do: part
+
   defp default_tool_mime_type(:image), do: "image/png"
   defp default_tool_mime_type(:file), do: "application/pdf"
+  defp default_tool_mime_type(:audio), do: "audio/mpeg"
+  defp default_tool_mime_type(:video), do: "video/mp4"
 
   defp tool_response_block(%ContentBlock.Text{text: text}), do: text
   defp tool_response_block(%ContentBlock.PlainText{text: text}), do: text

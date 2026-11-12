@@ -12,7 +12,7 @@ defmodule BeamWeaver.OpenAI.Messages.Request do
   alias BeamWeaver.Tool.Renderer
 
   # Providers whose Responses API replies this input takes back as items.
-  @responses_providers ["openai", "xai", "deepseek"]
+  @responses_providers ["openai", "xai", "deepseek", "moonshot"]
 
   # Blocks that go as input items of their own, just before the rest of their
   # message: a `configuration_update`, such as a new reasoning effort from this

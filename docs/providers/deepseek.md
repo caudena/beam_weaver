@@ -94,6 +94,11 @@ true = Enum.any?(List.wrap(reply.content), &(Map.get(&1, :provider_type) == "web
 executor. A declaration alone does not edit files. Beta routing also supports
 strict function tools and prefix completion where the selected model allows it.
 
+BeamWeaver preserves provider-reported successful Search and Fetch counts
+under `usage_metadata.server_tool_use`. The estimate includes $0.75 per
+1,000 successful operations from October 31, 2026 at 16:00 UTC, using
+the response timestamp when available. [DeepSeek billing](https://api-docs.deepseek.com/guides/search/)
+
 ## Raw client
 
 `DeepSeek.Client` exposes Search, Fetch, FIM completions, model discovery and account balance.

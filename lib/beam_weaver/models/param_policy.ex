@@ -96,6 +96,7 @@ defmodule BeamWeaver.Models.ParamPolicy do
                      :thinking,
                      :thinking_budget,
                      :thinking_level,
+                     :thread,
                      :tool_choice,
                      :tools,
                      :top_logprobs,

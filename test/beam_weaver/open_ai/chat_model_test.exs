@@ -713,6 +713,41 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
            }
   end
 
+  test "image-only models resolve in the registry and are rejected by the Responses adapter" do
+    messages = [Message.user("draw a square")]
+    model = Models.init_chat_model!("openai:gpt-image-2.6-flare")
+    assert model.profile.image_outputs
+
+    assert {:error, %{details: %{alternative_api: :images}}} = ChatModel.request_body(model, messages)
+
+    assert {:error, %{details: %{alternative_api: :images}}} =
+             ChatModel.request_body(ChatModel.new(), messages, model: "gpt-image-2.6-sunburst")
+  end
+
+  test "per-call model overrides validate against the selected OpenAI model's profile" do
+    messages = [Message.user("hello")]
+    options = [model: "gpt-6.1-terra", reasoning_effort: :none, temperature: 0.3]
+    responses = ChatModel.new(model: "gpt-6.1-sol")
+    completions = BeamWeaver.OpenAI.ChatCompletionsModel.new(model: "gpt-6.1-sol")
+
+    assert {:ok, %{"model" => "gpt-6.1-terra", "temperature" => 0.3}} =
+             ChatModel.request_body(responses, messages, options)
+
+    assert {:ok, %{"model" => "gpt-6.1-terra", "temperature" => 0.3}} =
+             BeamWeaver.OpenAI.ChatCompletionsModel.request_body(completions, messages, options)
+  end
+
+  test "GPT-6-Cyber resolves through the Responses adapter with Daybreak options" do
+    model = Models.init_chat_model!("openai:gpt-6-cyber", access_programs: %{cyber: "daybreak_red"})
+
+    assert {:ok, body} =
+             ChatModel.request_body(model, [Message.user("verify a regression test")], safety_identifier: "test-user")
+
+    assert body["model"] == "gpt-6-cyber"
+    assert body["access_programs"] == %{"cyber" => "daybreak_red"}
+    assert body["safety_identifier"] == "test-user"
+  end
+
   test "GPT-6 Astra and GPT-6.1 Sol Responses enforce reasoning and parameter constraints" do
     for model_id <- ["gpt-6-astra", "gpt-6.1-sol"] do
       model = ChatModel.new(model: model_id)

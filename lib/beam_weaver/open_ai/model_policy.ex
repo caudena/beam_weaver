@@ -1,6 +1,14 @@
 defmodule BeamWeaver.OpenAI.ModelPolicy do
   @moduledoc false
 
+  alias BeamWeaver.Core.Error
+  alias BeamWeaver.Models.Profile
+  alias BeamWeaver.Models.ProfileRegistry
+
+  @gpt6_reasoning_required ~w(gpt-6-astra gpt-6.1-sol)
+  @gpt6_optional_reasoning ~w(gpt-6.1-terra gpt-6-sol gpt-6-luna)
+  @gpt6_models @gpt6_reasoning_required ++ @gpt6_optional_reasoning ++ ~w(gpt-6-cyber gpt-6-rosalind)
+
   @doc """
   Returns the constructor default temperature for a model when the caller did
   not set one explicitly.
@@ -42,14 +50,49 @@ defmodule BeamWeaver.OpenAI.ModelPolicy do
   def completion_tokens_field_model?(_model), do: false
 
   @doc false
+  def request_profile(%{model: configured, profile: %Profile{provider: :openai}}, requested)
+      when is_binary(requested) and configured != requested do
+    case ProfileRegistry.fetch(:openai, requested) do
+      {:ok, profile} -> profile
+      {:error, _error} -> nil
+    end
+  end
+
+  def request_profile(%{profile: profile}, _requested), do: profile
+
+  @doc false
+  def validate_chat_api(%Profile{provider: :openai, extra: %{api_family: :images}} = profile, api) do
+    {:error,
+     Error.new(:unsupported_model, "This OpenAI model uses the Images API", %{
+       model: profile.id,
+       api: api,
+       alternative_api: :images
+     })}
+  end
+
+  def validate_chat_api(
+        %Profile{provider: :openai, responses_api: true, chat_completions_api: false} = profile,
+        :chat_completions
+      ) do
+    {:error,
+     Error.new(:unsupported_model, "This OpenAI model uses the Responses API", %{
+       model: profile.id,
+       api: :chat_completions,
+       alternative_api: :responses
+     })}
+  end
+
+  def validate_chat_api(_profile, _api), do: :ok
+
+  @doc false
   def responses_tools_only?(model) when is_binary(model),
-    do: String.downcase(model) in ["gpt-6-astra", "gpt-6.1-sol"]
+    do: String.downcase(model) in ["gpt-6.1-terra" | @gpt6_reasoning_required]
 
   def responses_tools_only?(_model), do: false
 
   @doc false
   def gpt6?(model) when is_binary(model),
-    do: String.downcase(model) in ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"]
+    do: String.downcase(model) in @gpt6_models
 
   def gpt6?(_model), do: false
 
@@ -64,10 +107,12 @@ defmodule BeamWeaver.OpenAI.ModelPolicy do
 
   @doc false
   def validate_gpt6_effort(model, reasoning, requested_effort) do
+    efforts = [:low, :medium, :high, :xhigh, :max]
+
     supported =
       cond do
-        responses_tools_only?(model) -> [:low, :medium, :high, :xhigh, :max]
-        gpt6_sol_or_luna?(model) -> [:none, :low, :medium, :high, :xhigh, :max]
+        gpt6_optional_reasoning?(model) -> [:none | efforts]
+        is_binary(model) and String.downcase(model) in @gpt6_reasoning_required -> efforts
         true -> nil
       end
 
@@ -75,7 +120,7 @@ defmodule BeamWeaver.OpenAI.ModelPolicy do
       :ok
     else
       {:error,
-       BeamWeaver.Core.Error.new(:invalid_model_option, "GPT-6 reasoning effort is not supported by this model", %{
+       Error.new(:invalid_model_option, "GPT-6 reasoning effort is not supported by this model", %{
          model: model,
          reasoning_effort: requested_effort,
          supported: supported
@@ -85,9 +130,9 @@ defmodule BeamWeaver.OpenAI.ModelPolicy do
 
   @doc false
   def validate_gpt6_sampling(model, reasoning, params) do
-    if params != [] and gpt6_sol_or_luna?(model) and not none_reasoning?(reasoning) do
+    if params != [] and gpt6_optional_reasoning?(model) and not none_reasoning?(reasoning) do
       {:error,
-       BeamWeaver.Core.Error.new(:invalid_model_option, "GPT-6 sampling controls require reasoning effort none", %{
+       Error.new(:invalid_model_option, "GPT-6 sampling controls require reasoning effort none", %{
          model: model,
          params: params,
          expected_reasoning_effort: :none
@@ -113,7 +158,7 @@ defmodule BeamWeaver.OpenAI.ModelPolicy do
       :ok
     else
       {:error,
-       BeamWeaver.Core.Error.new(:unsupported_model_param, "#{profile.id} does not take reasoning effort #{effort}", %{
+       Error.new(:unsupported_model_param, "#{profile.id} does not take reasoning effort #{effort}", %{
          provider: provider,
          model: profile.id,
          params: [:reasoning_effort],
@@ -124,6 +169,11 @@ defmodule BeamWeaver.OpenAI.ModelPolicy do
   end
 
   def validate_reasoning_effort(_profile, _reasoning), do: :ok
+
+  defp gpt6_optional_reasoning?(model) when is_binary(model),
+    do: String.downcase(model) in @gpt6_optional_reasoning
+
+  defp gpt6_optional_reasoning?(_model), do: false
 
   defp o1_model?(model) when is_binary(model) do
     model

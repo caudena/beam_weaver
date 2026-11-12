@@ -7,7 +7,26 @@ defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
 
   @context_window 262_144
   @k3_context_window 1_048_576
-  @profile_last_updated "2026-10-19"
+  @profile_last_updated "2026-11-12"
+  @default_model "kimi-k3.1-pro"
+  @k3_models [@default_model, "kimi-k3.1-pro-highspeed", "kimi-k3"]
+  @k2_models ~w(kimi-k2.7-code kimi-k2.7-code-highspeed kimi-k2.6)
+  @k3_responses_params [
+    :instructions,
+    :stream,
+    :max_output_tokens,
+    :reasoning,
+    :reasoning_effort,
+    :text,
+    :response_format,
+    :structured_output,
+    :tools,
+    :tool_choice,
+    :include,
+    :prompt_cache_key,
+    :prompt_cache_options,
+    :safety_identifier
+  ]
   @k3_supported_params [:reasoning_effort, :prompt_cache_options | Params.moonshot()] -- [:thinking]
 
   @moonshot_deprecated_models %{
@@ -81,7 +100,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
     api_family: :chat_completions,
     openai_compatible: true,
     automatic_context_caching: true,
-    pricing_last_checked: "2026-10-19",
+    pricing_last_checked: "2026-11-12",
     partial_mode: true,
     unsupported_api_families: [:responses, :embeddings, :batch, :files],
     sampling_controls: :fixed
@@ -105,38 +124,59 @@ defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
     dynamic_tool_loading: true,
     tool_choice_when_thinking: ["auto", "none", "required"],
     web_search_supported: false,
-    web_search_status: :updating
+    web_search_status: :updating,
+    responses_web_search: true
   }
 
+  @k3_profile Map.merge(@base_profile, %{
+                max_input_tokens: @k3_context_window,
+                max_output_tokens: @k3_context_window,
+                responses_api: true,
+                supported_params: @k3_supported_params,
+                supported_params_by_api: %{
+                  chat_completions: @k3_supported_params,
+                  responses: @k3_responses_params
+                },
+                reasoning_effort_levels: [:low, :high, :max],
+                reasoning_effort_default: :max
+              })
+
+  @k3_profiles (for {id, name, input, cached, output, extras} <- [
+                      {@default_model, "Kimi K3.1 Pro", 2.00, 0.20, 10.00,
+                       %{cache_write_1h_price_per_mtok: 4.00, batch_api: true}},
+                      {"kimi-k3.1-pro-highspeed", "Kimi K3.1 Pro Highspeed", 4.00, 0.20, 20.00,
+                       %{cache_write_1h_price_per_mtok: 8.00, highspeed: true, same_model_as: @default_model}},
+                      {"kimi-k3", "Kimi K3", 3.00, 0.30, 15.00, %{cache_write_1h_price_per_mtok: 6.00, batch_api: true}}
+                    ],
+                    into: %{} do
+                  extra =
+                    @base_extra
+                    |> Map.merge(@k3_extra)
+                    |> Map.merge(%{
+                      api_families: [:chat_completions, :responses],
+                      unsupported_api_families: [:embeddings, :batch, :files],
+                      model_category: :flagship,
+                      native_visual_understanding: true,
+                      default_max_completion_tokens: 131_072,
+                      input_cache_hit_price_per_mtok: cached,
+                      input_cache_miss_price_per_mtok: input,
+                      cache_write_5m_price_per_mtok: input,
+                      output_price_per_mtok: output
+                    })
+                    |> Map.merge(extras)
+
+                  {{:moonshot, id},
+                   Profile.new(
+                     Map.merge(@k3_profile, %{
+                       id: id,
+                       name: name,
+                       release_date: if(id != "kimi-k3", do: "2026-10-23"),
+                       extra: extra
+                     })
+                   )}
+                end)
+
   @profiles [
-              {"kimi-k3",
-               %{
-                 id: "kimi-k3",
-                 name: "Kimi K3",
-                 max_input_tokens: @k3_context_window,
-                 max_output_tokens: @k3_context_window,
-                 supported_params: @k3_supported_params,
-                 supported_params_by_api: %{
-                   chat_completions: @k3_supported_params
-                 },
-                 reasoning_effort_levels: [:low, :high, :max],
-                 reasoning_effort_default: :max,
-                 extra:
-                   Map.merge(@base_extra, @k3_extra)
-                   |> Map.merge(%{
-                     model_category: :flagship,
-                     native_visual_understanding: true,
-                     default_max_completion_tokens: 131_072,
-                     pricing_source_url: "https://platform.kimi.ai/docs/pricing/chat-k3",
-                     input_cache_hit_price_per_mtok: 0.30,
-                     input_cache_miss_price_per_mtok: 3.00,
-                     input_price_per_mtok: 3.00,
-                     cached_input_price_per_mtok: 0.30,
-                     cache_write_5m_price_per_mtok: 3.00,
-                     cache_write_1h_price_per_mtok: 6.00,
-                     output_price_per_mtok: 15.00
-                   })
-               }},
               {"kimi-k2.7-code",
                %{
                  id: "kimi-k2.7-code",
@@ -191,6 +231,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
             |> Map.new(fn {id, profile} ->
               {{:moonshot, id}, Profile.new(Map.merge(@base_profile, profile))}
             end)
+            |> Map.merge(@k3_profiles)
 
   @profiles Map.new(@profiles, fn {key, profile} ->
               extra =
@@ -205,8 +246,26 @@ defmodule BeamWeaver.Models.ProfileRegistry.Moonshot do
                 })
                 |> Map.put(:tool_pricing_source_url, "https://platform.kimi.ai/docs/pricing/websearch")
 
-              {key, %{profile | extra: extra}}
+              profile =
+                if profile.id in @k2_models do
+                  extra =
+                    Map.merge(extra, %{
+                      existing_accounts_only_since: "2026-10-31",
+                      retirement_window: "late December 2026",
+                      recommended_replacement: @default_model
+                    })
+
+                  %{profile | status: :deprecated, extra: extra}
+                else
+                  %{profile | extra: extra}
+                end
+
+              {key, profile}
             end)
+
+  def default_model, do: @default_model
+  def k3_models, do: @k3_models
+  def k3_model?(model), do: model in @k3_models
   def profiles, do: Map.values(@profiles)
 
   def resolve(model) do

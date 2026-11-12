@@ -240,6 +240,8 @@ defmodule BeamWeaver.Provider.Response do
         hosted_usage_counts(raw_message_usage, response_metadata, :server_tool_use, [
           :web_search_requests,
           :web_fetch_requests,
+          :tool_search,
+          :tool_fetch,
           :code_execution_requests
         ]),
       server_side_tool_usage_details:
@@ -682,7 +684,7 @@ defmodule BeamWeaver.Provider.Response do
                 Map.new(
                   ~w(input_tokens initial_input_tokens context_tokens prompt_tokens output_tokens completion_tokens total_tokens total input_token_details
                      output_token_details cache_read cache_read_tokens cache_read_input_tokens cache_creation
-                     cache_creation_tokens cache_creation_input_tokens cache_write cache_write_tokens
+                     cache_creation_tokens cache_creation_input_tokens cache_write cache_write_tokens cache_write_30m cache_write_12h
                      ephemeral_5m_input_tokens ephemeral_1h_input_tokens reasoning reasoning_tokens thinking_tokens
                      service_tier inference_geo)a,
                   &{Atom.to_string(&1), &1}

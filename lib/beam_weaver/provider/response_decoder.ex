@@ -61,7 +61,7 @@ defmodule BeamWeaver.Provider.ResponseDecoder do
   end
 
   def http_error(%Response{} = response, opts) do
-    provider_error = response.body |> decode_error_body() |> provider_error()
+    provider_error = response.body |> decode_error_body() |> error_payload(opts)
 
     message =
       error_message(provider_error) ||
@@ -233,6 +233,13 @@ defmodule BeamWeaver.Provider.ResponseDecoder do
   end
 
   defp decode_error_body(body), do: body
+
+  defp error_payload(body, opts) do
+    case Keyword.get(opts, :error_payload) do
+      parser when is_function(parser, 1) -> parser.(body) || provider_error(body)
+      _ -> provider_error(body)
+    end
+  end
 
   # Most APIs nest the error in an `error` object; xAI's is the body itself,
   # with the message in `error`.

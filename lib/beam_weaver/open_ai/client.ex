@@ -249,6 +249,35 @@ defmodule BeamWeaver.OpenAI.Client do
     do: HTTPClient.stream_typed_sse(http, body, opts, parser, &ResponseDecoder.stream_error(&1, config))
 
   @doc false
+  def stream_responses(http, body, opts, config, decode) do
+    finish = &ResponseDecoder.finish_responses_events(&1, &2, opts, config, decode)
+
+    HTTPClient.stream_typed_sse(
+      http,
+      body,
+      Keyword.put(opts, :parser_finalizer, finish),
+      &parse_responses_events(&1, &2, config.provider),
+      &ResponseDecoder.stream_error(&1, config)
+    )
+  end
+
+  # A Responses terminal has the full reply. Hold only those events until
+  # the transport supplies headers, while emitting deltas as they arrive.
+  defp parse_responses_events(events, terminal, provider) do
+    {completed, deltas} =
+      Enum.split_with(events, fn
+        %{"data" => %{"type" => type, "response" => %{}}} ->
+          type in ["response.completed", "response.incomplete"]
+
+        _event ->
+          false
+      end)
+
+    {BeamWeaver.OpenAI.Streaming.Messages.typed_events(deltas, provider: provider),
+     Enum.reverse(completed, terminal || [])}
+  end
+
+  @doc false
   def collect_chat_completion(http, body, opts, config \\ ResponseDecoder.config()) do
     HTTPClient.collect_sse(http, body, opts, &ResponseDecoder.chat_completions_stream_response(&1, opts, config))
   end

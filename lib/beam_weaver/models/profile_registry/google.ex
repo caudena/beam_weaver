@@ -112,6 +112,12 @@ defmodule BeamWeaver.Models.ProfileRegistry.Google do
     }
   }
 
+  @rerouted_google_models %{
+    "gemini-2.5-pro" => "gemini-3.8-flash",
+    "gemini-2.5-flash" => "gemini-3.5-flash-lite"
+  }
+  @reroute_date ~D[2026-12-01]
+
   @unavailable_google_models %{
     "gemini-3.5-flash-cyber" => %{
       access: :codemender_limited_access,
@@ -205,70 +211,121 @@ defmodule BeamWeaver.Models.ProfileRegistry.Google do
                           :google_search,
                           :url_context
                         ],
-                        computer_use: :preview
+                        computer_use: :general_availability
                       })
 
+  @gemini_4_profile Map.merge(@gemini_profile, %{
+                      status: :active,
+                      context_limit_kind: :shared_input_output,
+                      max_context_tokens: 1_048_576,
+                      max_output_tokens: 1_048_576,
+                      temperature: false,
+                      reasoning_effort_levels: [:low, :medium, :high],
+                      reasoning_effort_default: :medium,
+                      supported_params: Params.google_gemini_4()
+                    })
+
+  @gemini_4_extra Map.merge(@gemini_extra, %{
+                    thinking_levels: [:low, :medium, :high],
+                    default_thinking_level: :medium,
+                    implicit_caching: true,
+                    explicit_caching: false,
+                    implicit_cache_min_tokens: 4_096,
+                    non_streaming_output_limit: 32_768,
+                    streaming_output_limit: 65_536,
+                    long_decode_max_output_tokens: 1_048_576,
+                    long_decode: :automatic_continuation,
+                    default_max_output_tokens: 65_536,
+                    recommended_timeout_ms: 1_200_000,
+                    input_price_per_mtok: 2.00,
+                    cached_input_price_per_mtok: 0.10,
+                    output_price_per_mtok: 10.00,
+                    batch_input_price_per_mtok: 1.00,
+                    batch_cached_input_price_per_mtok: 0.05,
+                    batch_output_price_per_mtok: 5.00,
+                    flex_input_price_per_mtok: 1.00,
+                    flex_cached_input_price_per_mtok: 0.05,
+                    flex_output_price_per_mtok: 5.00,
+                    priority_input_price_per_mtok: 3.60,
+                    priority_cached_input_price_per_mtok: 0.18,
+                    priority_output_price_per_mtok: 18.00,
+                    introductory_pricing_through: "2026-11-30",
+                    regular_input_price_per_mtok: 4.00,
+                    regular_cached_input_price_per_mtok: 0.20,
+                    regular_output_price_per_mtok: 20.00,
+                    pricing_history: [
+                      %{
+                        effective_at: nil,
+                        input_price_per_mtok: 2.00,
+                        cached_input_price_per_mtok: 0.10,
+                        output_price_per_mtok: 10.00
+                      },
+                      %{
+                        effective_at: "2026-12-01T00:00:00Z",
+                        input_price_per_mtok: 4.00,
+                        cached_input_price_per_mtok: 0.20,
+                        output_price_per_mtok: 20.00
+                      }
+                    ],
+                    built_in_tools: [
+                      :code_execution,
+                      :computer_use,
+                      :file_search,
+                      :google_maps,
+                      :google_search,
+                      :url_context
+                    ],
+                    computer_use: :general_availability
+                  })
+
   @profiles %{
+    {:google, "gemini-decision-1"} =>
+      Profile.new(%{
+        provider: :google,
+        id: "gemini-decision-1",
+        name: "Gemini Decision 1",
+        status: :active,
+        release_date: "2026-11-11",
+        max_input_tokens: 262_144,
+        max_output_tokens: 0,
+        image_inputs: true,
+        image_url_inputs: true,
+        audio_inputs: true,
+        video_inputs: true,
+        pdf_inputs: true,
+        text_outputs: false,
+        decision_outputs: true,
+        usage_metadata: true,
+        extra: %{
+          api_family: :decisions,
+          input_price_per_mtok: 0.10,
+          output_price_per_mtok: 0.0,
+          cost_currency: "USD",
+          pricing_source_url: "https://aistudio.google.com/docs/pricing#gemini-decision"
+        }
+      }),
     {:google, "gemini-4-argon"} =>
       Profile.new(
-        Map.merge(@gemini_profile, %{
+        Map.merge(@gemini_4_profile, %{
           id: "gemini-4-argon",
           name: "Gemini 4 Argon",
-          status: :active,
           last_updated: "2026-10-19",
-          context_limit_kind: :shared_input_output,
-          max_context_tokens: 1_048_576,
-          max_output_tokens: 1_048_576,
-          temperature: false,
-          reasoning_effort_levels: [:low, :medium, :high],
-          reasoning_effort_default: :medium,
-          supported_params: Params.google_argon(),
           extra:
-            Map.merge(@gemini_extra, %{
-              thinking_levels: [:low, :medium, :high],
-              default_thinking_level: :medium,
-              implicit_caching: true,
-              explicit_caching: false,
-              implicit_cache_min_tokens: 4_096,
-              non_streaming_output_limit: 32_768,
-              streaming_output_limit: 65_536,
-              long_decode_max_output_tokens: 1_048_576,
-              long_decode: :automatic_continuation,
-              default_max_output_tokens: 65_536,
-              recommended_timeout_ms: 1_200_000,
-              input_price_per_mtok: 2.00,
-              cached_input_price_per_mtok: 0.10,
-              output_price_per_mtok: 10.00,
-              batch_input_price_per_mtok: 1.00,
-              batch_cached_input_price_per_mtok: 0.05,
-              batch_output_price_per_mtok: 5.00,
-              flex_input_price_per_mtok: 1.00,
-              flex_cached_input_price_per_mtok: 0.05,
-              flex_output_price_per_mtok: 5.00,
-              priority_input_price_per_mtok: 3.60,
-              priority_cached_input_price_per_mtok: 0.18,
-              priority_output_price_per_mtok: 18.00,
-              introductory_pricing_through: "2026-11-30",
-              regular_input_price_per_mtok: 4.00,
-              regular_cached_input_price_per_mtok: 0.20,
-              regular_output_price_per_mtok: 20.00,
-              pricing_history: [
-                %{
-                  effective_at: nil,
-                  input_price_per_mtok: 2.00,
-                  cached_input_price_per_mtok: 0.10,
-                  output_price_per_mtok: 10.00
-                },
-                %{
-                  effective_at: "2026-12-01T00:00:00Z",
-                  input_price_per_mtok: 4.00,
-                  cached_input_price_per_mtok: 0.20,
-                  output_price_per_mtok: 20.00
-                }
-              ],
-              built_in_tools: [:code_execution, :computer_use, :file_search, :google_maps, :google_search, :url_context],
-              computer_use: :preview,
-              model_source_url: "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon"
+            Map.put(@gemini_4_extra, :model_source_url, "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon")
+        })
+      ),
+    {:google, "gemini-4-carbon"} =>
+      Profile.new(
+        Map.merge(@gemini_4_profile, %{
+          id: "gemini-4-carbon",
+          name: "Gemini 4 Carbon",
+          release_date: "2026-11-10",
+          last_updated: "2026-11-10",
+          extra:
+            Map.merge(@gemini_4_extra, %{
+              model_source_url: "https://aistudio.google.com/docs/models/gemini-4-carbon",
+              pricing_source_url: "https://aistudio.google.com/docs/pricing#gemini-4-carbon",
+              pricing_last_checked: "2026-11-12"
             })
         })
       ),
@@ -323,7 +380,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Google do
               default_thinking_level: :minimal,
               prefilled_model_turns: false,
               built_in_tools: [:code_execution, :computer_use, :file_search, :google_maps, :google_search, :url_context],
-              computer_use: :preview
+              computer_use: :general_availability
             })
         })
       ),
@@ -418,9 +475,12 @@ defmodule BeamWeaver.Models.ProfileRegistry.Google do
                 Map.put(profiles, {:google, alias_id}, %{profile | last_updated: "2026-10-19"})
               end
             )
-  def profiles, do: Map.values(@profiles)
+  def profiles do
+    aliases = Enum.map(@rerouted_google_models, fn {model, _} -> elem(resolve(model), 1) end)
+    Map.values(@profiles) ++ aliases
+  end
 
-  def resolve(model) do
+  def resolve(model, today \\ nil) do
     cond do
       metadata = @deprecated_google_models[model] ->
         ProfileRegistry.deprecated_error(
@@ -438,6 +498,9 @@ defmodule BeamWeaver.Models.ProfileRegistry.Google do
            Map.merge(metadata, %{provider: :google, model: model})
          )}
 
+      replacement = @rerouted_google_models[model] ->
+        rerouted_profile(model, replacement, today || Date.utc_today())
+
       metadata = @scheduled_google_models[model] ->
         profile = BeamWeaver.Models.ProfileRegistry.Fallbacks.profile(:google, model)
         {:ok, %{profile | status: :deprecated, extra: Map.merge(profile.extra, metadata)}}
@@ -445,5 +508,31 @@ defmodule BeamWeaver.Models.ProfileRegistry.Google do
       true ->
         ProfileRegistry.fetch_or_fallback(@profiles, :google, model)
     end
+  end
+
+  defp rerouted_profile(model, replacement, today) do
+    profile =
+      case Date.compare(today, @reroute_date) do
+        :lt ->
+          BeamWeaver.Models.ProfileRegistry.Fallbacks.profile(:google, model)
+
+        _ ->
+          {:ok, profile} = ProfileRegistry.fetch_alias(@profiles, :google, model, replacement)
+          profile
+      end
+
+    {:ok,
+     %{
+       profile
+       | status: :deprecated,
+         last_updated: "2026-11-02",
+         extra:
+           Map.merge(profile.extra, %{
+             deprecated_at: "2026-11-02",
+             reroutes_on: Date.to_iso8601(@reroute_date),
+             recommended_replacement: replacement,
+             lifecycle_source_url: "https://aistudio.google.com/docs/changelog#11-02-2026"
+           })
+     }}
   end
 end

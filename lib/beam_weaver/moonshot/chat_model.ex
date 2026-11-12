@@ -28,7 +28,9 @@ defmodule BeamWeaver.Moonshot.ChatModel do
   alias BeamWeaver.Provider.Options, as: ProviderOptions
   alias BeamWeaver.Provider.StructuredOutput
 
-  @default_model "kimi-k2.6"
+  alias BeamWeaver.Models.ProfileRegistry.Moonshot, as: Profiles
+
+  @default_model Profiles.default_model()
   @default_endpoint "https://api.moonshot.ai/v1/chat/completions"
   @default_count_tokens_endpoint "https://api.moonshot.ai/v1/tokenizers/estimate-token-count"
 
@@ -187,19 +189,17 @@ defmodule BeamWeaver.Moonshot.ChatModel do
 
   defp validate_web_search_thinking(_body), do: :ok
 
-  defp validate_dynamic_tools(%{"model" => "kimi-k3"}), do: :ok
-
   defp validate_dynamic_tools(%{"messages" => messages, "model" => model}) do
-    if Enum.any?(messages, &Map.has_key?(&1, "tools")) do
+    if not Profiles.k3_model?(model) and Enum.any?(messages, &Map.has_key?(&1, "tools")) do
       {:error,
        Error.new(
          :unsupported_feature,
-         "Moonshot dynamic tool messages require Kimi K3",
+         "Moonshot dynamic tool messages require a Kimi K3 series model",
          %{
            provider: :moonshot,
            model: model,
            feature: :dynamic_tool_loading,
-           supported: ["kimi-k3"]
+           supported: Profiles.k3_models()
          }
        )}
     else

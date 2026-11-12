@@ -121,6 +121,21 @@ defmodule BeamWeaver.Core.DecisionModel do
     end
   end
 
+  @doc false
+  def cached_response(%{usage: usage, metadata: metadata} = response) do
+    %{
+      response
+      | usage: %{input_tokens: 0, output_tokens: 0, total_tokens: 0},
+        latency_ms: 0,
+        metadata:
+          Map.merge(metadata, %{
+            cache_hit: true,
+            original_usage: usage,
+            cost: %{input_cost: 0.0, output_cost: 0.0, total_cost: 0.0}
+          })
+    }
+  end
+
   # Options any call to a decision model may carry: the request's own, those
   # of its trace run, `batch/3`'s, and those of the model wrappers around it.
   @call_options [

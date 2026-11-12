@@ -47,39 +47,49 @@ defmodule BeamWeaver.Google.LongDecodeTest do
     end
   end
 
-  test "invoke combines thinking-only and text hops, original requests, usage and signed parts" do
-    thinking = %{"text" => "Reasoning", "thought" => true, "thoughtSignature" => "signed-1"}
-    tool = %{"functionCall" => %{"name" => "lookup", "args" => %{}, "id" => "call-1"}, "thoughtSignature" => "signed-2"}
-    first = reply([thinking], "CONTINUATION", "hop-1", usage(100, 0, 10, 50))
-    last = reply([%{"text" => "Answer"}, tool], "STOP", nil, usage(110, 5, 0, 90))
-    {model, script} = model([{[first], :ok}, {[last], :ok}], max_output_tokens: 262_144)
-    messages = [Message.system("policy"), Message.user("question")]
+  for model_id <- ["gemini-4-argon", "gemini-4-carbon"] do
+    test "#{model_id} combines thinking-only and text hops, original requests, usage and signed parts" do
+      thinking = %{"text" => "Reasoning", "thought" => true, "thoughtSignature" => "signed-1"}
 
-    assert {:ok, result} = ChatModel.invoke(model, messages)
-    assert Message.text(result) == "Answer"
-    assert result.status == "STOP"
-    assert [%{name: "lookup", thought_signature: "signed-2"}] = result.tool_calls
-    assert thinking in result.response_metadata.provider_content
-    assert result.usage_metadata.input_tokens == 210
-    assert result.usage_metadata.initial_input_tokens == 100
-    assert result.usage_metadata.output_tokens == 15
-    assert result.usage_metadata.total_tokens == 225
-    assert result.usage_metadata.context_tokens == 115
-    assert result.usage_metadata.input_token_details.cache_read == 140
-    assert result.response_metadata.usage.initial_input_tokens == 100
-    assert result.response_metadata.usage.context_tokens == 115
+      tool = %{
+        "functionCall" => %{"name" => "lookup", "args" => %{}, "id" => "call-1"},
+        "thoughtSignature" => "signed-2"
+      }
 
-    assert result.usage_metadata.input_token_details.prompt_tokens_details == [
-             %{"modality" => "TEXT", "tokenCount" => 210}
-           ]
+      first = reply([thinking], "CONTINUATION", "hop-1", usage(100, 0, 10, 50))
+      last = reply([%{"text" => "Answer"}, tool], "STOP", nil, usage(110, 5, 0, 90))
 
-    assert_received {:request, request1}
-    assert_received {:request, request2}
-    assert request1.url =~ ":streamGenerateContent"
-    assert request2.json == Map.put(request1.json, "continuationToken", "hop-1")
-    assert request1.json["generationConfig"]["maxOutputTokens"] == 262_144
-    assert request1.json["systemInstruction"] == %{"parts" => [%{"text" => "policy"}]}
-    assert Agent.get(script, & &1) == []
+      {model, script} =
+        model([{[first], :ok}, {[last], :ok}], model: unquote(model_id), max_output_tokens: 262_144)
+
+      messages = [Message.system("policy"), Message.user("question")]
+
+      assert {:ok, result} = ChatModel.invoke(model, messages)
+      assert Message.text(result) == "Answer"
+      assert result.status == "STOP"
+      assert [%{name: "lookup", thought_signature: "signed-2"}] = result.tool_calls
+      assert thinking in result.response_metadata.provider_content
+      assert result.usage_metadata.input_tokens == 210
+      assert result.usage_metadata.initial_input_tokens == 100
+      assert result.usage_metadata.output_tokens == 15
+      assert result.usage_metadata.total_tokens == 225
+      assert result.usage_metadata.context_tokens == 115
+      assert result.usage_metadata.input_token_details.cache_read == 140
+      assert result.response_metadata.usage.initial_input_tokens == 100
+      assert result.response_metadata.usage.context_tokens == 115
+
+      assert result.usage_metadata.input_token_details.prompt_tokens_details == [
+               %{"modality" => "TEXT", "tokenCount" => 210}
+             ]
+
+      assert_received {:request, request1}
+      assert_received {:request, request2}
+      assert request1.url =~ "/models/#{unquote(model_id)}:streamGenerateContent"
+      assert request2.json == Map.put(request1.json, "continuationToken", "hop-1")
+      assert request1.json["generationConfig"]["maxOutputTokens"] == 262_144
+      assert request1.json["systemInstruction"] == %{"parts" => [%{"text" => "policy"}]}
+      assert Agent.get(script, & &1) == []
+    end
   end
 
   test "streaming emits one terminal message and Done across hops, preserving split JSON" do
@@ -371,9 +381,11 @@ defmodule BeamWeaver.Google.LongDecodeTest do
     {:ok, agent} = Agent.start_link(fn -> script end)
     on_exit(fn -> if Process.alive?(agent), do: Agent.stop(agent) end)
 
+    {model_id, opts} = Keyword.pop(opts, :model, "gemini-4-argon")
+
     model =
       Models.init_chat_model!(
-        "google:gemini-4-argon",
+        "google:#{model_id}",
         [api_key: "test", transport: Transport, transport_opts: [parent: self(), script: agent]] ++ opts
       )
 

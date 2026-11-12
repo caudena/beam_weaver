@@ -9,6 +9,8 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Validation do
   def validate(model, opts) do
     model_name = Keyword.get(opts, :model, Map.get(model, :model))
     effort = Keyword.get(opts, :reasoning_effort, Map.get(model, :reasoning_effort))
+    request_profile = ModelPolicy.request_profile(model, model_name)
+    profile = request_profile || model.profile
 
     params =
       model
@@ -47,11 +49,12 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Validation do
 
     sampling = Enum.reject([:temperature, :top_p, :top_logprobs, :logprobs], &is_nil(Options.option(model, opts, &1)))
 
-    with :ok <- validate_function_tools(model, opts, model_name, effort),
+    with :ok <- ModelPolicy.validate_chat_api(request_profile, :chat_completions),
+         :ok <- validate_function_tools(model, opts, model_name, effort),
          policy = Options.option(model, opts, :param_policy),
-         :ok <- ParamPolicy.validate(Map.get(model, :profile), params, policy, api: :chat_completions),
+         :ok <- ParamPolicy.validate(profile, params, policy, api: :chat_completions),
          :ok <- ModelPolicy.validate_gpt6_effort(model_name, effort, effort),
-         :ok <- ModelPolicy.validate_reasoning_effort(Map.get(model, :profile), effort) do
+         :ok <- ModelPolicy.validate_reasoning_effort(profile, effort) do
       ModelPolicy.validate_gpt6_sampling(model_name, effort, sampling)
     end
   end

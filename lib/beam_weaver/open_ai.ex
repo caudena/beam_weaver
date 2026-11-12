@@ -79,6 +79,10 @@ defmodule BeamWeaver.OpenAI do
   @spec generate_image(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def generate_image(prompt, opts \\ []), do: Images.generate(prompt, provider_opts(opts, "images/generations"))
 
+  @doc "Edits images referenced by URL or uploaded file ID through the Images API."
+  @spec edit_image(String.t(), [map()], keyword()) :: {:ok, map()} | {:error, term()}
+  def edit_image(prompt, images, opts \\ []), do: Images.edit(prompt, images, provider_opts(opts, "images/edits"))
+
   @doc """
   Returns the OpenAI tool declaration helpers.
   """

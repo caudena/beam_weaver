@@ -221,6 +221,38 @@ defmodule BeamWeaver.Models.UsageCostTest do
     assert UsageCost.calculate(profile, usage).total_cost == 3.0
   end
 
+  test "OpenAI usage prices 30 minute and 12 hour cache writes separately" do
+    assert {:ok, profile} = BeamWeaver.Models.ProfileRegistry.fetch(:openai, "gpt-6.1-terra")
+
+    raw = %{
+      "input_tokens" => 100_000,
+      "output_tokens" => 0,
+      "input_tokens_details" => %{
+        "cached_tokens" => 10_000,
+        "cache_write_tokens" => 70_000,
+        "cache_write_tokens_details" => %{"ttl_30m_tokens" => 30_000, "ttl_12h_tokens" => 40_000}
+      }
+    }
+
+    normalized = BeamWeaver.OpenAI.MessageParts.usage_metadata(raw, :responses)
+    assert normalized.input_token_details.cache_write_12h == 40_000
+
+    for usage <- [raw, normalized] do
+      cost = UsageCost.calculate(profile, usage)
+      assert_in_delta cost.input_cost_details.cache_write_30m_tokens, 0.0375, 1.0e-9
+      assert_in_delta cost.input_cost_details.cache_write_12h_tokens, 0.10, 1.0e-9
+      assert_in_delta cost.total_cost, 0.158, 1.0e-9
+    end
+  end
+
+  test "Carbon uses introductory and regular rates on either side of December 1" do
+    assert {:ok, profile} = BeamWeaver.Models.ProfileRegistry.fetch(:google, "gemini-4-carbon")
+
+    usage = %{input_tokens: 1_000_000, output_tokens: 100_000, input_token_details: %{cache_read: 200_000}}
+    assert_in_delta UsageCost.calculate(profile, usage, at: ~U[2026-11-30 23:59:59Z]).total_cost, 2.62, 1.0e-9
+    assert_in_delta UsageCost.calculate(profile, usage, at: ~U[2026-12-01 00:00:00Z]).total_cost, 5.24, 1.0e-9
+  end
+
   test "selects UTC peak rates with inclusive starts and exclusive ends" do
     profile = %{
       input_price_per_mtok: 1.0,

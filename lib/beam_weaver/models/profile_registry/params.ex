@@ -108,6 +108,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
     :structured_output,
     :temperature,
     :thinking,
+    :thread,
     :tool_choice,
     :tools,
     :top_k,
@@ -326,5 +327,5 @@ defmodule BeamWeaver.Models.ProfileRegistry.Params do
     @google_params -- [:candidate_count, :temperature, :thinking_budget, :top_k, :top_p]
   end
 
-  def google_argon, do: [:continuation_token | google_latest_flash()] -- [:cached_content]
+  def google_gemini_4, do: [:continuation_token | google_latest_flash()] -- [:cached_content]
 end
