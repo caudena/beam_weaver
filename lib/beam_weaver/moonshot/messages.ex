@@ -101,6 +101,24 @@ defmodule BeamWeaver.Moonshot.Messages do
   def usage_metadata(_response), do: nil
 
   @doc false
+  def responses_to_message(response) do
+    with {:ok, message} <- BeamWeaver.OpenAI.Messages.response_to_message(response),
+         do: {:ok, put_responses_metadata(message)}
+  end
+
+  @doc false
+  def put_responses_metadata(%Message{} = message) do
+    tags = %{provider: :moonshot, model_provider: "moonshot", api: :responses}
+
+    %{
+      message
+      | metadata: Map.merge(message.metadata, tags),
+        response_metadata: Map.merge(message.response_metadata, tags)
+    }
+    |> enrich_cache_write_ttl()
+  end
+
+  @doc false
   def enrich_cache_write_ttl(%Message{usage_metadata: usage, response_metadata: metadata} = message)
       when is_map(usage) and is_map(metadata) do
     headers = metadata[:headers] || %{}

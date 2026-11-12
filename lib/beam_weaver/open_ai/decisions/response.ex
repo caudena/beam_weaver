@@ -40,16 +40,5 @@ defmodule BeamWeaver.OpenAI.Decisions.Response do
   @type t :: %__MODULE__{}
 
   @doc false
-  def cached(%__MODULE__{} = response) do
-    %{
-      response
-      | usage: %{input_tokens: 0, output_tokens: 0, total_tokens: 0},
-        latency_ms: 0,
-        metadata:
-          response.metadata
-          |> Map.put(:cache_hit, true)
-          |> Map.put(:original_usage, response.usage)
-          |> Map.put(:cost, %{input_cost: 0.0, output_cost: 0.0, total_cost: 0.0})
-    }
-  end
+  def cached(%__MODULE__{} = response), do: BeamWeaver.Core.DecisionModel.cached_response(response)
 end

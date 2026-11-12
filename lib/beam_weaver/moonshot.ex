@@ -1,6 +1,6 @@
 defmodule BeamWeaver.Moonshot do
   @moduledoc ~S"""
-  Kimi Chat Completions with model-specific reasoning and tool contracts.
+  Kimi Chat Completions and Responses with model-specific reasoning and tool contracts.
 
   Constructors return configured values; invocation makes the provider request.
   Load credentials into `config :beam_weaver, :moonshot` in your application's
@@ -28,6 +28,15 @@ defmodule BeamWeaver.Moonshot do
     |> Compat.put_endpoint(:endpoint, :moonshot, @default_base_url, "chat/completions")
     |> Compat.put_endpoint(:count_tokens_endpoint, :moonshot, @default_base_url, "tokenizers/estimate-token-count")
     |> ChatModel.new()
+  end
+
+  @doc "Builds a Moonshot/Kimi Responses chat model."
+  @spec responses_model(keyword()) :: BeamWeaver.Moonshot.ResponsesModel.t()
+  def responses_model(opts \\ []) do
+    opts
+    |> Keyword.put_new_lazy(:api_key, fn -> Config.get([:moonshot, :api_key]) end)
+    |> Compat.put_endpoint(:endpoint, :moonshot, @default_base_url, "responses")
+    |> BeamWeaver.Moonshot.ResponsesModel.new()
   end
 
   @doc "Returns Moonshot/Kimi tool declaration helpers."

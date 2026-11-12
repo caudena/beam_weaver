@@ -14,6 +14,7 @@ defmodule BeamWeaver.OpenAI.Decisions.Question do
       `%{label: label, description: description}`. Answered with a
       `BeamWeaver.OpenAI.Decisions.ScoreAnswer`.
 
+  Instructions may be text or a list of text and image content blocks.
   Put the whole question in `instructions`: the question's key in
   `questions` only names its answer. Questions are checked when the model is
   asked them.
@@ -23,7 +24,7 @@ defmodule BeamWeaver.OpenAI.Decisions.Question do
 
   @type t :: %__MODULE__{
           type: :predicate | :choice | :score,
-          instructions: String.t(),
+          instructions: String.t() | [String.t() | map()],
           choices: map() | [{String.t() | boolean(), String.t() | nil}] | nil,
           levels: [String.t() | map()] | nil
         }

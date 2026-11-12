@@ -11,6 +11,8 @@ defmodule BeamWeaver.DeepSeek.Messages do
   alias BeamWeaver.OpenAI.MessageParts
   alias BeamWeaver.OpenAI.Messages, as: OpenAIMessages
 
+  @hosted_tools [tool_search: :search, tool_fetch: :fetch]
+
   @chat_allowed_content_types [:text, :plain_text, :reasoning]
   @responses_allowed_content_types [
     :text,
@@ -337,10 +339,14 @@ defmodule BeamWeaver.DeepSeek.Messages do
   end
 
   defp put_usage_cost(%Message{usage_metadata: usage} = message, response) when is_map(usage) do
+    tool_use = hosted_tool_use(response["usage"])
+    usage = if tool_use == %{}, do: usage, else: Map.put(usage, :server_tool_use, tool_use)
+
     with model when is_binary(model) <- response["model"],
          {:ok, profile} <- ProfileRegistry.fetch(:deepseek, model),
-         cost when is_map(cost) <-
-           UsageCost.calculate(profile, response["usage"] || usage, at: response_created_at(response)) do
+         at = response_created_at(response),
+         cost when is_map(cost) <- UsageCost.calculate(profile, response["usage"] || usage, at: at) do
+      cost = add_hosted_tool_cost(cost, tool_use, profile.extra, at)
       cost_metadata = %{estimated_cost: cost.total_cost, cost_currency: "USD"}
 
       %{
@@ -350,17 +356,57 @@ defmodule BeamWeaver.DeepSeek.Messages do
           response_metadata: Map.merge(message.response_metadata, cost_metadata)
       }
     else
-      _missing -> message
+      _missing -> %{message | usage_metadata: usage}
     end
   end
 
   defp put_usage_cost(message, _response), do: message
 
+  defp hosted_tool_use(%{"server_tool_use" => %{} = usage}) do
+    for {key, _tool} <- @hosted_tools,
+        count = MapAccess.get(usage, key),
+        is_integer(count) and count >= 0,
+        into: %{},
+        do: {key, count}
+  end
+
+  defp hosted_tool_use(_usage), do: %{}
+
+  defp add_hosted_tool_cost(cost, tool_use, _extra, _at) when map_size(tool_use) == 0, do: cost
+
+  defp add_hosted_tool_cost(cost, tool_use, %{integration_server_tools_free_until: cutoff, tool_pricing: pricing}, at) do
+    with {:ok, starts_at, _offset} <- DateTime.from_iso8601(cutoff),
+         comparison when comparison in [:eq, :gt] <- DateTime.compare(at || DateTime.utc_now(), starts_at) do
+      details =
+        for {key, tool} <- @hosted_tools,
+            count = tool_use[key],
+            is_integer(count),
+            rate = get_in(pricing, [tool, :price_per_1000_requests]),
+            is_number(rate),
+            into: %{},
+            do: {key, count * rate / 1_000}
+
+      total = Enum.sum(Map.values(details))
+      Map.merge(cost, %{tool_cost: total, tool_cost_details: details, total_cost: cost.total_cost + total})
+    else
+      _ -> cost
+    end
+  end
+
+  defp add_hosted_tool_cost(cost, _tool_use, _extra, _at), do: cost
+
   defp response_created_at(response) do
     case response["created_at"] || response["created"] do
-      unix when is_integer(unix) -> DateTime.from_unix!(unix)
-      unix when is_float(unix) -> unix |> trunc() |> DateTime.from_unix!()
+      unix when is_integer(unix) -> timestamp(unix)
+      unix when is_float(unix) -> timestamp(trunc(unix))
       _other -> nil
+    end
+  end
+
+  defp timestamp(unix) do
+    case DateTime.from_unix(unix) do
+      {:ok, at} -> at
+      {:error, _} -> nil
     end
   end
 

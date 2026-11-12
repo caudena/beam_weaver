@@ -370,6 +370,47 @@ defmodule BeamWeaver.DeepSeek.AdapterContractsTest do
     Enum.map(events, &"event: #{&1["type"]}\ndata: #{BeamWeaver.JSON.encode!(&1)}\n\n")
   end
 
+  test "hosted tool usage survives normalization and is billed from the end of the promotion" do
+    raw = %{
+      "model" => "deepseek-v4-pro",
+      "status" => "completed",
+      "output" => [],
+      "usage" => %{
+        "input_tokens" => 100,
+        "output_tokens" => 10,
+        "total_tokens" => 110,
+        "server_tool_use" => %{"tool_search" => 2, "tool_fetch" => 1}
+      }
+    }
+
+    cutoff = DateTime.to_unix(~U[2026-10-31 16:00:00Z])
+    assert {:ok, free} = BeamWeaver.DeepSeek.Messages.responses_to_message(Map.put(raw, "created_at", cutoff - 1))
+    assert {:ok, paid} = BeamWeaver.DeepSeek.Messages.responses_to_message(Map.put(raw, "created_at", cutoff))
+
+    for message <- [free, paid] do
+      assert message.usage_metadata.server_tool_use == %{tool_search: 2, tool_fetch: 1}
+    end
+
+    refute Map.has_key?(free.usage_metadata, :tool_cost)
+    assert_in_delta paid.usage_metadata.tool_cost, 0.00225, 1.0e-12
+    assert_in_delta paid.usage_metadata.total_cost - free.usage_metadata.total_cost, 0.00225, 1.0e-12
+    assert paid.response_metadata.estimated_cost == paid.usage_metadata.total_cost
+  end
+
+  test "out-of-range provider timestamps do not discard an otherwise valid usage record" do
+    raw = %{
+      "model" => "deepseek-v4-pro",
+      "status" => "completed",
+      "created_at" => 999_999_999_999,
+      "output" => [],
+      "usage" => %{"input_tokens" => 100, "output_tokens" => 10, "total_tokens" => 110}
+    }
+
+    assert {:ok, message} = BeamWeaver.DeepSeek.Messages.responses_to_message(raw)
+    assert message.usage_metadata.total_tokens == 110
+    assert_in_delta message.usage_metadata.total_cost, 0.0000858, 1.0e-12
+  end
+
   test "a Responses built-in tool given to DeepSeek Chat Completions is an unsupported feature" do
     assert {:error, %{type: :unsupported_feature, details: %{provider: :deepseek, tool_type: "web_search"}}} =
              ChatModel.request_body(ChatModel.new(), [Message.user("Hi")], tools: [%{"type" => "web_search"}])

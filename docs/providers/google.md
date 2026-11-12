@@ -25,29 +25,31 @@ Use the same identifier in an agent declaration. Gemini IDs require `google:`.
 Keep complete messages when continuing function calls; native parts can carry
 provider state beyond display text.
 
-## Gemini 4 Argon
+<a id="gemini-4-argon"></a>
 
-Use `google:gemini-4-argon` with `thinking_level: :low`, `:medium` (the provider
-default), or `:high`. Its 1,048,576-token window is shared by input, thinking and
-output. BeamWeaver follows continuation checkpoints automatically for ordinary
+## Gemini 4 Argon and Carbon
+
+Use `google:gemini-4-argon` or `google:gemini-4-carbon` with
+`thinking_level: :low`, `:medium` (the provider default), or `:high`. Input,
+thinking, and output share a 1,048,576-token window. BeamWeaver follows continuation checkpoints automatically for ordinary
 invocations, collected responses, and text/typed streams. You receive one combined
 reply with all content, thought signatures, tool calls, and usage. The default
-output budget is 65,536 tokens; set `max_output_tokens:` higher for longer work,
-up to the shared context limit minus your input. `MAX_TOKENS` stops generation:
-BeamWeaver never raises the budget you selected.
+output budget is 65,536 tokens. For longer work, set `max_output_tokens:` up
+to the shared context limit minus your input. A `MAX_TOKENS` response ends
+generation at your requested budget. [Carbon model specification](https://aistudio.google.com/docs/models/gemini-4-carbon)
 
-Argon uses implicit caching only. `cached_content:` and sampling controls are
-rejected by its strict profile. Current input/cached-input/output rates are
-$2/$0.10/$10 per million tokens through November 30, 2026, then $4/$0.20/$20.
-Use `UsageCost.calculate/3` with `at:` for a dated estimate. See Google's
-[model specification](https://ai.google.dev/gemini-api/docs/models/gemini-4-argon)
-and [pricing](https://ai.google.dev/gemini-api/docs/pricing).
+Both models use implicit caching only. Their profiles reject `cached_content:`
+and sampling controls. Standard input, cached input, and output cost $2,
+$0.10, and $10 per million tokens through November 30, 2026. On December 1,
+the rates become $4, $0.20, and $20. Pass the request timestamp as `at:` to
+`UsageCost.calculate/3` to select the applicable rates.
+[Gemini API pricing](https://aistudio.google.com/docs/pricing#gemini-4-carbon)
 
-The client uses streaming HTTP internally, even when the caller wants one final
-reply; Argon model constructors default to a 20-minute timeout per request. It preserves the original
-request across hops and sums their billed usage. `usage_metadata.initial_input_tokens`
-is the original prompt size; `context_tokens` is that size plus all generated
-thinking/output. Summarization uses context size instead of cumulative billed
+The client uses streaming HTTP internally, even when the caller wants one
+final reply. Both model constructors default to a 20-minute timeout per
+request. BeamWeaver preserves the original request across hops and sums their
+billed usage. `usage_metadata.initial_input_tokens` is the original prompt size.
+`context_tokens` adds all generated thinking and output to that size. Summarization uses context size instead of cumulative billed
 tokens, which include repeated inputs.
 
 For reliable streaming, chunks are delivered when a checkpoint commits them or
@@ -67,8 +69,7 @@ Set `automatic_continuation: false` on the model or invocation for manual contro
 Then a `CONTINUATION` response is returned as `provider_pause`, and its
 `response_metadata.continuation_token` can be passed as `continuation_token:`
 with the original messages and generation options. Manual REST calls retain the
-32,768 non-streaming / 65,536 streaming per-request defaults. See Google's
-[long-decode guide](https://ai.google.dev/gemini-api/docs/generate-content/long-decode).
+32,768 non-streaming / 65,536 streaming per-request defaults. [Gemini long decode](https://aistudio.google.com/docs/long-decode?generate-content=true)
 
 ## Options and thinking
 
@@ -193,6 +194,31 @@ Counting calls the provider but does not generate an answer. Safety filtering
 can affect completion even on HTTP success; inspect the provider outcome and
 terminal stream events.
 
+Gemini function results can carry inline or URI-backed images, audio, video,
+PDFs, and supported Office or OpenDocument files. Put them in the tool
+message as typed content blocks with their MIME types. Use `file_id:` for a
+Gemini Files API URI. Set `metadata: %{display_name: name}` to label an
+attachment and `media_processing: :agentic` or `:static` in a video block's
+metadata to control video processing. [Multimodal function responses](https://aistudio.google.com/docs/function-calling#multimodal)
+
+## Decisions
+
+Create a model with `Models.init_decision_model("google:gemini-decision-1")`
+and pass it to `BeamWeaver.Core.DecisionModel.invoke/3`. The input has a
+`state` and a map of named questions built with
+`BeamWeaver.Google.Decisions.Question`. Use `noul/1` for yes/no probability,
+`choice/1` with an option-to-description map, or `score/1` with an ordered
+list of rubric descriptions. Each question takes text instructions.
+
+State accepts text, JSON data serialized as text, and typed image, audio,
+video, and PDF blocks with inline base64 data or HTTPS URIs. When structured
+state includes BeamWeaver messages, their text and media can be used as decision
+evidence. Each request can
+ask up to 1,000 questions within the 262,144-token context window. The paid
+rate is $0.10 per million input tokens. The response reports zero output
+tokens and returns the answers, usage, and estimated cost.
+[Gemini Decisions API](https://aistudio.google.com/docs/decisions-api) · [Pricing](https://aistudio.google.com/docs/pricing#gemini-decision)
+
 ## Models
 
 Limits are local profile data. A dash means not applicable or not recorded,
@@ -200,6 +226,8 @@ not an unlimited allowance.
 
 | Model | Input / output tokens | Operations and capabilities |
 | --- | --- | --- |
+| `google:gemini-2.5-flash` | 1,048,576 / 65,536 | chat; text, image, PDF, audio, video; tools; structured output; reasoning |
+| `google:gemini-2.5-pro` | 1,048,576 / 65,536 | chat; text, image, PDF, audio, video; tools; structured output; reasoning |
 | `google:gemini-3.1-flash-lite` | 1,048,576 / 65,536 | chat; text, image, PDF, audio, video; tools; structured output; reasoning |
 | `google:gemini-3.1-pro-preview` | 1,048,576 / 65,536 | chat; text, image, PDF, audio, video; tools; structured output; reasoning |
 | `google:gemini-3.5-flash` | 1,048,576 / 65,536 | chat; text, image, PDF, audio, video; tools; structured output; reasoning |
@@ -208,6 +236,8 @@ not an unlimited allowance.
 | `google:gemini-3.7-flash` | 1,048,576 / 65,536 | chat; text, image, PDF, audio, video; tools; structured output; reasoning |
 | `google:gemini-3.8-flash` | 1,048,576 / 65,536 | chat; text, image, PDF, audio, video; tools; structured output; reasoning |
 | `google:gemini-4-argon` | 1,048,576 / 1,048,576 | chat; text, image, PDF, audio, video; tools; structured output; reasoning |
+| `google:gemini-4-carbon` | 1,048,576 / 1,048,576 | chat; text, image, PDF, audio, video; tools; structured output; reasoning |
+| `google:gemini-decision-1` | 262,144 / 0 | decision; text, image, PDF, audio, video |
 
 
 Gemini 3.5 Flash is served by 3.6 Flash, and 3.7 Flash by 3.8 Flash; their
@@ -215,6 +245,11 @@ profiles use the serving models' capabilities and rates. Preview identifiers
 and aliases can have different availability from stable models. See Google's
 [model reference](https://ai.google.dev/gemini-api/docs/models) and
 [retirement schedule](https://ai.google.dev/gemini-api/docs/deprecations).
+
+On December 1, 2026, Google begins routing `gemini-2.5-pro` to
+`gemini-3.8-flash` and `gemini-2.5-flash` to `gemini-3.5-flash-lite`.
+The registry resolves those IDs to the replacement capabilities and rates
+from that date. [Gemini release notes](https://aistudio.google.com/docs/changelog#11-02-2026)
 
 ## Further reading
 

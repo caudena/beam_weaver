@@ -63,6 +63,25 @@ end
 true = byte_size(result.messages |> List.last() |> BeamWeaver.Core.Message.text()) > 0
 ```
 
+## Claude Fable 5.2 and Mythos 5.2
+
+Use `anthropic:claude-fable-5-2` or `anthropic:claude-mythos-5-2`. Mythos 5.2
+requires an organization verified by Anthropic. Both have a shared
+1,000,000-token context window and a 128,000-token output cap. Adaptive thinking
+is always on and defaults to high effort. Omit sampling controls and use
+`tool_choice: :auto` or `:none`.
+
+Preserve the exact prefix for returned thinking blocks, including the system
+prompt, tool definitions, and earlier messages. For computer use, declare
+`computer_toolset_20260801`. When either model is the executor, the advisor
+must be Fable 5.2 or Mythos 5.2. [Model and migration details](https://platform.claude.com/docs/en/models/fable-5-2/whats-new-fable-5-2)
+
+Both models cost $8 per million input tokens, $40 per million output tokens,
+and $0.20 per million cached input tokens. Cache writes cost $10 for five
+minutes or $16 for one hour per million tokens. Batch input and output cost
+$4 and $20. Fast mode input and output cost $16 and $80.
+[Claude API pricing](https://platform.claude.com/docs/en/about-claude/pricing)
+
 ## Options
 
 | Option | Purpose |
@@ -80,6 +99,30 @@ true = byte_size(result.messages |> List.last() |> BeamWeaver.Core.Message.text(
 Native metadata accepts user_id rather than arbitrary application fields.
 Use trace metadata for your own labels. Adaptive-model sampling and manual
 thinking-budget restrictions are validated before HTTP execution.
+
+## API version and Message Threads
+
+BeamWeaver uses Anthropic API version `2023-06-01` by default. Set
+`anthropic_version: "2026-10-21"` to use the newer contract. BeamWeaver
+rejects sampling controls, direct document blocks in assistant messages,
+and citations on user text for this version. User documents and assistant
+citations are valid. [Anthropic API migration](https://platform.claude.com/docs/en/api/migration-2026-10-21)
+
+Start a provider-hosted thread by passing `thread: :create` to
+`ChatModel.invoke/3` with the history and any system instructions and tools.
+To continue, pass `thread: {:continue, reply.id}` and only the new messages
+or tool results. Keep the fixed request settings and omit system messages
+and tool declarations when continuing. BeamWeaver adds the Message Threads
+beta header to each request.
+
+For streaming, wait for the final message before using its ID. An empty
+message list resumes a turn that stopped with `pause_turn`. Each response
+ID can be continued once. Keep the full history in your application. If
+Anthropic returns `thread_not_found`, or a lost response prevents you from
+getting the latest ID, replay the history with `thread: :create`. Threads
+expire after five minutes of inactivity. Thread requests bypass local response
+caching so every turn reaches Anthropic. Count tokens and compact using the
+full conversation outside the thread. [Anthropic Message Threads](https://platform.claude.com/docs/en/build-with-claude/message-threads)
 
 ## Server tools
 
@@ -199,11 +242,13 @@ not an unlimited allowance.
 | --- | --- | --- |
 | `anthropic:claude-fable-5` | 1,000,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
 | `anthropic:claude-fable-5-1` | 1,000,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
+| `anthropic:claude-fable-5-2` | 1,000,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
 | `anthropic:claude-haiku-4-5` | 200,000 / 64,000 | chat; text, image, PDF; tools; structured output; reasoning |
 | `anthropic:claude-haiku-4-5-20251001` | 200,000 / 64,000 | chat; text, image, PDF; tools; reasoning |
 | `anthropic:claude-haiku-5-5` | 1,000,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
 | `anthropic:claude-mythos-5` | 1,000,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
 | `anthropic:claude-mythos-5-1` | 1,000,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
+| `anthropic:claude-mythos-5-2` | 1,000,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
 | `anthropic:claude-opus-4-5` | 200,000 / 64,000 | chat; text, image, PDF; tools; structured output; reasoning |
 | `anthropic:claude-opus-4-5-20251101` | 200,000 / 64,000 | chat; text, image, PDF; tools; reasoning |
 | `anthropic:claude-opus-4-6` | 1,000,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |

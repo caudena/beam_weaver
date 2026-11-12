@@ -31,15 +31,18 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
     {messages, previous_response_id} = previous_response_context(messages, opts, config)
 
     store = effective_store(model, opts)
+    model_name = Keyword.get(opts, :model, model.model)
+    request_profile = ModelPolicy.request_profile(model, model_name)
+    profile = request_profile || model.profile
 
-    with :ok <- validate_request_params(model, opts),
+    with :ok <- ModelPolicy.validate_chat_api(request_profile, :responses),
+         :ok <- validate_request_params(model, opts, profile),
          :ok <- validate_gpt6_options(model, opts),
-         :ok <- ModelPolicy.validate_reasoning_effort(model.profile, reasoning_option(model, opts)),
+         :ok <- ModelPolicy.validate_reasoning_effort(profile, reasoning_option(model, opts)),
          {:ok, message_input} <- Messages.to_responses_input(messages, store: store),
          {:ok, input_items} <- Messages.normalize_input_items(Keyword.get(opts, :input_items)),
          {:ok, structured_output} <- StructuredOutput.format(opts) do
       input = message_input ++ input_items
-      model_name = Keyword.get(opts, :model, model.model)
       # `extra_body` goes in last, except "text", which merges into the text param.
       {extra_text, extra_body} = model |> Options.extra_body(opts) |> Map.pop("text")
       reasoning = reasoning_option(model, opts)
@@ -92,7 +95,7 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
     end
   end
 
-  defp validate_request_params(model, opts) do
+  defp validate_request_params(model, opts, profile) do
     model_params =
       model
       |> Map.from_struct()
@@ -136,7 +139,7 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
     # than dropped.
     params = Map.merge(model_params, Map.new(opts))
 
-    ParamPolicy.validate(model.profile, params, option(model, opts, :param_policy), api: :responses)
+    ParamPolicy.validate(profile, params, option(model, opts, :param_policy), api: :responses)
   end
 
   defp validate_gpt6_options(model, opts) do

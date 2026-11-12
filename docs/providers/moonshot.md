@@ -1,10 +1,8 @@
 # Moonshot (Kimi)
 
-Moonshot's Kimi integration uses Chat Completions. Thinking controls, forced
-tool choice and structured output vary by model generation; choose the model
-and options together. The adapter exposes Chat Completions and token estimation.
-Moonshot's Responses, Anthropic-compatible Messages and standalone Search/Fetch
-APIs require a separate client.
+Moonshot's Kimi integration exposes Chat Completions, K3 series Responses,
+and Chat Completions token estimation. Thinking controls, forced tool
+choice, and structured output vary by model and endpoint.
 
 ## Setup and first request
 
@@ -19,8 +17,8 @@ Place configuration in your application's runtime file, then run:
 alias BeamWeaver.Core.{ChatModel, Message}
 
 {:ok, model} =
-  BeamWeaver.Models.init_chat_model("moonshot:kimi-k2.6",
-    thinking: %{type: :disabled},
+  BeamWeaver.Models.init_chat_model("moonshot:kimi-k3.1-pro",
+    reasoning_effort: :low,
     max_tokens: 512,
     timeout: 120_000
   )
@@ -39,13 +37,28 @@ and whole-run timeouts. Preserve full returned messages for subsequent tool roun
 | --- | --- |
 | K2.6 | Thinking can be enabled/disabled; forced/named tools require thinking off |
 | K2.7 Code | Thinking remains enabled; forced tool choice is unavailable |
-| K3 | Always reasons; `reasoning_effort:` accepts `:low`, `:high`, or `:max` (default); supports required tool choice and dynamic tools |
+| K3 series | Always reasons; `reasoning_effort:` accepts `:low`, `:high`, or `:max` (default); supports required tool choice and dynamic tools |
 
 Sampling values are fixed for these profiles; unsupported temperature/top-p
 values fail locally. `max_tokens:` maps to the native completion budget.
 `base_url:` chooses the native root/gateway. Request metadata is unsupported;
 use `trace_metadata:` for application tracing. `logprobs:`, `top_logprobs:`
 and `prediction:` pass through to Chat Completions.
+
+## Responses
+
+Select `api: :responses` in `Models.init_chat_model/2` with
+`moonshot:kimi-k3.1-pro`, `moonshot:kimi-k3.1-pro-highspeed`, or
+`moonshot:kimi-k3`. Each request takes the full history. Keep the returned
+assistant messages, including reasoning and tool calls, and pass them
+back with any tool results. Pass `reasoning_effort:` and
+`prompt_cache_options:` as on Chat Completions.
+
+Use `BeamWeaver.Moonshot.Tools.responses_web_search/1` for hosted web
+search. Pass `include: ["web_search_call.action.sources"]` for source
+pages, or include `"web_search_call.results"` for image search results.
+Kimi Responses takes `tool_choice: :auto`, inline images, and native
+JSON-schema output. [Kimi Responses API](https://platform.kimi.ai/docs/api/responses)
 
 ## Tools on K3
 
@@ -75,7 +88,7 @@ messages = [Message.user("Call delivery_day for A-1001."), BeamWeaver.Moonshot.T
 "Thursday" = Message.text(result)
 ```
 
-Other Kimi models reject this dynamic declaration mechanism. Use ordinary
+K2 models reject this dynamic declaration mechanism. Use ordinary
 agent tools for a static tool set. The native `$web_search` helper has a
 restricted K2.6 nonthinking contract and is not an agent-managed search tool;
 do not assume adding it gives an agent a working web-search executor.
@@ -129,11 +142,21 @@ not an unlimited allowance.
 | `moonshot:kimi-k2.7-code` | 262,144 / — | chat; text, image, video; tools; structured output; reasoning |
 | `moonshot:kimi-k2.7-code-highspeed` | 262,144 / — | chat; text, image, video; tools; structured output; reasoning |
 | `moonshot:kimi-k3` | 1,048,576 / 1,048,576 | chat; text, image, video; tools; structured output; reasoning |
+| `moonshot:kimi-k3.1-pro` | 1,048,576 / 1,048,576 | chat; text, image, video; tools; structured output; reasoning |
+| `moonshot:kimi-k3.1-pro-highspeed` | 1,048,576 / 1,048,576 | chat; text, image, video; tools; structured output; reasoning |
 
 
 Profiles describe local compatibility. Pin the model you have validated and
 review replacement guidance for discontinued identifiers; changing a model
 is an application decision, not a silent compatibility fallback.
+
+K3.1 Pro is the default. Its input, cached input, and output rates are
+$2, $0.20, and $10 per million tokens. Highspeed costs $4, $0.20, and $20.
+Cache writes cost $2/$4 for Pro and $4/$8 for Highspeed at 5-minute and
+1-hour retention respectively. Both models have a 1,048,576-token window.
+K2 models are limited to existing accounts and scheduled for retirement
+in late December 2026. K3 series models always use thinking, so remove
+K2's thinking toggle when migrating. [Kimi pricing](https://platform.kimi.ai/docs/pricing/chat) · [Model lifecycle](https://platform.kimi.ai/docs/models)
 
 ## Further reading
 

@@ -22,7 +22,12 @@ defmodule BeamWeaver.Models.UsageCost do
   alias BeamWeaver.Models.Profile
 
   @million 1_000_000
-  @cache_write_dimensions [:cache_write_5m_tokens, :cache_write_1h_tokens, :cache_write_30m_tokens]
+  @cache_write_dimensions [
+    :cache_write_5m_tokens,
+    :cache_write_1h_tokens,
+    :cache_write_30m_tokens,
+    :cache_write_12h_tokens
+  ]
   @exact_dimension_keys Map.new(
                           [:input_tokens, :cached_input_tokens, :output_tokens | @cache_write_dimensions],
                           &{Atom.to_string(&1), &1}
@@ -36,7 +41,8 @@ defmodule BeamWeaver.Models.UsageCost do
                  cache_write_5m_tokens ephemeral_5m_input_tokens cache_write_1h_tokens
                  ephemeral_1h_input_tokens cache_write_30m_tokens input_token_details
                  prompt_tokens_details input_tokens_details cache_read cache_miss uncached
-                 cache_write cache_creation cache_write_5m cache_write_1h cache_write_30m)a
+                 cache_write cache_creation cache_write_5m cache_write_1h cache_write_30m cache_write_12h cache_write_12h_tokens
+                 cache_write_tokens_details ttl_30m_tokens ttl_12h_tokens)a
   @usage_key_by_name Map.new(@usage_keys, &{Atom.to_string(&1), &1})
 
   @spec calculate(Profile.t() | map(), map(), keyword()) :: map() | nil
@@ -281,7 +287,8 @@ defmodule BeamWeaver.Models.UsageCost do
     output_price_per_mtok: :higher_context_output_price_per_mtok,
     cache_write_5m_price_per_mtok: :higher_context_cache_write_5m_price_per_mtok,
     cache_write_1h_price_per_mtok: :higher_context_cache_write_1h_price_per_mtok,
-    cache_write_30m_price_per_mtok: :higher_context_cache_write_30m_price_per_mtok
+    cache_write_30m_price_per_mtok: :higher_context_cache_write_30m_price_per_mtok,
+    cache_write_12h_price_per_mtok: :higher_context_cache_write_12h_price_per_mtok
   ]
 
   defp higher_context_pricing(pricing, input_tokens) do
@@ -319,7 +326,8 @@ defmodule BeamWeaver.Models.UsageCost do
         :output_price_per_mtok,
         :cache_write_5m_price_per_mtok,
         :cache_write_1h_price_per_mtok,
-        :cache_write_30m_price_per_mtok
+        :cache_write_30m_price_per_mtok,
+        :cache_write_12h_price_per_mtok
       ])
     )
   end
@@ -388,11 +396,9 @@ defmodule BeamWeaver.Models.UsageCost do
             :ephemeral_1h_input_tokens
           ]) || 0,
       cache_write_30m_tokens:
-        token_count(usage, [:cache_write_30m_tokens]) ||
-          nested_token_count(usage, :input_token_details, [
-            :cache_write_30m,
-            :cache_write_30m_tokens
-          ]) || 0
+        openai_cache_write_tokens(usage, :cache_write_30m, :cache_write_30m_tokens, :ttl_30m_tokens),
+      cache_write_12h_tokens:
+        openai_cache_write_tokens(usage, :cache_write_12h, :cache_write_12h_tokens, :ttl_12h_tokens)
     }
 
     generic =
@@ -401,13 +407,15 @@ defmodule BeamWeaver.Models.UsageCost do
         :cache_creation_tokens,
         :cache_creation_input_tokens
       ]) ||
-        nested_token_count(usage, :input_token_details, [
-          :cache_write,
-          :cache_write_tokens,
-          :cache_creation,
-          :cache_creation_tokens,
-          :cache_creation_input_tokens
-        ]) || 0
+        Enum.find_value([:input_token_details, :input_tokens_details, :prompt_tokens_details], fn group ->
+          nested_token_count(usage, group, [
+            :cache_write,
+            :cache_write_tokens,
+            :cache_creation,
+            :cache_creation_tokens,
+            :cache_creation_input_tokens
+          ])
+        end) || 0
 
     if generic > 0 and Enum.sum(Map.values(writes)) == 0 do
       case default_cache_write_dimension(pricing) do
@@ -419,7 +427,18 @@ defmodule BeamWeaver.Models.UsageCost do
     end
   end
 
-  # The first priced TTL wins, in 5m, 1h, 30m order.
+  defp openai_cache_write_tokens(usage, normalized, dimension, ttl) do
+    token_count(usage, [dimension]) ||
+      nested_token_count(usage, :input_token_details, [normalized, dimension]) ||
+      Enum.find_value([:input_tokens_details, :prompt_tokens_details], fn group ->
+        case get_in(usage, [group, :cache_write_tokens_details]) do
+          %{} = details -> token_count(details, [ttl])
+          _ -> nil
+        end
+      end) || 0
+  end
+
+  # The first priced TTL wins, in 5m, 1h, 30m, 12h order.
   defp default_cache_write_dimension(pricing),
     do: Enum.find(@cache_write_dimensions, &cache_write_priced?(pricing, &1))
 
@@ -439,6 +458,7 @@ defmodule BeamWeaver.Models.UsageCost do
   defp cache_write_price_key(:cache_write_5m_tokens), do: :cache_write_5m_price_per_mtok
   defp cache_write_price_key(:cache_write_1h_tokens), do: :cache_write_1h_price_per_mtok
   defp cache_write_price_key(:cache_write_30m_tokens), do: :cache_write_30m_price_per_mtok
+  defp cache_write_price_key(:cache_write_12h_tokens), do: :cache_write_12h_price_per_mtok
 
   defp nested_token_count(usage, details_key, keys) do
     case Map.get(usage, details_key) do

@@ -17,7 +17,7 @@ defmodule BeamWeaver.Moonshot.Client do
 
   alias BeamWeaver.Config
   alias BeamWeaver.Core.Error
-  alias BeamWeaver.Moonshot.Streaming
+  alias BeamWeaver.Moonshot.{Messages, Streaming}
   alias BeamWeaver.OpenAI.Client, as: OpenAIClient
   alias BeamWeaver.Provider.HTTPClient
   alias BeamWeaver.Provider.OpenAICompatibleClient, as: Compat
@@ -45,6 +45,7 @@ defmodule BeamWeaver.Moonshot.Client do
   defstruct base_url: @default_base_url,
             endpoint: @default_base_url <> "/chat/completions",
             chat_completions_endpoint: @default_base_url <> "/chat/completions",
+            responses_endpoint: @default_base_url <> "/responses",
             count_tokens_endpoint: @default_base_url <> "/tokenizers/estimate-token-count",
             api_key: nil,
             default_headers: [],
@@ -66,6 +67,7 @@ defmodule BeamWeaver.Moonshot.Client do
       base_url: base_url,
       endpoint: Keyword.get(opts, :endpoint, chat_endpoint),
       chat_completions_endpoint: Keyword.get(opts, :chat_completions_endpoint, chat_endpoint),
+      responses_endpoint: Keyword.get(opts, :responses_endpoint, endpoint(base_url, "responses")),
       count_tokens_endpoint:
         Keyword.get(opts, :count_tokens_endpoint, endpoint(base_url, "tokenizers/estimate-token-count")),
       api_key: Config.option(opts, :api_key, [:moonshot, :api_key]),
@@ -114,6 +116,25 @@ defmodule BeamWeaver.Moonshot.Client do
     |> http(client.chat_completions_endpoint, opts)
     |> OpenAIClient.stream_chat_message(body, opts, decoder())
   end
+
+  @doc "Sends a native Kimi Responses request."
+  def responses(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
+    do: client |> http(client.responses_endpoint, opts) |> OpenAIClient.post(body, opts, decoder())
+
+  @doc "Streams text deltas from Kimi Responses."
+  def responses_stream(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
+    do: client |> http(client.responses_endpoint, opts) |> OpenAIClient.stream_text(body, opts, decoder())
+
+  @doc "Collects a streamed Kimi response."
+  def responses_stream_response(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
+    do: client |> http(client.responses_endpoint, opts) |> OpenAIClient.collect_response(body, opts, decoder())
+
+  @doc "Streams typed Kimi Responses events."
+  def responses_stream_typed_events(%__MODULE__{} = client, body, opts \\ []) when is_map(body),
+    do:
+      client
+      |> http(client.responses_endpoint, opts)
+      |> OpenAIClient.stream_responses(body, opts, decoder(), &Messages.responses_to_message/1)
 
   @doc """
   Calls the provider counting/estimation endpoint with a native body; returns decoded provider data or an error.

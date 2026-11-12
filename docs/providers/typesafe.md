@@ -50,15 +50,26 @@ shape. Pin versions when evaluating questions/thresholds; aliases can move.
 | `choice/1` | 1–255 named options | Choice, confidence and probabilities |
 | `score/1` | 2–10 ordered levels | Expected zero-based level, confidence, probabilities and legend |
 | `noul/1` | Optional true/false descriptions | Probability of yes |
+| `box/1` | Image and target instructions on Jev 1.14 | Normalized edges and confidence when provided |
 
 Answer keys are strings. Confidence is not proof of correctness; calibrate
 thresholds on held-out examples. Put the complete question in instructions and
 name the relevant state fields. Question IDs identify results rather than
 supplying semantic instructions. Keep arithmetic and hard policy rules in code.
 
-Malformed questions fail before HTTP execution. State is text/JSON; describe
-unsupported media in text. The request limit is 64,000 tokens, and BeamWeaver
-has no local Jev tokenizer guaranteeing an exact preflight count.
+Malformed questions fail before HTTP execution. State accepts text and
+JSON. To send inline PNG or JPEG images, pass `images: true` when
+constructing or invoking the model. Put a base64 `ContentBlock.image/1`
+in state or question instructions, or supply a native `assets` map and
+reference its keys. A Box question needs an image and Jev 1.14.
+Each side of an image must be 280 to 1,568 pixels. BeamWeaver sends
+TypeSafe's opt-in images header.
+[Images](https://docs.typesafe.ai/images) · [Box](https://docs.typesafe.ai/primitives/box)
+
+The default context limits are 64,000 tokens per request and 32,000 per
+question. Pass `long_context: true` to opt in to 262,144 tokens for both
+limits. Token counts are enforced by TypeSafe.
+[Context limits](https://docs.typesafe.ai/models#long-context)
 
 A score uses ordered levels and returns an expected zero-based level. Check that this clear outage is near the blocked end of the scale:
 
@@ -125,7 +136,7 @@ and compatible options. Put routing before fallback when combining them.
 
 `classifier:` also accepts another supported decision model, including
 OpenAI decisions. Image-aware classifiers can receive supported images;
-Jev receives text with placeholders for unsupported media.
+Jev accepts images when the classifier enables `images: true`.
 
 ## Models
 
@@ -140,7 +151,7 @@ not an unlimited allowance.
 | `typesafe:jev-preview` | 64,000 / — | decision; text |
 
 
-`jev-preview` resolves to Jev 1.14.0; `jev-latest` resolves to Jev 1.13.0.
+Both `jev-preview` and `jev-latest` currently resolve to Jev 1.14.0.
 Pin a version for repeatable evaluations, and use `response.model` to identify
 the served version. Both models cost $0.042 per million input tokens, with
 free output, and accept 64K tokens per request and 32K per question. See

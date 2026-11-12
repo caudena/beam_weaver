@@ -117,11 +117,23 @@ defmodule BeamWeaver.Core.ChatModel do
               {:ok, Enumerable.t()} | {:error, Error.t() | term()}
   @callback resolve_invocation_model(term(), keyword()) ::
               {:ok, term()} | {:error, Error.t() | term()}
-  @optional_callbacks stream: 3,
+  @doc "Whether a local response cache may serve this invocation without calling the provider."
+  @callback cacheable_invocation?(term(), keyword()) :: boolean()
+  @optional_callbacks cacheable_invocation?: 2,
+                      stream: 3,
                       stream_events: 3,
                       stream_typed_events: 3,
                       stream_exact_typed_events: 3,
                       resolve_invocation_model: 2
+
+  @doc false
+  def cacheable_invocation?(%module{} = model, opts) do
+    if BeamWeaver.Behaviour.exported?(module, :cacheable_invocation?, 2),
+      do: module.cacheable_invocation?(model, opts),
+      else: cacheable_invocation?(Map.get(model, :model), opts)
+  end
+
+  def cacheable_invocation?(_model, _opts), do: true
 
   @doc """
   Resolves provider-specific per-invocation model overrides.
@@ -705,6 +717,9 @@ defmodule BeamWeaver.Core.ChatModel do
       input_cost: metadata_first(usage, [:input_cost]),
       output_cost: metadata_first(usage, [:output_cost]),
       total_cost: metadata_first(usage, [:total_cost]),
+      tool_cost: metadata_first(usage, [:tool_cost]),
+      tool_cost_details: metadata_first(usage, [:tool_cost_details]),
+      server_tool_use: metadata_first(usage, [:server_tool_use]),
       input_token_details: input_details,
       output_token_details: output_details,
       input_cost_details: metadata_first(usage, [:input_cost_details]),

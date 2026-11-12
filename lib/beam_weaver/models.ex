@@ -143,7 +143,7 @@ defmodule BeamWeaver.Models do
   def init_decision_model(model, opts) when is_binary(model) do
     with [provider, id] when provider != "" and id != "" <- String.split(model, ":", parts: 2),
          provider = ProviderRegistry.provider_atom(provider),
-         {:ok, module} <- ProviderRegistry.decision_provider(provider, opts),
+         {:ok, module} <- ProviderRegistry.decision_provider(provider, Keyword.put(opts, :model, id)),
          {:ok, profile} <- fetch_profile(provider, id, opts) do
       build_model(provider, module, id, opts, profile)
     else
@@ -267,7 +267,9 @@ defmodule BeamWeaver.Models do
     BeamWeaver.XAI.ChatModel,
     BeamWeaver.XAI.ChatCompletionsModel,
     BeamWeaver.DeepSeek.ChatModel,
-    BeamWeaver.DeepSeek.ResponsesModel
+    BeamWeaver.DeepSeek.ResponsesModel,
+    BeamWeaver.Moonshot.ChatModel,
+    BeamWeaver.Moonshot.ResponsesModel
   ]
 
   @base_url_models [
@@ -278,17 +280,18 @@ defmodule BeamWeaver.Models do
     BeamWeaver.XAI.ChatModel,
     BeamWeaver.XAI.ChatCompletionsModel,
     BeamWeaver.Moonshot.ChatModel,
+    BeamWeaver.Moonshot.ResponsesModel,
     BeamWeaver.ZAI.ChatModel
   ]
 
   @other_builtin_models [
     BeamWeaver.Anthropic.ChatModel,
     BeamWeaver.Google.ChatModel,
-    BeamWeaver.Moonshot.ChatModel,
     BeamWeaver.ZAI.ChatModel,
     BeamWeaver.OpenAI.EmbeddingModel,
     BeamWeaver.TypeSafe.DecisionModel,
     BeamWeaver.OpenAI.DecisionModel,
+    BeamWeaver.Google.DecisionModel,
     BeamWeaver.Models.FakeChatModel,
     BeamWeaver.Models.FakeEmbeddingModel
   ]
@@ -299,6 +302,7 @@ defmodule BeamWeaver.Models do
   # any provider in tests, so it takes (and has no use for) the connection
   # options every provider takes.
   @client_options %{
+    BeamWeaver.Google.DecisionModel => [:api_key, :base_url, :timeout, :transport, :transport_opts, :default_headers],
     BeamWeaver.TypeSafe.DecisionModel => [:api_key, :base_url, :timeout, :transport, :transport_opts, :default_headers],
     BeamWeaver.OpenAI.DecisionModel => [
       :api_key,
@@ -463,6 +467,8 @@ defmodule BeamWeaver.Models do
     do: BeamWeaver.DeepSeek.responses_model(opts)
 
   defp configured_model(opts, BeamWeaver.Moonshot.ChatModel), do: BeamWeaver.Moonshot.chat_model(opts)
+
+  defp configured_model(opts, BeamWeaver.Moonshot.ResponsesModel), do: BeamWeaver.Moonshot.responses_model(opts)
 
   defp configured_model(opts, BeamWeaver.ZAI.ChatModel), do: BeamWeaver.ZAI.chat_model(opts)
 

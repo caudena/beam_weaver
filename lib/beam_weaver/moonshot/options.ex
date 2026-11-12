@@ -14,33 +14,35 @@ defmodule BeamWeaver.Moonshot.Options do
 
   alias BeamWeaver.Models.ParamPolicy
   alias BeamWeaver.Models.ProfileRegistry
+  alias BeamWeaver.Models.ProfileRegistry.Moonshot, as: Profiles
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Moonshot.Messages
   alias BeamWeaver.Provider.ChatCompletionsWire
   alias BeamWeaver.Provider.JsonObjectFormat
 
-  @kimi_model_policies %{
-    "kimi-k3" => %{
-      thinking: :unsupported,
-      reasoning_efforts: ["low", "high", "max"],
-      tool_choice_when_thinking: ["auto", "none", "required"]
-    },
-    "kimi-k2.7-code" => %{
-      thinking: :enabled_only,
-      reasoning_efforts: [],
-      tool_choice_when_thinking: ["auto", "none"]
-    },
-    "kimi-k2.7-code-highspeed" => %{
-      thinking: :enabled_only,
-      reasoning_efforts: [],
-      tool_choice_when_thinking: ["auto", "none"]
-    },
-    "kimi-k2.6" => %{
-      thinking: :toggle,
-      reasoning_efforts: [],
-      tool_choice_when_thinking: ["auto", "none"]
-    }
+  @k3_policy %{
+    thinking: :unsupported,
+    reasoning_efforts: ["low", "high", "max"],
+    tool_choice_when_thinking: ["auto", "none", "required"]
   }
+
+  @kimi_model_policies Map.merge(Map.new(Profiles.k3_models(), &{&1, @k3_policy}), %{
+                         "kimi-k2.7-code" => %{
+                           thinking: :enabled_only,
+                           reasoning_efforts: [],
+                           tool_choice_when_thinking: ["auto", "none"]
+                         },
+                         "kimi-k2.7-code-highspeed" => %{
+                           thinking: :enabled_only,
+                           reasoning_efforts: [],
+                           tool_choice_when_thinking: ["auto", "none"]
+                         },
+                         "kimi-k2.6" => %{
+                           thinking: :toggle,
+                           reasoning_efforts: [],
+                           tool_choice_when_thinking: ["auto", "none"]
+                         }
+                       })
 
   # `extra_body` can't replace these: the client sets them for the call.
   @reserved_body_fields ["model", "messages", "stream"]

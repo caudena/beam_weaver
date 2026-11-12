@@ -25,12 +25,12 @@ true = byte_size(BeamWeaver.Core.Message.text(reply)) > 0
 
 | Provider | Model IDs | Chat capabilities |
 | --- | --- | --- |
-| [OpenAI](providers/openai.md) (`openai:`) | 17 chat, 1 decision, 2 embedding | Tools: all; structured output: all; reasoning: 16 of 17; images: all |
-| [Anthropic](providers/anthropic.md) (`anthropic:`) | 19 chat | Tools: all; structured output: 16 of 19; reasoning: all; images: all |
-| [Google Gemini](providers/google.md) (`google:`) | 8 chat | Tools: all; structured output: all; reasoning: all; images: all |
+| [OpenAI](providers/openai.md) (`openai:`) | 20 chat, 1 decision, 2 embedding, 2 image | Tools: 19 of 20; structured output: 19 of 20; reasoning: 19 of 20; images: 19 of 20 |
+| [Anthropic](providers/anthropic.md) (`anthropic:`) | 21 chat | Tools: all; structured output: 18 of 21; reasoning: all; images: all |
+| [Google Gemini](providers/google.md) (`google:`) | 11 chat, 1 decision | Tools: all; structured output: all; reasoning: all; images: all |
 | [xAI](providers/xai.md) (`xai:`) | 8 chat | Tools: all; structured output: all; reasoning: 7 of 8; images: all |
-| [Moonshot (Kimi)](providers/moonshot.md) (`moonshot:`) | 4 chat | Tools: all; structured output: all; reasoning: all; images: all |
-| [Z.ai](providers/zai.md) (`zai:`) | 8 chat | Tools: all; structured output: all; reasoning: all; images: 2 of 8 |
+| [Moonshot (Kimi)](providers/moonshot.md) (`moonshot:`) | 6 chat | Tools: all; structured output: all; reasoning: all; images: all |
+| [Z.ai](providers/zai.md) (`zai:`) | 9 chat | Tools: all; structured output: all; reasoning: all; images: 3 of 9 |
 | [DeepSeek](providers/deepseek.md) (`deepseek:`) | 4 chat | Tools: all; structured output: all; reasoning: all; images: 3 of 4 |
 | [TypeSafe](providers/typesafe.md) (`typesafe:`) | 4 decision | Typed decisions; no chat model |
 
@@ -87,8 +87,8 @@ reasoning blocks are replayed only to compatible provider endpoints; preserving
 full message objects lets codecs retain the information they need.
 
 `ModelFallback` changes the model after failure and uses its own credentials.
-`ModelRetry` adds bounded retries for failed calls. Gemini Argon also resumes
-interrupted long-decode hops internally; see [Argon continuation](providers/google.md#gemini-4-argon).
+`ModelRetry` adds bounded retries for failed calls. Gemini 4 Argon and Carbon resume
+interrupted long-decode hops internally. [Gemini 4 continuation](providers/google.md#gemini-4-argon-and-carbon)
 A fallback success does not establish that the primary integration worked.
 [Built-in Middleware](builtin_middleware.md) explains ordering and budgets.
 

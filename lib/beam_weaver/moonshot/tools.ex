@@ -1,6 +1,6 @@
 defmodule BeamWeaver.Moonshot.Tools do
   @moduledoc """
-  Tool declaration helpers for Moonshot/Kimi Chat Completions.
+  Tool declarations for Moonshot/Kimi Chat Completions and Responses.
   """
 
   alias BeamWeaver.Core.Message
@@ -20,6 +20,11 @@ defmodule BeamWeaver.Moonshot.Tools do
       "function" => opts |> BeamWeaver.MapShape.stringify_entries() |> Map.put("name", "$web_search")
     }
   end
+
+  @doc "Builds Kimi Responses' hosted web-search tool."
+  @spec responses_web_search(keyword() | map()) :: map()
+  def responses_web_search(opts \\ []),
+    do: opts |> BeamWeaver.MapShape.stringify_entries() |> Map.put("type", "web_search")
 
   @doc "Builds an OpenAI-compatible function tool declaration."
   @spec function(term(), keyword()) :: map()
@@ -78,6 +83,67 @@ defmodule BeamWeaver.Moonshot.Tools do
           max: @max_tools
         ),
       else: Enum.find_value(tools, :ok, fn tool -> with :ok <- validate_tool(tool), do: nil end)
+  end
+
+  @doc false
+  def validate_responses_tools(nil), do: :ok
+  def validate_responses_tools(tools) when is_list(tools), do: validate_responses_tools(tools, false)
+  def validate_responses_tools(_tools), do: responses_tool_error()
+
+  defp validate_responses_tools([], _search?), do: :ok
+
+  defp validate_responses_tools([%{"type" => "web_search"} = tool | rest], false) do
+    if valid_web_search?(tool), do: validate_responses_tools(rest, true), else: responses_tool_error()
+  end
+
+  defp validate_responses_tools([tool | rest], search?) do
+    if valid_responses_tool?(tool), do: validate_responses_tools(rest, search?), else: responses_tool_error()
+  end
+
+  defp valid_responses_tool?(%{"type" => "namespace", "name" => name, "description" => description, "tools" => tools})
+       when is_binary(name) and name != "" and is_binary(description) and is_list(tools),
+       do: Enum.all?(tools, &valid_responses_function?/1)
+
+  defp valid_responses_tool?(tool), do: valid_responses_function?(tool)
+
+  defp valid_responses_function?(%{"type" => "function", "name" => name}) when is_binary(name) and name != "",
+    do: true
+
+  defp valid_responses_function?(%{
+         "type" => "custom",
+         "name" => "apply_patch",
+         "format" => %{"type" => "grammar", "syntax" => "lark", "definition" => definition}
+       })
+       when is_binary(definition) and definition != "",
+       do: true
+
+  defp valid_responses_function?(_tool), do: false
+
+  defp valid_web_search?(tool) do
+    not Map.has_key?(tool, "search_context_size") and not Map.has_key?(tool, "blocked_domains") and
+      valid_search_filters?(tool["filters"])
+  end
+
+  defp valid_search_filters?(nil), do: true
+
+  defp valid_search_filters?(%{} = filters) do
+    not Map.has_key?(filters, "blocked_domains") and
+      case Map.fetch(filters, "allowed_domains") do
+        :error -> true
+        {:ok, domains} when is_list(domains) -> length(domains) <= 100 and Enum.all?(domains, &is_binary/1)
+        _ -> false
+      end
+  end
+
+  defp valid_search_filters?(_filters), do: false
+
+  defp responses_tool_error do
+    error(
+      :unsupported_model_param,
+      "Kimi Responses takes functions, apply_patch, namespaces, and one hosted web search tool with supported filters",
+      api: :responses,
+      params: [:tools]
+    )
   end
 
   defp error(type, message, details),

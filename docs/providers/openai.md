@@ -38,12 +38,36 @@ Use Chat Completions when your target endpoint requires that contract:
 true = byte_size(Message.text(reply)) > 0
 ```
 
-Some newer models restrict Chat Completions tools: Astra and GPT-6.1 Sol
-require Responses; GPT-5.6, GPT-6 Sol and Luna require nonreasoning mode for
+GPT-6 Astra, GPT-6.1 Sol and GPT-6.1 Terra require Responses for tool calls.
+GPT-5.6, GPT-6 Sol and GPT-6 Luna require nonreasoning mode for
 that endpoint's tools. Local profiles validate these combinations. Hosted
 tools and reasoning summaries use Responses. Tool-returned media on Chat
 Completions is carried in a following user message rather than a text-only
 tool result.
+
+## GPT-6.1 Terra, Cyber, and Rosalind
+
+- `openai:gpt-6.1-terra` supports Responses and Chat Completions with a
+  1,050,000-token context, up to 922,000 input tokens and 128,000 output
+  tokens. It supports effort `:none` through `:max` (excluding `:minimal`)
+  and defaults to `:medium`. Use `:none` for sampling controls and
+  Responses for tools. [GPT-6.1 Terra model specification](https://developers.openai.com/api/docs/models/gpt-6.1-terra)
+- `openai:gpt-6-cyber` requires Daybreak Red and separate model approval.
+  On Responses, pass `access_programs: %{cyber: "daybreak_red"}` and your
+  application's `safety_identifier:`. [Daybreak setup](https://developers.openai.com/api/docs/guides/daybreak#set-up-gpt-6-cyber)
+- `openai:gpt-6-rosalind` is available through Responses to organizations
+  approved for Rosalind Research. [OpenAI API changelog](https://developers.openai.com/api/docs/changelog)
+
+Standard rates in USD per million tokens are listed below. Prompts over
+272,000 input tokens use long-context rates for the entire request.
+
+| API model | Input | Cached input | Output | Long-context input / cached input / output |
+| --- | ---: | ---: | ---: | ---: |
+| GPT-6.1 Terra | $1.00 | $0.05 | $5.00 | $2.00 / $0.10 / $7.50 |
+| GPT-6-Cyber | $20.00 | $2.00 | $100.00 | $40.00 / $4.00 / $150.00 |
+| GPT-6 Rosalind | $15.00 | $1.50 | $75.00 | $30.00 / $3.00 / $112.50 |
+
+[OpenAI API pricing](https://developers.openai.com/api/docs/pricing)
 
 ## Options
 
@@ -143,6 +167,11 @@ true = byte_size(BeamWeaver.Core.Message.text(reply)) > 0
 IO.inspect(get_in(reply.usage_metadata, [:input_token_details, :cache_read]) || 0, label: "Cached input tokens")
 ```
 
+For Responses, use the `"30m"` or `"12h"` cache TTL where the model
+supports it. When OpenAI reports writes for both TTLs, normalized usage
+preserves each count and BeamWeaver prices them separately.
+[OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching)
+
 ## Compact a conversation
 
 The standalone compaction endpoint accepts the full current input window and
@@ -199,7 +228,7 @@ checks relevance with real embeddings; [Storage](../storage.md) covers pgvector.
 
 ## Decisions
 
-GPT-6 Luna's Decisions integration returns typed answers/probabilities:
+GPT-6 Luna answers typed questions through the Decisions API.
 
 ```elixir
 alias BeamWeaver.OpenAI.Decisions.Question
@@ -220,12 +249,14 @@ alias BeamWeaver.OpenAI.Decisions.Question
 "engineering" = response.answers["team"].choice
 ```
 
-Predicate questions return a probability; choice questions return choice,
-confidence and probabilities; score questions return an expected zero-based
-level. Handle refusals explicitly. State can contain supported text/images;
-unsupported media must first be represented appropriately. Decisions usage
-and billing differ from chat output; inspect the returned decision response
-rather than reading it as an assistant message.
+Predicate questions return a probability. Choice questions return the
+choice, confidence, and probabilities. Score questions return an expected
+zero-based level. Handle refusals explicitly. A request can contain up to
+400 questions. Set `state: {:input_json, data}` to send a map or an array
+of maps as native JSON evidence. Use a list of text and image blocks in a question's
+`instructions:` to attach images to that question. Pass
+`prompt_cache_key:` and `prompt_cache_options:` to control caching for shared
+evidence. [OpenAI Decisions API](https://developers.openai.com/api/docs/guides/decisions)
 
 Predicate and score questions share the same typed decision request. Their fields differ from the choice result above:
 
@@ -265,6 +296,25 @@ true = byte_size(bytes) > 1_000
 `response_format:`, `style:` and `user:` fields are passed through where the
 selected image model supports them.
 
+Select `model: "gpt-image-2.6-sunburst"` or `model: "gpt-image-2.6-flare"` to
+use GPT-Image-2.6. Both accept `complexity: :low`, `:medium`, or `:high`
+and generate SVG or animated GIF when requested with `output_format:`.
+For GIFs, set `frame_count:` and `frame_duration_ms:` on generation or edit calls.
+For projects with SVG model selection, pass the authoring model in
+`svg: %{model: model_id}`. OpenAI bills SVG authoring at that model's
+token rates in addition to the reference image. Generation traces record
+that author usage separately in `metadata.svg_usage`. [Image generation API reference](https://developers.openai.com/api/reference/resources/images/methods/generate)
+
+For edits, call `BeamWeaver.OpenAI.edit_image/3` with a prompt and a list of
+`%{image_url: url}` or `%{file_id: id}` references. An image URL can also
+be a base64 data URL. Use `mask:` or `markup:` with an image reference to
+guide the edit. GIF is available for edits and generation.
+[Image edits API reference](https://developers.openai.com/api/reference/resources/images/methods/edit)
+
+For both 2.6 models, text input costs $5 per million tokens, or $1.25 when
+cached. Image input costs $8 per million tokens, or $2 when cached. Image
+output costs $30 per million tokens. [OpenAI API pricing](https://developers.openai.com/api/docs/pricing)
+
 `OpenAIModeration` middleware checks configured input/output text through the
 moderation endpoint. It is separate from tool authorization and stream
 redaction; [Guardrails](../guardrails.md) explains those boundaries.
@@ -290,9 +340,14 @@ not an unlimited allowance.
 | `openai:gpt-5.6-sol` | 1,050,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
 | `openai:gpt-5.6-terra` | 1,050,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
 | `openai:gpt-6-astra` | 1,050,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
+| `openai:gpt-6-cyber` | 922,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
 | `openai:gpt-6-luna` | 1,050,000 / 128,000 | chat, decision; text, image, PDF; tools; structured output; reasoning |
+| `openai:gpt-6-rosalind` | — / — | chat; text; reasoning |
 | `openai:gpt-6-sol` | 1,050,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
 | `openai:gpt-6.1-sol` | 922,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
+| `openai:gpt-6.1-terra` | 922,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
+| `openai:gpt-image-2.6-flare` | — / — | image; text, image |
+| `openai:gpt-image-2.6-sunburst` | — / — | image; text, image |
 | `openai:text-embedding-3-large` | 8,191 / — | embedding; text |
 | `openai:text-embedding-3-small` | 8,191 / — | embedding; text |
 

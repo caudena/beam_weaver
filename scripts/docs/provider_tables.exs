@@ -114,12 +114,15 @@ defmodule BeamWeaver.Docs.ProviderTables do
 
   defp rows(provider), do: Enum.filter(Compatibility.matrix(), &(&1.provider == provider))
 
-  # A model chats, answers typed questions, or both; any other model embeds.
+  # Profiles with no chat, decision or image generation capability are embeddings.
   defp kinds(%{features: features}) do
     kinds =
       for {kind, true} <- [
-            chat: features[:tool_calling] or features[:streaming],
-            decision: features[:decision_output]
+            chat:
+              features[:responses_api] or features[:chat_completions_api] or features[:tool_calling] or
+                features[:streaming],
+            decision: features[:decision_output],
+            image: features[:image_output]
           ],
           do: Atom.to_string(kind)
 

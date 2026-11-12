@@ -1,9 +1,9 @@
 defmodule BeamWeaver.TypeSafe.DecisionModelTest do
   use ExUnit.Case, async: true
-  alias BeamWeaver.Core.{ChatModel, DecisionModel, Message}
+  alias BeamWeaver.Core.{ChatModel, ContentBlock, DecisionModel, Message}
   alias BeamWeaver.{Models, Serialization}
   alias BeamWeaver.TestSupport.TypeSafe, as: Fixture
-  alias BeamWeaver.TypeSafe.{ChoiceAnswer, Client, Input, NoulAnswer, Question, ScoreAnswer}
+  alias BeamWeaver.TypeSafe.{BoxAnswer, ChoiceAnswer, Client, Input, NoulAnswer, Question, ScoreAnswer}
   alias BeamWeaver.Transport.Response
 
   test "decision models reject chat and embedding entry points" do
@@ -69,6 +69,95 @@ defmodule BeamWeaver.TypeSafe.DecisionModelTest do
     }
 
     assert {:ok, _} = DecisionModel.invoke(Fixture.model(), input)
+  end
+
+  test "Jev 1.14 Box sends inline assets and opt-in headers and preserves typed coordinates" do
+    body = %{
+      "model" => "jev-1.14.0",
+      "answers" => %{
+        "logo" => %{
+          "type" => "box",
+          "box" => %{"top" => 0.1, "bottom" => 0.6, "left" => 0.2, "right" => 0.9},
+          "confidence" => nil
+        }
+      },
+      "usage" => %{"input_tokens" => 40, "output_tokens" => 2}
+    }
+
+    model =
+      Models.init_decision_model!("typesafe:jev-latest",
+        images: true,
+        long_context: true,
+        api_key: "fixture-secret",
+        transport: Fixture.Transport,
+        transport_opts: [parent: self(), body: body]
+      )
+
+    assert model.profile.extra.alias_of == "jev-1.14.0"
+    assert model.profile.image_inputs
+    assert model.profile.max_input_tokens == 262_144
+    image = ContentBlock.image(data: "AAAA", mime_type: "image/png")
+    input = %{state: %{photo: image}, questions: %{logo: Question.box(instructions: "Locate the logo in photo.")}}
+
+    assert {:ok, response} = DecisionModel.invoke(model, input)
+    assert %BoxAnswer{box: %{top: 0.1, bottom: 0.6, left: 0.2, right: 0.9}, confidence: nil} = response.answers["logo"]
+    assert {:ok, serialized} = Serialization.dump(response)
+    assert {:ok, ^response} = Serialization.load(serialized)
+
+    assert_receive {:typesafe_request, request}
+    assert {"typesafe-danger-zone-images", "true"} in request.headers
+    assert {"typesafe-danger-zone-long-context", "true"} in request.headers
+    assert %{"text" => name} = get_in(request.json, ["state", "photo"])
+    assert request.json["assets"] == %{name => %{"type" => "image", "format" => "png", "data_base64" => "AAAA"}}
+    assert request.json["questions"]["logo"] == %{"type" => "box", "instructions" => "Locate the logo in photo."}
+
+    assert {:error, %{type: :invalid_decision_input}} =
+             DecisionModel.invoke(model, input, model: "jev-1.13.0")
+
+    refute_received {:typesafe_request, _request}
+  end
+
+  test "the image opt-in keeps Jev text evidence's existing wire shape" do
+    state = %{history: [%Message{role: :user, content: ["plain", %{"type" => "text", "text" => "block"}]}]}
+    input = %{state: state, questions: %{ready: Question.noul(instructions: "Is it ready?")}}
+
+    assert {:ok, body} = Input.normalize(input)
+    assert {:ok, ^body} = Input.normalize(input, images: true)
+
+    assert [%{"name" => nil, "tool_call_id" => nil, "tool_calls" => [], "content" => ["plain", %{"text" => "block"}]}] =
+             body["state"]["history"]
+  end
+
+  test "decision question helpers honor the model's image opt-in" do
+    image = ContentBlock.image(data: "AAAA", mime_type: "image/png")
+    instructions = %{text: "Is this a logo?", image: image}
+    opted_in = Models.init_decision_model!("typesafe:jev-latest", images: true)
+
+    assert {:ok, %Question{type: :noul, instructions: ^instructions}} =
+             DecisionModel.yes_no_question(opted_in, instructions)
+
+    assert {:error, %{type: :invalid_decision_input}} =
+             DecisionModel.yes_no_question(Models.init_decision_model!("typesafe:jev-latest"), instructions)
+  end
+
+  test "provider image errors preserve the actual message and request ID" do
+    model =
+      Fixture.model(
+        respond: fn _request ->
+          {:ok,
+           Response.new(
+             status: 400,
+             headers: [{"x-typesafe-request-id", "invalid-image"}],
+             body: %{"detail" => %{"message" => "Invalid image dimensions.", "error_type" => "api_usage_error"}}
+           )}
+        end
+      )
+
+    assert {:error, error} = DecisionModel.invoke(model, Fixture.input())
+    assert error.type == :invalid_request
+    assert error.message == "Invalid image dimensions."
+    assert error.details.error_type == "api_usage_error"
+    assert error.details.request_id == "invalid-image"
   end
 
   test "invalid inputs fail locally instead of dropping evidence" do

@@ -267,6 +267,31 @@ defmodule BeamWeaver.OpenAI.ChatCompletionsModelTest do
            }
   end
 
+  test "GPT-6.1 Terra allows none reasoning and requires Responses for function tools" do
+    model = Models.init_chat_model!("openai:gpt-6.1-terra", api: :chat_completions)
+    messages = [Message.user("hello")]
+
+    assert {:ok, body} =
+             ChatCompletionsModel.request_body(model, messages,
+               reasoning_effort: :none,
+               temperature: 0.5,
+               max_tokens: 256
+             )
+
+    assert body["reasoning_effort"] == "none"
+    assert body["temperature"] == 0.5
+    assert body["max_completion_tokens"] == 256
+
+    assert {:error, %{details: %{alternative_api: :responses}}} =
+             ChatCompletionsModel.request_body(model, messages,
+               reasoning_effort: :none,
+               tools: [weather_tool()]
+             )
+
+    assert {:error, %{details: %{expected_reasoning_effort: :none}}} =
+             ChatCompletionsModel.request_body(model, messages, reasoning_effort: :medium, temperature: 0.5)
+  end
+
   test "GPT-6 Astra and GPT-6.1 Sol Chat Completions reject tools and unsupported controls" do
     for model_id <- ["gpt-6-astra", "gpt-6.1-sol"] do
       assert {:ok, model} =

@@ -3,9 +3,9 @@ defmodule BeamWeaver.Models.ProfileRegistry.TypeSafe do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Models.Profile
 
-  # Source: https://docs.typesafe.ai/models, verified 2026-10-19.
+  # Source: https://docs.typesafe.ai/models, verified 2026-11-12.
   @known ["jev-1.14.0", "jev-1.13.0", "jev-latest", "jev-preview"]
-  @aliases %{"jev-latest" => "jev-1.13.0", "jev-preview" => "jev-1.14.0"}
+  @aliases %{"jev-latest" => "jev-1.14.0", "jev-preview" => "jev-1.14.0"}
   def profiles, do: Enum.map(@known, &profile/1)
 
   def resolve("jev-" <> suffix = id) when suffix != "", do: {:ok, profile(id)}
@@ -16,10 +16,10 @@ defmodule BeamWeaver.Models.ProfileRegistry.TypeSafe do
 
     extra = %{
       model_kind: :decision,
-      primitives: [:choice, :score, :noul],
+      primitives: primitives(@aliases[id] || id),
       source: "https://docs.typesafe.ai/models",
-      verified_at: "2026-10-19",
-      pricing_last_checked: "2026-10-19",
+      verified_at: "2026-11-12",
+      pricing_last_checked: "2026-11-12",
       pricing_source_url: "https://docs.typesafe.ai/models"
     }
 
@@ -28,6 +28,8 @@ defmodule BeamWeaver.Models.ProfileRegistry.TypeSafe do
         do:
           Map.merge(extra, %{
             state_plus_longest_question_tokens: 32_000,
+            long_context_tokens: 262_144,
+            image_input_opt_in: true,
             input_price_per_mtok: 0.042,
             output_price_per_mtok: 0.0
           }),
@@ -39,7 +41,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.TypeSafe do
       provider: :typesafe,
       id: id,
       name: id,
-      last_updated: "2026-10-19",
+      last_updated: "2026-11-12",
       release_date: if(id == "jev-1.14.0", do: "2026-10-14"),
       text_outputs: false,
       decision_outputs: true,
@@ -51,4 +53,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.TypeSafe do
       extra: extra
     )
   end
+
+  defp primitives("jev-1.14.0"), do: [:choice, :score, :noul, :box]
+  defp primitives(_), do: [:choice, :score, :noul]
 end

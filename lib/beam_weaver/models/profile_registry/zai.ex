@@ -124,6 +124,15 @@ defmodule BeamWeaver.Models.ProfileRegistry.ZAI do
                     })
                   )
 
+  @glm_5_3_flashx_legal %{
+    @glm_5_3_flashx
+    | id: "glm-5.3-flashx-legal",
+      name: "GLM-5.3-FlashX-Legal",
+      release_date: "2026-11-02",
+      last_updated: "2026-11-12",
+      extra: Map.put(@glm_5_3_flashx.extra, :pricing_last_checked, "2026-11-12")
+  }
+
   @glm_5_2 Profile.new(
              Map.merge(@common_profile, %{
                provider: :zai,
@@ -168,6 +177,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.ZAI do
                 {{:zai, "glm-5.3"}, @glm_5_3},
                 {{:zai, "glm-5.3-flash"}, @glm_5_3_flash},
                 {{:zai, "glm-5.3-flashx"}, @glm_5_3_flashx},
+                {{:zai, "glm-5.3-flashx-legal"}, @glm_5_3_flashx_legal},
                 {{:zai, "glm-5.2"}, @glm_5_2}
               ] ++
                 for {id, name, pricing} <- @earlier_models do

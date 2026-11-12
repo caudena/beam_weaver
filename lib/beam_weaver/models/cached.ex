@@ -33,12 +33,8 @@ defmodule BeamWeaver.Models.Cached do
 
     with :ok <- require_decision_model(wrapper) do
       case lookup(wrapper, :decision_model, input, key_opts) do
-        {:hit, %response_module{} = response, _metadata}
-        when response_module in [BeamWeaver.TypeSafe.Response, BeamWeaver.OpenAI.Decisions.Response] ->
-          {:ok, response_module.cached(response)}
-
-        {:hit, _value, _metadata} ->
-          {:error, Error.new(:invalid_cache_entry, "cached value is not a decision response")}
+        {:hit, response, _metadata} ->
+          cached_decision(response)
 
         {:miss, store} ->
           with {:ok, response} <- BeamWeaver.Core.DecisionModel.invoke(wrapper.model, input, opts),
@@ -51,6 +47,17 @@ defmodule BeamWeaver.Models.Cached do
     end
   end
 
+  defp cached_decision(%module{answers: %{}, usage: %{}, metadata: %{}} = response) do
+    if BeamWeaver.Behaviour.exported?(module, :cached, 1),
+      do: {:ok, module.cached(response)},
+      else: invalid_decision_cache()
+  end
+
+  defp cached_decision(_response), do: invalid_decision_cache()
+
+  defp invalid_decision_cache,
+    do: {:error, Error.new(:invalid_cache_entry, "cached value is not a decision response")}
+
   defp require_decision_model(wrapper) do
     if decision_model?(wrapper),
       do: :ok,
@@ -61,18 +68,34 @@ defmodule BeamWeaver.Models.Cached do
   def invoke(%__MODULE__{} = wrapper, input, opts) when is_map(input), do: evaluate(wrapper, input, opts)
 
   def invoke(%__MODULE__{} = wrapper, messages, opts) when is_list(messages) do
-    with {:ok, message, _status, _metadata} <- chat(wrapper, messages, opts), do: {:ok, message}
+    if ChatModel.cacheable_invocation?(wrapper.model, opts) do
+      with {:ok, message, _status, _metadata} <- chat(wrapper, messages, opts), do: {:ok, message}
+    else
+      ChatModel.invoke(wrapper.model, messages, opts)
+    end
   end
 
   @impl true
-  def stream(%__MODULE__{} = wrapper, input, opts) when is_map(input) or is_list(input) do
+  def stream(%__MODULE__{} = wrapper, input, opts) when is_map(input) do
     with {:ok, value} <- invoke(wrapper, input, opts), do: {:ok, [value]}
+  end
+
+  def stream(%__MODULE__{} = wrapper, messages, opts) when is_list(messages) do
+    if ChatModel.cacheable_invocation?(wrapper.model, opts) do
+      with {:ok, message, _status, _metadata} <- chat(wrapper, messages, opts), do: {:ok, [message]}
+    else
+      ChatModel.stream(wrapper.model, messages, opts)
+    end
   end
 
   @impl true
   def stream_events(%__MODULE__{} = wrapper, messages, opts) when is_list(messages) do
-    with {:ok, message, status, metadata} <- chat(wrapper, messages, opts),
-         do: {:ok, cached_event_stream(message, status, metadata)}
+    if ChatModel.cacheable_invocation?(wrapper.model, opts) do
+      with {:ok, message, status, metadata} <- chat(wrapper, messages, opts),
+           do: {:ok, cached_event_stream(message, status, metadata)}
+    else
+      ChatModel.stream_events(wrapper.model, messages, opts)
+    end
   end
 
   defp chat(wrapper, messages, opts) do

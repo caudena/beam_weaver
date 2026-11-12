@@ -4,7 +4,7 @@ defmodule BeamWeaver.TypeSafe.Decoder do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Provider.Validation
   alias BeamWeaver.Result
-  alias BeamWeaver.TypeSafe.{ChoiceAnswer, NoulAnswer, Response, ScoreAnswer}
+  alias BeamWeaver.TypeSafe.{BoxAnswer, ChoiceAnswer, NoulAnswer, Response, ScoreAnswer}
 
   # Provider distributions are rounded; do not require exact floating-point equality.
   @rounding_tolerance 0.02
@@ -65,6 +65,22 @@ defmodule BeamWeaver.TypeSafe.Decoder do
     if probability?(confidence) and is_number(score) and score >= 0 and score <= length(criteria) - 1 and
          distribution?(probabilities, keys) and legend == expected_legend do
       {:ok, %ScoreAnswer{score: score, confidence: confidence, probabilities: probabilities, legend: legend}}
+    else
+      invalid()
+    end
+  end
+
+  defp answer(
+         %{
+           "type" => "box",
+           "box" => %{"top" => top, "bottom" => bottom, "left" => left, "right" => right},
+           "confidence" => confidence
+         },
+         %{"type" => "box"}
+       ) do
+    if Enum.all?([top, bottom, left, right], &probability?/1) and
+         top <= bottom and left <= right and (is_nil(confidence) or probability?(confidence)) do
+      {:ok, %BoxAnswer{box: %{top: top, bottom: bottom, left: left, right: right}, confidence: confidence}}
     else
       invalid()
     end

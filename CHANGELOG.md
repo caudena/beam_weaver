@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.0.1 - 2026-11-12
+
+- Added Claude Fable 5.2 and Mythos 5.2 with adaptive thinking, model-specific
+  tool validation, and prompt-cache pricing. Mythos requires Anthropic
+  verification. [Anthropic provider guide](docs/providers/anthropic.md)
+- Added Gemini 4 Carbon with automatic long-decode continuation and the
+  December 1 pricing transition. [Google provider guide](docs/providers/google.md#gemini-4-argon-and-carbon)
+- Added GPT-6.1 Terra, GPT-6-Cyber, and GPT-6 Rosalind with short- and
+  long-context pricing. [OpenAI provider guide](docs/providers/openai.md)
+- Added GPT-Image-2.6 Sunburst and Flare to the Images API, with complexity,
+  SVG and GIF generation, and JSON image edits by URL or file ID.
+  [OpenAI Images guide](docs/providers/openai.md#images-and-moderation)
+- Added Gemini Decision 1 with typed yes/no, choice, and score answers.
+  Gemini tool results now carry inline and URI-backed media. The registry
+  records the December 1 reroutes for Gemini 2.5 Pro and Flash.
+  [Google provider guide](docs/providers/google.md)
+- Added Anthropic Message Threads create and continue requests. Requests
+  using API version `2026-10-21` validate its sampling and message block
+  restrictions locally. [Anthropic provider guide](docs/providers/anthropic.md)
+- Updated OpenAI Decisions for 400 questions, native JSON, question images,
+  and prompt caching. OpenAI cost estimates now price 30-minute and 12-hour
+  cache writes separately. Image requests accept GIF timing and frame
+  controls, and traces retain SVG author usage.
+  [OpenAI provider guide](docs/providers/openai.md)
+- Added Kimi K3.1 Pro and Highspeed with cache-write pricing. Pro is the
+  default as K2 models approach retirement. K3 series models support native
+  stateless Responses, including hosted web search and streamed replies.
+  [Moonshot provider guide](docs/providers/moonshot.md)
+- DeepSeek estimates include billed Search and Fetch usage. Added
+  GLM-5.3-FlashX-Legal and documented xAI's Chat Completions deprecation.
+  [Provider guides](docs/providers.md)
+- Updated Jev aliases to 1.14 and added opt-in inline images, Box answers,
+  and long context. [TypeSafe provider guide](docs/providers/typesafe.md)
+
 ## 1.0.0 - 2026-10-08
 
 This release removes compatibility surfaces that nothing inside BeamWeaver

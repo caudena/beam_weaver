@@ -192,7 +192,42 @@ defmodule BeamWeaver.Models.ProfileRegistry.Anthropic do
                         }
                       })
 
+  @claude_5_2_profile Map.merge(@claude_5_5_profile, %{
+                        release_date: "2026-11-09",
+                        last_updated: "2026-11-09",
+                        extra:
+                          Map.merge(@claude_5_5_profile.extra, %{
+                            batch_input_price_per_mtok: 4.00,
+                            batch_cached_input_price_per_mtok: 0.10,
+                            batch_output_price_per_mtok: 20.00,
+                            cache_read_price_per_mtok: 0.20,
+                            cached_input_price_per_mtok: 0.20,
+                            cache_write_5m_price_per_mtok: 10.00,
+                            cache_write_1h_price_per_mtok: 16.00,
+                            compaction_on_demand: true,
+                            fast_mode_price_multiplier: 2.0,
+                            input_price_per_mtok: 8.00,
+                            output_price_per_mtok: 40.00,
+                            pricing_last_checked: "2026-11-12",
+                            retirement_not_before: "2027-11-09",
+                            supported_advisor_models: ["claude-fable-5-2", "claude-mythos-5-2"],
+                            thinking_always_on: true,
+                            thinking_types: [:adaptive],
+                            tool_choice_modes: [:auto, :none]
+                          })
+                      })
+
   @profiles %{
+    {:anthropic, "claude-fable-5-2"} =>
+      Profile.new(Map.merge(@claude_5_2_profile, %{id: "claude-fable-5-2", name: "Claude Fable 5.2"})),
+    {:anthropic, "claude-mythos-5-2"} =>
+      Profile.new(
+        Map.merge(@claude_5_2_profile, %{
+          id: "claude-mythos-5-2",
+          name: "Claude Mythos 5.2",
+          extra: Map.put(@claude_5_2_profile.extra, :availability, :verified_access)
+        })
+      ),
     {:anthropic, "claude-haiku-5-5"} =>
       Profile.new(
         Map.merge(@claude_5_5_profile, %{
@@ -633,7 +668,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Anthropic do
   @profiles Map.new(@profiles, fn {key, profile} ->
               extra =
                 profile.extra
-                |> Map.put(:pricing_last_checked, "2026-10-19")
+                |> Map.update(:pricing_last_checked, "2026-10-19", &max(&1, "2026-10-19"))
                 |> Map.put(:pricing_source_url, "https://platform.claude.com/docs/en/about-claude/pricing")
 
               extra =

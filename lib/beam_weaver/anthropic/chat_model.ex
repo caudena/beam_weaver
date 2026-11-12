@@ -48,6 +48,7 @@ defmodule BeamWeaver.Anthropic.ChatModel do
             stop_sequences: nil,
             service_tier: nil,
             thinking: nil,
+            thread: nil,
             output_config: nil,
             reasoning_effort: nil,
             effort: nil,
@@ -100,6 +101,9 @@ defmodule BeamWeaver.Anthropic.ChatModel do
       |> Keyword.put(:max_tokens, max_tokens || profile.max_output_tokens || 4096)
     )
   end
+
+  @impl true
+  def cacheable_invocation?(model, opts), do: is_nil(RequestBuilder.thread_option(model, opts))
 
   @impl true
   def resolve_invocation_model(%__MODULE__{} = model, opts),

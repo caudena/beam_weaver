@@ -9,7 +9,9 @@ defmodule BeamWeaver.Google.LongDecode do
   alias BeamWeaver.Stream.Envelope
   alias BeamWeaver.Stream.Events
 
-  def enabled?(model, opts), do: Keyword.get(opts, :automatic_continuation, model == "gemini-4-argon") == true
+  def enabled?(model, opts) do
+    Keyword.get(opts, :automatic_continuation, model in ["gemini-4-argon", "gemini-4-carbon"]) == true
+  end
 
   # A single outer producer owns all hops. The inner HTTP stream monitors its
   # consumer, so halting the outer stream also cancels an in-flight request.

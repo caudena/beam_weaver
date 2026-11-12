@@ -49,6 +49,8 @@ defmodule BeamWeaver.Agent.CapabilityProfile do
 
   def builtin(:anthropic_haiku_4_5), do: builtin("anthropic:claude-haiku-4-5")
   def builtin(:anthropic_sonnet_4_6), do: builtin("anthropic:claude-sonnet-4-6")
+  def builtin(:anthropic_fable_5_2), do: builtin("anthropic:claude-fable-5-2")
+  def builtin(:anthropic_mythos_5_2), do: builtin("anthropic:claude-mythos-5-2")
   def builtin(:anthropic_fable_5_1), do: builtin("anthropic:claude-fable-5-1")
   def builtin(:anthropic_mythos_5_1), do: builtin("anthropic:claude-mythos-5-1")
   def builtin(:anthropic_fable_5), do: builtin("anthropic:claude-fable-5")
@@ -187,6 +189,7 @@ defmodule BeamWeaver.Agent.CapabilityProfile do
 
     named = [
       {anthropic_universal, ~w(anthropic:claude-haiku-4-5 anthropic:claude-sonnet-4-6)},
+      {anthropic_opus, ~w(anthropic:claude-fable-5-2 anthropic:claude-mythos-5-2)},
       {anthropic_opus, ~w(anthropic:claude-fable-5-1 anthropic:claude-mythos-5-1 anthropic:claude-fable-5)},
       {anthropic_opus, ~w(anthropic:claude-mythos-5 anthropic:claude-opus-4-8 anthropic:claude-opus-4-7)},
       {codex, ~w(openai:gpt-5.5 openai:gpt-5.4 openai:gpt-5.4-mini)}

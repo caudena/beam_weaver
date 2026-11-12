@@ -41,6 +41,21 @@ defmodule BeamWeaver.OpenAI.Client.ResponseDecoder do
     end)
   end
 
+  def finish_responses_events(terminal, %Response{} = response, opts, config, decode) do
+    header_opts = decoder_opts(config, opts)
+
+    events =
+      for %{"data" => %{"response" => payload} = data} = event <- Enum.reverse(terminal || []) do
+        %{event | "data" => %{data | "response" => ResponseDecoder.attach_headers(payload, response, header_opts)}}
+      end
+
+    {:ok,
+     Streaming.Messages.typed_events(events,
+       provider: config.provider,
+       decode_response: decode
+     )}
+  end
+
   # A collected stream decodes to the Chat Completions response its events add
   # up to, so it becomes the same message as a non-streamed response.
   def chat_completions_stream_response(result, opts, config) do

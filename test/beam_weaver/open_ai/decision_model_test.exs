@@ -234,6 +234,37 @@ defmodule BeamWeaver.OpenAI.DecisionModelTest do
            }
   end
 
+  test "GA requests send native JSON, question images, 400 questions, and prompt caching" do
+    questions =
+      Map.new(1..400, fn index ->
+        {"q#{index}", Question.predicate(instructions: "Is the order late?")}
+      end)
+      |> Map.replace!("q2", Question.predicate(instructions: ["Is this evidence relevant?", @image]))
+
+    assert {:ok, _response} =
+             DecisionModel.invoke(
+               Fixture.model(),
+               %{state: {:input_json, %{order: %{late: true}}}, questions: questions},
+               prompt_cache_key: "shared-evidence",
+               prompt_cache_options: %{mode: :implicit, ttl: "30m"}
+             )
+
+    assert_receive {:decisions_request, request}
+    assert length(request.json["questions"]) == 400
+    assert request.json["prompt_cache_key"] == "shared-evidence"
+    assert request.json["prompt_cache_options"] == %{"mode" => "implicit", "ttl" => "30m"}
+
+    assert [%{"content" => [%{"type" => "input_json", "data" => %{"order" => %{"late" => true}}}]}] =
+             request.json["input"]
+
+    assert %{
+             "instructions" => [
+               %{"type" => "input_text"},
+               %{"type" => "input_image", "image_url" => "data:image/png;base64,AAAA"}
+             ]
+           } = Enum.find(request.json["questions"], &(&1["name"] == "q2"))
+  end
+
   test "requests the API can't take fail before they are sent" do
     many_images = Message.user(List.duplicate(@image, 129))
 
@@ -246,15 +277,17 @@ defmodule BeamWeaver.OpenAI.DecisionModelTest do
            }, "distinct choices"},
           {%{state: "x", questions: %{"s" => Question.score(instructions: "x", levels: ["only"])}},
            "two or more levels"},
-          {%{state: "x", questions: %{"p" => Question.predicate(instructions: %{question: "x"})}}, "non-empty string"},
-          {%{state: "x", questions: %{}}, "1 to 200 questions"},
-          {%{state: "x", questions: Map.new(1..201, &{"q#{&1}", Question.predicate(instructions: "x")})}, "1 to 200"},
+          {%{state: "x", questions: %{"p" => Question.predicate(instructions: %{question: "x"})}},
+           "contain text or images"},
+          {%{state: "x", questions: %{}}, "1 to 400 questions"},
+          {%{state: "x", questions: Map.new(1..401, &{"q#{&1}", Question.predicate(instructions: "x")})}, "1 to 400"},
           {%{state: Message.user([%{type: :file, url: "https://example.test/a.pdf"}]), questions: @question},
            "text and images"},
           {%{state: Message.user([%{type: :image, file_id: "file_1"}]), questions: @question}, "not file IDs"},
           {%{state: %{messages: [Message.assistant([%{type: :reasoning, reasoning: "hmm"}])]}, questions: @question},
            "convert other content"},
           {%{state: %{at: DateTime.utc_now()}, questions: @question}, "struct"},
+          {%{state: %{:status => "ready", "status" => "pending"}, questions: @question}, "colliding JSON keys"},
           {%{state: many_images, questions: @question}, "at most 128 images"}
         ] do
       assert {:error, %{type: :invalid_decision_input} = error} = DecisionModel.invoke(Fixture.model(), input)

@@ -50,6 +50,19 @@ checks its actual result and continues the conversation. Then use the
 | Apply retries, limits, caching and context policies | [Built-in Middleware](docs/builtin_middleware.md), [Context Management](docs/context_management.md) |
 | Test and inspect production behavior | [Testing](docs/testing.md), [Tracing](docs/tracing.md), [Going to Production](docs/going_to_production.md) |
 
+## Debug and monitor agents with WeaveScope
+
+Find the tool that stalled or the model call that drove up cost. WeaveScope
+shows each agent run as a trace tree or waterfall. Open a step to inspect
+its inputs, outputs, and timing. Across runs, track p95 latency, error rates,
+token usage, and cost.
+
+BeamWeaver's built-in exporter sends traces in the background once you
+configure an endpoint and API key.
+[Explore WeaveScope](https://weavescope.com) · [Set up trace export](docs/tracing.md#export-to-weavescope)
+
+![WeaveScope tracing view](docs/assets/weavescope-tracing.png)
+
 ## Providers
 
 OpenAI, Anthropic, Google Gemini, xAI, DeepSeek, Moonshot, Z.ai and TypeSafe.

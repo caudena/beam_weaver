@@ -51,11 +51,16 @@ defmodule BeamWeaver.Serialization.Registry do
               "beam_weaver.typesafe.choice_answer" => BeamWeaver.TypeSafe.ChoiceAnswer,
               "beam_weaver.typesafe.score_answer" => BeamWeaver.TypeSafe.ScoreAnswer,
               "beam_weaver.typesafe.noul_answer" => BeamWeaver.TypeSafe.NoulAnswer,
+              "beam_weaver.typesafe.box_answer" => BeamWeaver.TypeSafe.BoxAnswer,
               "beam_weaver.openai.decisions.response" => BeamWeaver.OpenAI.Decisions.Response,
               "beam_weaver.openai.decisions.predicate_answer" => BeamWeaver.OpenAI.Decisions.PredicateAnswer,
               "beam_weaver.openai.decisions.choice_answer" => BeamWeaver.OpenAI.Decisions.ChoiceAnswer,
               "beam_weaver.openai.decisions.score_answer" => BeamWeaver.OpenAI.Decisions.ScoreAnswer,
               "beam_weaver.openai.decisions.refusal_answer" => BeamWeaver.OpenAI.Decisions.RefusalAnswer,
+              "beam_weaver.google.decisions.response" => BeamWeaver.Google.Decisions.Response,
+              "beam_weaver.google.decisions.noul_answer" => BeamWeaver.Google.Decisions.NoulAnswer,
+              "beam_weaver.google.decisions.choice_answer" => BeamWeaver.Google.Decisions.ChoiceAnswer,
+              "beam_weaver.google.decisions.score_answer" => BeamWeaver.Google.Decisions.ScoreAnswer,
               "beam_weaver.timeout_policy" => BeamWeaver.TimeoutPolicy,
               "beam_weaver.tracing.run" => BeamWeaver.Tracing.Run
             }

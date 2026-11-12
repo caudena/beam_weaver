@@ -1,6 +1,6 @@
 defmodule BeamWeaver.OpenAI.DecisionModel do
   @moduledoc """
-  OpenAI's Decisions API, in public beta: ask `gpt-6-luna` typed questions
+  OpenAI's Decisions API: ask `gpt-6-luna` typed questions
   about some state, with `BeamWeaver.Core.DecisionModel.invoke/3` or
   `BeamWeaver.Core.DecisionModel.batch/3`. Create one with
   `BeamWeaver.Models.init_decision_model("openai:gpt-6-luna")`.
@@ -9,12 +9,11 @@ defmodule BeamWeaver.OpenAI.DecisionModel do
   `BeamWeaver.OpenAI.Decisions.Question` values; the response is a
   `BeamWeaver.OpenAI.Decisions.Response` with an answer for each name.
 
-  `state` is a string, a user message, a list of user messages, or other
-  data such as a conversation or a map. Strings and user messages, with text
-  and images, go to the API as they are. Anything else goes as JSON text,
-  with the images of the messages in it placed where they appear. Messages
-  in it take text and images only, so convert other content to text first.
-  Images are data URLs or HTTP(S) URLs, at most 128 in a request.
+  State can be text, user messages, or JSON-compatible data. Use
+  `{:input_json, data}` to send a JSON object or array of objects as native
+  structured evidence. Other structured state goes as JSON text with images
+  interleaved where they appear. Images are data URLs or HTTP(S) URLs, at
+  most 128 in a request across state and questions.
 
   The API doesn't bill output tokens, so `metadata.cost` counts input only.
   """
@@ -27,8 +26,11 @@ defmodule BeamWeaver.OpenAI.DecisionModel do
   alias BeamWeaver.Models.{ProfileRegistry, UsageCost}
   alias BeamWeaver.OpenAI.Client
   alias BeamWeaver.OpenAI.Decisions.{Decoder, Input, Question}
+  alias BeamWeaver.Provider.Options
 
-  defstruct [:client, :profile, model: "gpt-6-luna"]
+  @request_options [:prompt_cache_key, :prompt_cache_options, :safety_identifier]
+
+  defstruct [:client, :profile, :prompt_cache_key, :prompt_cache_options, :safety_identifier, model: "gpt-6-luna"]
   @type t :: %__MODULE__{}
 
   @doc """
@@ -42,6 +44,9 @@ defmodule BeamWeaver.OpenAI.DecisionModel do
 
     %__MODULE__{
       model: model,
+      prompt_cache_key: Keyword.get(opts, :prompt_cache_key),
+      prompt_cache_options: Keyword.get(opts, :prompt_cache_options),
+      safety_identifier: Keyword.get(opts, :safety_identifier),
       profile: Keyword.get_lazy(opts, :profile, fn -> elem(ProfileRegistry.fetch(:openai, model), 1) end),
       client: Keyword.get_lazy(opts, :client, fn -> Client.new(opts) end)
     }
@@ -63,9 +68,13 @@ defmodule BeamWeaver.OpenAI.DecisionModel do
 
   @impl true
   def evaluate(%__MODULE__{} = model, input, opts) do
-    with :ok <- DecisionModel.check_options(opts, [], "OpenAI Decisions"),
+    with :ok <- DecisionModel.check_options(opts, @request_options, "OpenAI Decisions"),
          {:ok, body} <- Input.request(input) do
-      body = Map.put(body, "model", model.model)
+      body =
+        Enum.reduce(@request_options, Map.put(body, "model", model.model), fn field, request ->
+          value = Options.option(model, opts, field)
+          Options.put_optional(request, Atom.to_string(field), Options.normalize_value(value))
+        end)
 
       DecisionModel.traced("openai", "OpenAI.#{model.model}", body, opts, fn ->
         started = System.monotonic_time(:millisecond)

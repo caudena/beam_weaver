@@ -38,6 +38,7 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     :structured_output,
     :temperature,
     :thinking,
+    :thread,
     :tool_choice,
     :tools,
     :top_k,
@@ -69,6 +70,7 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     :system,
     :temperature,
     :thinking,
+    :thread,
     :tool_choice,
     :tools,
     :top_k,
@@ -88,11 +90,13 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
          :ok <- validate_sampling_params(model, opts),
          :ok <- validate_effort(model, opts),
          :ok <- validate_thinking_params(model, opts),
-         :ok <- validate_tool_compatibility(model, opts),
+         tools = tools(opts),
+         :ok <- validate_tool_compatibility(model, opts, tools),
          :ok <- validate_model_features(model, opts),
          :ok <- validate_fallback_credit_params(model, opts),
          fallbacks = option(model, opts, :fallbacks),
-         {:ok, body} <- shared_body(model, messages, opts, fallbacks, option(model, opts, :fallback_credit_token)) do
+         {:ok, body} <-
+           shared_body(model, messages, opts, tools, fallbacks, option(model, opts, :fallback_credit_token)) do
       {:ok,
        body
        |> Map.put("max_tokens", max_tokens(model, opts))
@@ -110,22 +114,28 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
           {:ok, map()} | {:error, Error.t()}
   def count_tokens_body(model, messages, opts) do
     with {:ok, model} <- ModelResolution.resolve(model, opts),
+         :ok <- validate_count_thread(model, opts),
          :ok <- validate_effort(model, opts),
          :ok <- validate_thinking_params(model, opts),
-         :ok <- validate_tool_compatibility(model, opts),
-         do: shared_body(model, messages, opts, nil, nil)
+         tools = tools(opts),
+         :ok <- validate_tool_compatibility(model, opts, tools),
+         do: shared_body(model, messages, opts, tools, nil, nil)
   end
 
-  defp shared_body(model, messages, opts, fallbacks, fallback_credit_token) do
+  defp shared_body(model, messages, opts, tools, fallbacks, fallback_credit_token) do
     message_opts = [mid_conversation_system_messages: profile_extra(model, :mid_conversation_system_messages) == true]
 
     with {:ok, {system, formatted_messages}} <- Messages.format_messages(messages, message_opts),
+         :ok <- validate_message_version(model, opts, formatted_messages),
+         {:ok, thread} <- request_thread(model, opts, system, tools, formatted_messages),
          :ok <- validate_final_turn(model, formatted_messages, opts),
          :ok <- validate_per_turn_effort(model, formatted_messages, opts),
          {:ok, output_config} <- output_config(model, opts),
          :ok <- validate_compaction_params(model, opts, output_config) do
-      tools = tools(opts)
-      betas = betas(model, opts, tools, output_config, formatted_messages, fallbacks, fallback_credit_token)
+      betas =
+        model
+        |> betas(opts, tools, output_config, formatted_messages, fallbacks, fallback_credit_token)
+        |> maybe_add_beta(thread, "message-threads-2026-08-12")
 
       {:ok,
        %{"model" => model.model, "messages" => formatted_messages}
@@ -133,6 +143,7 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
        |> put_options(model, opts, [:speed], &Options.normalize_value/1)
        |> Options.put_optional("system", system)
        |> Options.put_optional("tools", tools)
+       |> Options.put_optional("thread", thread)
        |> Options.put_optional("tool_choice", tool_choice(model, opts))
        |> Options.put_optional("thinking", Options.normalize_option_map(thinking(model, opts)))
        |> Options.put_optional("output_config", output_config)
@@ -207,7 +218,122 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
   defp request_error(model_name, details, message \\ @unsupported, type \\ :unsupported_model_param),
     do: {:error, Error.new(type, message, Enum.into(details, %{provider: :anthropic, model: model_name}))}
 
+  defp api_2026?(model, opts),
+    do: option(model, opts, :anthropic_version) == "2026-10-21"
+
+  defp validate_removed_sampling_params(model, opts) do
+    params = Enum.reject([:temperature, :top_p, :top_k], &is_nil(option(model, opts, &1)))
+
+    if params != [] do
+      request_error(model.model,
+        params: params,
+        reason: "Anthropic API version 2026-10-21 removed sampling parameters"
+      )
+    else
+      :ok
+    end
+  end
+
+  defp validate_message_version(model, opts, messages) do
+    if api_2026?(model, opts) do
+      case Enum.find_value(messages, &incompatible_message/1) do
+        nil -> :ok
+        reason -> request_error(model.model, [params: [:messages]], reason, :invalid_messages)
+      end
+    else
+      :ok
+    end
+  end
+
+  defp incompatible_message(%{"role" => "assistant", "content" => blocks}) when is_list(blocks) do
+    if Enum.any?(blocks, &match?(%{"type" => "document"}, &1)),
+      do: "Anthropic API version 2026-10-21 rejects direct document blocks in assistant messages"
+  end
+
+  defp incompatible_message(%{"role" => "user", "content" => blocks}) when is_list(blocks) do
+    if Enum.any?(blocks, &user_citations?/1),
+      do: "Anthropic API version 2026-10-21 rejects citations on user text"
+  end
+
+  defp incompatible_message(_message), do: nil
+
+  defp user_citations?(%{"type" => "text", "citations" => [_ | _]}), do: true
+
+  defp user_citations?(%{"type" => "search_result", "content" => blocks}) when is_list(blocks),
+    do: Enum.any?(blocks, &user_citations?/1)
+
+  defp user_citations?(_block), do: false
+
+  defp validate_count_thread(model, opts) do
+    if is_nil(thread_option(model, opts)),
+      do: :ok,
+      else: request_error(model.model, [params: [:thread]], "Count tokens using the full conversation without a thread")
+  end
+
+  defp request_thread(model, opts, system, tools, messages) do
+    with {:ok, thread} <- normalize_thread(thread_option(model, opts), model.model) do
+      cond do
+        is_nil(thread) ->
+          {:ok, nil}
+
+        thread["type"] == "continue" and (system not in [nil, [], ""] or tools not in [nil, []]) ->
+          request_error(model.model, [params: [:thread]], "Omit system and tools when continuing a Messages thread")
+
+        option(model, opts, :compaction) || Enum.any?(messages, &block_type?(content_blocks(&1), ["compaction"])) ->
+          request_error(model.model, [params: [:thread, :compaction]], "Messages threads do not support compaction")
+
+        true ->
+          {:ok, thread}
+      end
+    end
+  end
+
+  @doc false
+  def thread_option(model, opts) do
+    case option(model, opts, :thread) do
+      nil ->
+        case MapAccess.fetch(Keyword.get(opts, :extra_body), "thread") do
+          {:ok, value} -> value
+          :error -> MapAccess.get(model.extra_body, "thread")
+        end
+
+      thread ->
+        thread
+    end
+  end
+
+  defp normalize_thread(nil, _model), do: {:ok, nil}
+  defp normalize_thread(:create, _model), do: {:ok, %{"type" => "create"}}
+
+  defp normalize_thread({:continue, id}, _model) when is_binary(id) and byte_size(id) > 0,
+    do: {:ok, %{"type" => "continue", "previous_message_id" => id}}
+
+  defp normalize_thread(%{} = thread, model) do
+    case Options.normalize_option_map(thread) do
+      %{"type" => "create"} = body when map_size(body) == 1 ->
+        normalize_thread(:create, model)
+
+      %{"type" => "continue", "previous_message_id" => id} = body when map_size(body) == 2 ->
+        normalize_thread({:continue, id}, model)
+
+      _ ->
+        invalid_thread(model)
+    end
+  end
+
+  defp normalize_thread(_value, model), do: invalid_thread(model)
+
+  defp invalid_thread(model),
+    do:
+      request_error(model, [params: [:thread]], "Use :create or {:continue, previous_message_id} for a Messages thread")
+
   defp validate_sampling_params(model, opts) do
+    if api_2026?(model, opts),
+      do: validate_removed_sampling_params(model, opts),
+      else: validate_profile_sampling_params(model, opts)
+  end
+
+  defp validate_profile_sampling_params(model, opts) do
     controls = profile_extra(model, :sampling_controls)
     default_only? = controls in [:default_only, "default_only"]
     temperature = option(model, opts, :temperature)
@@ -339,7 +465,7 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
     end
   end
 
-  defp validate_tool_compatibility(model, opts) do
+  defp validate_tool_compatibility(model, opts, tools) do
     modes = profile_extra(model, :tool_choice_modes)
 
     if is_list(modes) and :any not in modes and forced_tool_choice?(Keyword.get(opts, :tool_choice)) do
@@ -349,17 +475,24 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
         supported: modes
       )
     else
-      tools = List.wrap(tools(opts))
+      tools = List.wrap(tools)
+      supported_advisors = profile_extra(model, :supported_advisor_models)
       unsupported_advisors = profile_extra(model, :unsupported_advisor_models) || []
       unsupported_server_tools = profile_extra(model, :unsupported_server_tools) || []
 
       advisors =
         for %{"type" => "advisor_" <> _version} = tool <- tools,
-            tool["model"] in unsupported_advisors,
+            tool["model"] in unsupported_advisors or
+              (is_list(supported_advisors) and tool["model"] not in supported_advisors),
             uniq: true,
             do: tool["model"]
 
-      server_tools = tools |> Enum.map(&server_tool_family/1) |> Enum.filter(&(&1 in unsupported_server_tools))
+      server_tools =
+        for tool <- tools,
+            family = server_tool_family(tool),
+            family in unsupported_server_tools,
+            uniq: true,
+            do: family
 
       cond do
         advisors != [] ->
@@ -373,7 +506,7 @@ defmodule BeamWeaver.Anthropic.ChatModel.RequestBuilder do
         server_tools != [] ->
           request_error(
             model.model,
-            [params: [:tools], unsupported_server_tools: Enum.uniq(server_tools)],
+            [params: [:tools], unsupported_server_tools: server_tools],
             "server tool is not supported by model",
             :unsupported_feature
           )

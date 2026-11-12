@@ -3,6 +3,7 @@ defmodule BeamWeaver.OpenAI.Decisions.Decoder do
 
   alias BeamWeaver.Core.Error
   alias BeamWeaver.MapShape
+  alias BeamWeaver.OpenAI.MessageParts
   alias BeamWeaver.OpenAI.Decisions.{ChoiceAnswer, PredicateAnswer, RefusalAnswer, Response, ScoreAnswer}
   alias BeamWeaver.Result
 
@@ -72,11 +73,7 @@ defmodule BeamWeaver.OpenAI.Decisions.Decoder do
       input_tokens: input,
       output_tokens: output,
       total_tokens: usage["total_tokens"] || input + output,
-      input_token_details:
-        MapShape.reject_nil_or_empty(%{
-          cache_read: detail(usage, "input_tokens_details", "cached_tokens"),
-          cache_write: detail(usage, "input_tokens_details", "cache_write_tokens")
-        }),
+      input_token_details: MessageParts.input_token_details(usage["input_tokens_details"]),
       output_token_details:
         MapShape.reject_nil_or_empty(%{reasoning: detail(usage, "output_tokens_details", "reasoning_tokens")})
     })

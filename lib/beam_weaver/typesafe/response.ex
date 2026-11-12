@@ -13,6 +13,11 @@ defmodule BeamWeaver.TypeSafe.NoulAnswer do
   defstruct [:noul, type: :noul]
 end
 
+defmodule BeamWeaver.TypeSafe.BoxAnswer do
+  @moduledoc "Normalized image box edges and optional provider confidence."
+  defstruct [:box, :confidence, type: :box]
+end
+
 defmodule BeamWeaver.TypeSafe.Response do
   @moduledoc """
   A complete Jev evaluation. Answers are keyed by string question IDs.
@@ -60,17 +65,9 @@ defmodule BeamWeaver.TypeSafe.Response do
 
   @doc false
   def cached(%__MODULE__{} = response) do
-    response = from_serialized(Map.from_struct(response))
-
-    %{
-      response
-      | usage: %{input_tokens: 0, output_tokens: 0, total_tokens: 0},
-        latency_ms: 0,
-        metadata:
-          response.metadata
-          |> Map.put(:cache_hit, true)
-          |> Map.put(:original_usage, response.usage)
-          |> Map.put(:cost, %{input_cost: 0.0, output_cost: 0.0, total_cost: 0.0})
-    }
+    response
+    |> Map.from_struct()
+    |> from_serialized()
+    |> BeamWeaver.Core.DecisionModel.cached_response()
   end
 end

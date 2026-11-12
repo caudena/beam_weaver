@@ -431,6 +431,51 @@ defmodule BeamWeaver.Google.ChatModelTest do
            ] = body["contents"]
   end
 
+  test "Gemini tool responses include a file URI, display name and video processing mode" do
+    video =
+      BeamWeaver.Core.ContentBlock.video(
+        file_id: "https://generativelanguage.googleapis.com/v1beta/files/example",
+        mime_type: "video/mp4",
+        metadata: %{display_name: "clip.mp4", media_processing: :agentic}
+      )
+
+    audio = BeamWeaver.Core.ContentBlock.audio(data: "AAAA", mime_type: "audio/wav")
+    model = BeamWeaver.Models.init_chat_model!("google:gemini-4-carbon")
+    tool = Message.tool(["Here is the media.", video, audio], name: "find_media", tool_call_id: "call-1")
+    assert {:ok, body} = ChatModel.request_body(model, [tool])
+
+    assert [%{"parts" => [%{"functionResponse" => %{"parts" => [video_part, audio_part]}}]}] = body["contents"]
+
+    assert video_part == %{
+             "fileData" => %{
+               "fileUri" => "https://generativelanguage.googleapis.com/v1beta/files/example",
+               "mimeType" => "video/mp4",
+               "displayName" => "clip.mp4"
+             },
+             "mediaProcessing" => "AGENTIC"
+           }
+
+    assert audio_part == %{"inlineData" => %{"mimeType" => "audio/wav", "data" => "AAAA"}}
+  end
+
+  test "the old Gemini 2.5 IDs use replacement profiles from the announced reroute date" do
+    registry = BeamWeaver.Models.ProfileRegistry.Google
+
+    for {id, replacement} <- [{"gemini-2.5-pro", "gemini-3.8-flash"}, {"gemini-2.5-flash", "gemini-3.5-flash-lite"}] do
+      assert {:ok, old} = registry.resolve(id, ~D[2026-11-30])
+      assert old.status == :deprecated
+      assert old.extra.reroutes_on == "2026-12-01"
+      assert old.extra.recommended_replacement == replacement
+      assert old.extra.family_fallback
+
+      assert {:ok, current} = registry.resolve(id, ~D[2026-12-01])
+      assert {:ok, canonical} = registry.resolve(replacement)
+      assert current.id == id
+      assert current.extra.canonical_model == replacement
+      assert current.supported_params == canonical.supported_params
+    end
+  end
+
   test "request body nests screenshot bytes inside a Gemini function response" do
     assert {:ok, body} =
              ChatModel.request_body(

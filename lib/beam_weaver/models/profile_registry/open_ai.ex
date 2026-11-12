@@ -79,6 +79,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                               input_price_per_mtok: 10.00,
                               cached_input_price_per_mtok: 1.00,
                               cache_write_30m_price_per_mtok: 12.50,
+                              cache_write_12h_price_per_mtok: 25.00,
                               output_price_per_mtok: 50.00,
                               cost_currency: "USD",
                               pricing_source_url: @astra_source_url,
@@ -116,6 +117,23 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
 
   @gpt_6_specs [
     %{
+      id: "gpt-6.1-terra",
+      name: "GPT-6.1 Terra",
+      input: 1.00,
+      cached: 0.05,
+      output: 5.00,
+      cutoff: "2026-06-01",
+      release_date: "2026-10-26",
+      last_updated: "2026-10-26",
+      pricing_last_checked: "2026-11-12",
+      max_input_tokens: 922_000,
+      max_context_tokens: 1_050_000,
+      responses_tools_only: true,
+      fast_mode_eu_data_residency: true,
+      cache_read_discount_rate: 0.95,
+      provider_capabilities: [:computer_use, :explicit_prompt_caching]
+    },
+    %{
       id: "gpt-6.1-sol",
       name: "GPT-6.1 Sol",
       input: 2.00,
@@ -144,6 +162,19 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
 
   @gpt_6_profiles Map.new(@gpt_6_specs, fn spec ->
                     reasoning_required? = Map.get(spec, :reasoning_required, false)
+                    responses_tools_only? = Map.get(spec, :responses_tools_only, reasoning_required?)
+
+                    chat_params =
+                      cond do
+                        reasoning_required? ->
+                          @astra_chat_completions_params
+
+                        responses_tools_only? ->
+                          @astra_chat_completions_params ++ [:logprobs, :temperature, :top_logprobs, :top_p]
+
+                        true ->
+                          Params.chat_completions() -- [:audio, :modalities, :prompt_cache_retention]
+                      end
 
                     responses_params =
                       if reasoning_required?,
@@ -160,11 +191,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                          supported_params: responses_params,
                          supported_params_by_api: %{
                            responses: responses_params,
-                           chat_completions:
-                             if(reasoning_required?,
-                               do: @astra_chat_completions_params,
-                               else: Params.chat_completions() -- [:audio, :modalities, :prompt_cache_retention]
-                             )
+                           chat_completions: chat_params
                          },
                          max_context_tokens: Map.get(spec, :max_context_tokens),
                          max_input_tokens: Map.get(spec, :max_input_tokens, 1_050_000),
@@ -183,10 +210,11 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                            input_price_per_mtok: spec.input,
                            cached_input_price_per_mtok: spec.cached,
                            cache_write_30m_price_per_mtok: spec.input * 1.25,
+                           cache_write_12h_price_per_mtok: spec.input * 2.5,
                            output_price_per_mtok: spec.output,
                            cost_currency: "USD",
                            pricing_source_url: @pricing_source_url,
-                           pricing_last_checked: Map.get(spec, :last_updated, "2026-09-23"),
+                           pricing_last_checked: Map.get(spec, :pricing_last_checked, "2026-10-19"),
                            higher_context_pricing_threshold_tokens: 272_000,
                            higher_context_input_multiplier: 2.0,
                            higher_context_output_multiplier: 1.5,
@@ -196,7 +224,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                            flex_price_multiplier: 0.5,
                            fast_mode_price_multiplier: 2.0,
                            fast_mode_service_tiers: [:fast, :priority],
-                           fast_mode_eu_data_residency: false,
+                           fast_mode_eu_data_residency: Map.get(spec, :fast_mode_eu_data_residency, false),
                            unsupported_reasoning_efforts:
                              if(reasoning_required?, do: [:none, :minimal], else: [:minimal]),
                            reasoning_modes: [:standard, :pro],
@@ -206,22 +234,119 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                            prompt_cache_write_multiplier: 1.25,
                            prompt_cache_read_discount_rate: Map.get(spec, :cache_read_discount_rate, 0.90),
                            chat_completions_tool_calling:
-                             if(reasoning_required?, do: false, else: :none_reasoning_only),
-                           provider_capabilities: [
-                             :async_tool_calling,
-                             :computer_use,
-                             :configuration_updates,
-                             :explicit_prompt_caching,
-                             :mid_turn_steering,
-                             :multi_agent_beta,
-                             :persisted_reasoning,
-                             :pro_reasoning_mode,
-                             :programmatic_tool_calling
-                           ]
+                             if(responses_tools_only?, do: false, else: :none_reasoning_only),
+                           provider_capabilities:
+                             Map.get(spec, :provider_capabilities, [
+                               :async_tool_calling,
+                               :computer_use,
+                               :configuration_updates,
+                               :explicit_prompt_caching,
+                               :mid_turn_steering,
+                               :multi_agent_beta,
+                               :persisted_reasoning,
+                               :pro_reasoning_mode,
+                               :programmatic_tool_calling
+                             ])
                          }
                        })
                      )}
                   end)
+
+  @gpt_6_cyber_profile Profile.new(
+                         Map.merge(@openai_profile, %{
+                           id: "gpt-6-cyber",
+                           name: "GPT-6-Cyber",
+                           release_date: "2026-11-05",
+                           last_updated: "2026-11-05",
+                           max_input_tokens: 922_000,
+                           max_context_tokens: 1_050_000,
+                           temperature: false,
+                           supported_params: @astra_responses_params,
+                           supported_params_by_api: %{
+                             responses: @astra_responses_params,
+                             chat_completions:
+                               Params.chat_completions() -- [:audio, :modalities, :prompt_cache_retention]
+                           },
+                           extra: %{
+                             availability: :trusted_access,
+                             access_program: :daybreak_red,
+                             input_price_per_mtok: 20.00,
+                             cached_input_price_per_mtok: 2.00,
+                             output_price_per_mtok: 100.00,
+                             cache_write_30m_price_per_mtok: 25.00,
+                             cache_write_12h_price_per_mtok: 50.00,
+                             long_context_pricing: %{
+                               threshold_tokens: 272_000,
+                               input_price_per_mtok: 40.00,
+                               cached_input_price_per_mtok: 4.00,
+                               output_price_per_mtok: 150.00
+                             },
+                             cost_currency: "USD",
+                             pricing_source_url: @pricing_source_url <> "#cyber-models",
+                             pricing_last_checked: "2026-11-12"
+                           }
+                         })
+                       )
+
+  @gpt_6_rosalind_profile Profile.new(%{
+                            provider: :openai,
+                            id: "gpt-6-rosalind",
+                            name: "GPT-6 Rosalind",
+                            status: :active,
+                            release_date: "2026-10-30",
+                            last_updated: "2026-10-30",
+                            responses_api: true,
+                            reasoning_output: true,
+                            extra: %{
+                              availability: :trusted_access,
+                              access_program: :rosalind_research,
+                              input_price_per_mtok: 15.00,
+                              cached_input_price_per_mtok: 1.50,
+                              output_price_per_mtok: 75.00,
+                              cache_write_30m_price_per_mtok: 18.75,
+                              cache_write_12h_price_per_mtok: 37.50,
+                              higher_context_pricing_threshold_tokens: 272_000,
+                              higher_context_input_multiplier: 2.0,
+                              higher_context_output_multiplier: 1.5,
+                              cost_currency: "USD",
+                              pricing_source_url: @pricing_source_url <> "#life-sciences-models",
+                              pricing_last_checked: "2026-11-12"
+                            }
+                          })
+
+  @image_profiles Map.new(
+                    [
+                      {"gpt-image-2.6-flare", "GPT-Image-2.6 Flare"},
+                      {"gpt-image-2.6-sunburst", "GPT-Image-2.6 Sunburst"}
+                    ],
+                    fn {id, name} ->
+                      {{:openai, id},
+                       Profile.new(%{
+                         provider: :openai,
+                         id: id,
+                         name: name,
+                         status: :active,
+                         release_date: "2026-11-04",
+                         last_updated: "2026-11-04",
+                         image_inputs: true,
+                         image_url_inputs: true,
+                         text_outputs: false,
+                         image_outputs: true,
+                         usage_metadata: true,
+                         extra: %{
+                           api_family: :images,
+                           cost_currency: "USD",
+                           pricing_source_url: @pricing_source_url,
+                           pricing_last_checked: "2026-11-12",
+                           text_input_price_per_mtok: 5.00,
+                           cached_text_input_price_per_mtok: 1.25,
+                           image_input_price_per_mtok: 8.00,
+                           cached_image_input_price_per_mtok: 2.00,
+                           image_output_price_per_mtok: 30.00
+                         }
+                       })}
+                    end
+                  )
 
   @openai_5_6_specs [
     %{
@@ -346,7 +471,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
   ]
 
   @openai_frontier_ids MapSet.new(
-                         [@openai_astra_profile.id] ++
+                         [@openai_astra_profile.id, @gpt_6_cyber_profile.id, @gpt_6_rosalind_profile.id] ++
                            Enum.map(@gpt_6_specs, & &1.id) ++
                            Enum.map(@openai_5_6_specs, & &1.id) ++
                            Enum.map(@openai_frontier_specs, & &1.id)
@@ -359,6 +484,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                              input_price_per_mtok: spec.input,
                              cached_input_price_per_mtok: spec.cached,
                              cache_write_30m_price_per_mtok: spec.input * 1.25,
+                             cache_write_12h_price_per_mtok: spec.input * 2.5,
                              output_price_per_mtok: spec.output,
                              cost_currency: "USD",
                              pricing_source_url: @pricing_source_url
@@ -569,7 +695,12 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
     "o3" => "gpt-5"
   }
 
-  @profiles %{{:openai, @openai_astra_profile.id} => @openai_astra_profile}
+  @profiles %{
+              {:openai, @openai_astra_profile.id} => @openai_astra_profile,
+              {:openai, @gpt_6_cyber_profile.id} => @gpt_6_cyber_profile,
+              {:openai, @gpt_6_rosalind_profile.id} => @gpt_6_rosalind_profile
+            }
+            |> Map.merge(@image_profiles)
             |> Map.merge(@gpt_6_profiles)
             |> Map.merge(@openai_5_6_profiles)
             |> Map.merge(@openai_frontier_profiles)
@@ -608,7 +739,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                 })
             })
   @profiles Map.new(@profiles, fn {key, profile} ->
-              extra = Map.put(profile.extra, :pricing_last_checked, "2026-10-19")
+              extra = Map.put_new(profile.extra, :pricing_last_checked, "2026-10-19")
 
               extra =
                 if profile.id in ["gpt-6-astra", "gpt-6.1-sol"] do
@@ -674,7 +805,8 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
       canonical_id = @openai_chat_aliases[model] ->
         ProfileRegistry.fetch_alias(@profiles, :openai, model, canonical_id)
 
-      restricted_chat_model?(model) and not MapSet.member?(@openai_frontier_ids, model) ->
+      restricted_chat_model?(model) and not MapSet.member?(@openai_frontier_ids, model) and
+          not Map.has_key?(@image_profiles, {:openai, model}) ->
         non_frontier_model_error(model)
 
       true ->

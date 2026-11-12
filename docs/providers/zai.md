@@ -194,6 +194,7 @@ not an unlimited allowance.
 | `zai:glm-5.3` | 1,000,000 / 131,072 | chat; text; tools; structured output; reasoning |
 | `zai:glm-5.3-flash` | 1,000,000 / 131,072 | chat; text, image, PDF, video; tools; structured output; reasoning |
 | `zai:glm-5.3-flashx` | 1,000,000 / 131,072 | chat; text, image, PDF, video; tools; structured output; reasoning |
+| `zai:glm-5.3-flashx-legal` | 1,000,000 / 131,072 | chat; text, image, PDF, video; tools; structured output; reasoning |
 
 
 This table reflects local profiles. Live access and limits depend on your
