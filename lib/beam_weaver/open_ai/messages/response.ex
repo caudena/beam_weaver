@@ -324,6 +324,8 @@ defmodule BeamWeaver.OpenAI.Messages.Response do
       status: response["status"],
       user: response["user"],
       service_tier: response["service_tier"],
+      background: response["background"],
+      background_options: response["background_options"],
       raw_provider_response: response
     }
     |> MessageParts.reject_nil_values()
