@@ -42,6 +42,26 @@ defmodule BeamWeaver.Core.ChatModelTraceMetadataTest do
     refute Map.has_key?(metadata, :request_id)
   end
 
+  test "OpenAI traces retain background completion window options for cost estimation" do
+    model = BeamWeaver.Models.init_chat_model!("openai:gpt-6.2-sol")
+    reply = Message.assistant("Done.", response_metadata: %{service_tier: "default"})
+
+    opts = [
+      background: true,
+      background_options: %{completion_window: "2h"},
+      exporter: Exporter,
+      exporter_opts: [test_pid: self()]
+    ]
+
+    assert {:ok, ^reply} =
+             ChatModel.trace_call(model, [Message.user("Summarize this")], opts, fn -> {:ok, reply} end)
+
+    assert_receive {:trace_export, :ok, %Run{kind: :model, metadata: metadata}}
+    assert metadata.invocation_params.background == true
+    assert metadata.invocation_params.background_options == %{completion_window: "2h"}
+    assert metadata.response_metadata.service_tier == "default"
+  end
+
   test "every built-in chat model leaves trace_metadata: out of its request" do
     models = [
       BeamWeaver.OpenAI.chat_model(model: "gpt-5.4-mini"),

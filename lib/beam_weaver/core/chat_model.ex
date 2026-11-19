@@ -476,7 +476,7 @@ defmodule BeamWeaver.Core.ChatModel do
 
   defp provider_params(%{__struct__: module}) do
     case Module.split(module) do
-      ["BeamWeaver", "OpenAI", "ChatModel"] -> ProfileParams.responses()
+      ["BeamWeaver", "OpenAI", "ChatModel"] -> [:background_options | ProfileParams.responses()]
       ["BeamWeaver", "OpenAI", "ChatCompletionsModel"] -> ProfileParams.chat_completions()
       ["BeamWeaver", "Anthropic", "ChatModel"] -> ProfileParams.anthropic()
       ["BeamWeaver", "Google", "ChatModel"] -> ProfileParams.google()
