@@ -11,6 +11,22 @@ defmodule BeamWeaver.Google.ChatModelTest do
   alias BeamWeaver.Models
   alias BeamWeaver.Provider.MessageCodec
 
+  test "Gemini 4 Hydrogen and Neon accept xhigh and use a 64K single request output limit" do
+    for model_id <- ["gemini-4-hydrogen", "gemini-4-neon"] do
+      model = Models.init_chat_model!("google:#{model_id}", thinking_level: :xhigh, automatic_continuation: false)
+      messages = [Message.user("Hello")]
+
+      assert {:ok, %{"generationConfig" => config}} = ChatModel.request_body(model, messages)
+      assert config["thinkingConfig"]["thinkingLevel"] == :xhigh
+      assert config["maxOutputTokens"] == 65_536
+      assert model.profile.reasoning_effort_default == :high
+
+      for opts <- [[thinking_level: :minimal], [thinking_budget: 1_000], [temperature: 0.5]] do
+        assert {:error, %{type: :unsupported_model_param}} = ChatModel.request_body(model, messages, opts)
+      end
+    end
+  end
+
   test "profile controls and continuation state survive request and response handling" do
     profile =
       BeamWeaver.Models.Profile.new(

@@ -12,7 +12,7 @@ defmodule BeamWeaver.Google.Client do
   collected-response helpers wait for completion. The [Google guide](providers/google.md)
   identifies the implemented endpoints and external-resource lifetimes.
 
-  Gemini 4 Argon follows continuation checkpoints automatically, including on
+  Gemini 4 models follow continuation checkpoints automatically, including on
   `generate_content/4` (which collects streaming HTTP internally). All hops use
   the original request and output budget. Set `automatic_continuation: false`
   for one native request. `max_continuation_retries:` defaults to 2 and bounds

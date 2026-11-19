@@ -5,7 +5,8 @@ defmodule BeamWeaver.OpenAI.ModelPolicy do
   alias BeamWeaver.Models.Profile
   alias BeamWeaver.Models.ProfileRegistry
 
-  @gpt6_reasoning_required ~w(gpt-6-astra gpt-6.1-sol)
+  @gpt62_models ~w(gpt-6.2-astra gpt-6.2-sol gpt-6.2-astra-law)
+  @gpt6_reasoning_required @gpt62_models ++ ~w(gpt-6-astra gpt-6.1-sol)
   @gpt6_optional_reasoning ~w(gpt-6.1-terra gpt-6-sol gpt-6-luna)
   @gpt6_models @gpt6_reasoning_required ++ @gpt6_optional_reasoning ++ ~w(gpt-6-cyber gpt-6-rosalind)
 
@@ -95,6 +96,23 @@ defmodule BeamWeaver.OpenAI.ModelPolicy do
     do: String.downcase(model) in @gpt6_models
 
   def gpt6?(_model), do: false
+
+  @doc false
+  def gpt62?(model) when is_binary(model), do: String.downcase(model) in @gpt62_models
+  def gpt62?(_model), do: false
+
+  @doc false
+  def validate_service_tier(model, tier) do
+    if gpt62?(model) and tier in ["flex", :flex] do
+      {:error,
+       Error.new(:invalid_model_option, "GPT-6.2 does not support Flex processing", %{
+         model: model,
+         service_tier: tier
+       })}
+    else
+      :ok
+    end
+  end
 
   @doc false
   def gpt6_sol_or_luna?(model) when is_binary(model),

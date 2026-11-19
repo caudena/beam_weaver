@@ -21,7 +21,7 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
   @model_map_fields ~w(access_programs metadata moderation audio prompt_cache_options)a
   @model_value_fields ~w(service_tier prompt_cache_retention guidelines)a
   @call_fields ~w(background include instructions max_tool_calls truncation)a
-  @call_map_fields ~w(stream_options)a
+  @call_map_fields ~w(background_options stream_options)a
   @call_value_fields ~w(conversation prompt)a
 
   # `config` adapts the request to another provider's Responses API:
@@ -42,7 +42,7 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
          {:ok, message_input} <- Messages.to_responses_input(messages, store: store),
          {:ok, input_items} <- Messages.normalize_input_items(Keyword.get(opts, :input_items)),
          {:ok, structured_output} <- StructuredOutput.format(opts) do
-      input = message_input ++ input_items
+      input = developer_messages(message_input, model_name) ++ input_items
       # `extra_body` goes in last, except "text", which merges into the text param.
       {extra_text, extra_body} = model |> Options.extra_body(opts) |> Map.pop("text")
       reasoning = reasoning_option(model, opts)
@@ -76,7 +76,20 @@ defmodule BeamWeaver.OpenAI.ChatModel.RequestBuilder do
         |> Options.put_optional("tool_choice", tool_choice(Keyword.get(opts, :tool_choice)))
         |> Options.merge_extra_body(extra_body)
 
-      {:ok, body}
+      with :ok <- ModelPolicy.validate_service_tier(model_name, body["service_tier"]), do: {:ok, body}
+    end
+  end
+
+  # GPT-6.2 appends top-level instructions after input. System messages belong
+  # in the history as developer messages so a stable prefix stays cacheable.
+  defp developer_messages(input, model_name) do
+    if ModelPolicy.gpt62?(model_name) do
+      Enum.map(input, fn
+        %{"type" => "message", "role" => "system"} = item -> %{item | "role" => "developer"}
+        item -> item
+      end)
+    else
+      input
     end
   end
 
