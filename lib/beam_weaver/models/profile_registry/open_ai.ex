@@ -115,7 +115,42 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                           })
                         )
 
+  @gpt_62_defaults %{
+    release_date: "2026-11-17",
+    last_updated: "2026-11-17",
+    pricing_last_checked: "2026-11-19",
+    max_input_tokens: 922_000,
+    max_context_tokens: 1_050_000,
+    reasoning_required: true,
+    background_windows: true,
+    fast_mode_eu_data_residency: true,
+    cache_read_discount_rate: 0.95,
+    extra: %{
+      flex_price_multiplier: nil,
+      pricing_modes: [:standard, :batch, :fast, :priority, :ultrafast],
+      ultrafast_price_multiplier: 6.0,
+      ultrafast_promotional_price_multiplier: 3.0,
+      ultrafast_promotional_pricing_ends_at: "2027-03-01T00:00:00-08:00"
+    }
+  }
+
   @gpt_6_specs [
+    Map.merge(@gpt_62_defaults, %{
+      id: "gpt-6.2-astra",
+      name: "GPT-6.2 Astra",
+      input: 8.00,
+      cached: 0.40,
+      output: 40.00,
+      cutoff: "2026-05-18"
+    }),
+    Map.merge(@gpt_62_defaults, %{
+      id: "gpt-6.2-sol",
+      name: "GPT-6.2 Sol",
+      input: 2.00,
+      cached: 0.10,
+      output: 10.00,
+      cutoff: "2026-06-01"
+    }),
     %{
       id: "gpt-6.1-terra",
       name: "GPT-6.1 Terra",
@@ -129,6 +164,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
       max_input_tokens: 922_000,
       max_context_tokens: 1_050_000,
       responses_tools_only: true,
+      background_windows: true,
       fast_mode_eu_data_residency: true,
       cache_read_discount_rate: 0.95,
       provider_capabilities: [:computer_use, :explicit_prompt_caching]
@@ -156,6 +192,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
       cached: 0.01,
       output: 0.50,
       cutoff: "2026-05-18",
+      background_windows: true,
       decision_outputs: true
     }
   ]
@@ -181,6 +218,14 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                         do: @astra_responses_params,
                         else: Params.responses() -- [:prompt_cache_retention]
 
+                    {responses_params, extra} =
+                      if Map.get(spec, :background_windows, false) do
+                        {[:background_options | responses_params],
+                         %{background_completion_window_price_multipliers: %{"2h" => 0.7, "8h" => 0.6}}}
+                      else
+                        {responses_params, %{}}
+                      end
+
                     {{:openai, spec.id},
                      Profile.new(
                        Map.merge(@openai_profile, %{
@@ -204,50 +249,53 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                              do: [:low, :medium, :high, :xhigh, :max],
                              else: [:none, :low, :medium, :high, :xhigh, :max]
                            ),
-                         extra: %{
-                           frontier: true,
-                           knowledge_cutoff: spec.cutoff,
-                           input_price_per_mtok: spec.input,
-                           cached_input_price_per_mtok: spec.cached,
-                           cache_write_30m_price_per_mtok: spec.input * 1.25,
-                           cache_write_12h_price_per_mtok: spec.input * 2.5,
-                           output_price_per_mtok: spec.output,
-                           cost_currency: "USD",
-                           pricing_source_url: @pricing_source_url,
-                           pricing_last_checked: Map.get(spec, :pricing_last_checked, "2026-10-19"),
-                           higher_context_pricing_threshold_tokens: 272_000,
-                           higher_context_input_multiplier: 2.0,
-                           higher_context_output_multiplier: 1.5,
-                           regional_processing_multiplier: 1.1,
-                           pricing_modes: [:standard, :batch, :flex, :fast, :priority],
-                           batch_price_multiplier: 0.5,
-                           flex_price_multiplier: 0.5,
-                           fast_mode_price_multiplier: 2.0,
-                           fast_mode_service_tiers: [:fast, :priority],
-                           fast_mode_eu_data_residency: Map.get(spec, :fast_mode_eu_data_residency, false),
-                           unsupported_reasoning_efforts:
-                             if(reasoning_required?, do: [:none, :minimal], else: [:minimal]),
-                           reasoning_modes: [:standard, :pro],
-                           persisted_reasoning_contexts: [:auto, :current_turn, :all_turns],
-                           prompt_cache_modes: [:implicit, :explicit],
-                           prompt_cache_ttl: "30m",
-                           prompt_cache_write_multiplier: 1.25,
-                           prompt_cache_read_discount_rate: Map.get(spec, :cache_read_discount_rate, 0.90),
-                           chat_completions_tool_calling:
-                             if(responses_tools_only?, do: false, else: :none_reasoning_only),
-                           provider_capabilities:
-                             Map.get(spec, :provider_capabilities, [
-                               :async_tool_calling,
-                               :computer_use,
-                               :configuration_updates,
-                               :explicit_prompt_caching,
-                               :mid_turn_steering,
-                               :multi_agent_beta,
-                               :persisted_reasoning,
-                               :pro_reasoning_mode,
-                               :programmatic_tool_calling
-                             ])
-                         }
+                         extra:
+                           %{
+                             frontier: true,
+                             knowledge_cutoff: spec.cutoff,
+                             input_price_per_mtok: spec.input,
+                             cached_input_price_per_mtok: spec.cached,
+                             cache_write_30m_price_per_mtok: spec.input * 1.25,
+                             cache_write_12h_price_per_mtok: spec.input * 2.5,
+                             output_price_per_mtok: spec.output,
+                             cost_currency: "USD",
+                             pricing_source_url: @pricing_source_url,
+                             pricing_last_checked: Map.get(spec, :pricing_last_checked, "2026-10-19"),
+                             higher_context_pricing_threshold_tokens: 272_000,
+                             higher_context_input_multiplier: 2.0,
+                             higher_context_output_multiplier: 1.5,
+                             regional_processing_multiplier: 1.1,
+                             pricing_modes: [:standard, :batch, :flex, :fast, :priority],
+                             batch_price_multiplier: 0.5,
+                             flex_price_multiplier: 0.5,
+                             fast_mode_price_multiplier: 2.0,
+                             fast_mode_service_tiers: [:fast, :priority],
+                             fast_mode_eu_data_residency: Map.get(spec, :fast_mode_eu_data_residency, false),
+                             unsupported_reasoning_efforts:
+                               if(reasoning_required?, do: [:none, :minimal], else: [:minimal]),
+                             reasoning_modes: [:standard, :pro],
+                             persisted_reasoning_contexts: [:auto, :current_turn, :all_turns],
+                             prompt_cache_modes: [:implicit, :explicit],
+                             prompt_cache_ttl: "30m",
+                             prompt_cache_write_multiplier: 1.25,
+                             prompt_cache_read_discount_rate: Map.get(spec, :cache_read_discount_rate, 0.90),
+                             chat_completions_tool_calling:
+                               if(responses_tools_only?, do: false, else: :none_reasoning_only),
+                             provider_capabilities:
+                               Map.get(spec, :provider_capabilities, [
+                                 :async_tool_calling,
+                                 :computer_use,
+                                 :configuration_updates,
+                                 :explicit_prompt_caching,
+                                 :mid_turn_steering,
+                                 :multi_agent_beta,
+                                 :persisted_reasoning,
+                                 :pro_reasoning_mode,
+                                 :programmatic_tool_calling
+                               ])
+                           }
+                           |> Map.merge(extra)
+                           |> Map.merge(Map.get(spec, :extra, %{}))
                        })
                      )}
                   end)
@@ -300,19 +348,49 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
                             extra: %{
                               availability: :trusted_access,
                               access_program: :rosalind_research,
-                              input_price_per_mtok: 15.00,
-                              cached_input_price_per_mtok: 1.50,
-                              output_price_per_mtok: 75.00,
-                              cache_write_30m_price_per_mtok: 18.75,
-                              cache_write_12h_price_per_mtok: 37.50,
+                              input_price_per_mtok: 10.00,
+                              cached_input_price_per_mtok: 1.00,
+                              output_price_per_mtok: 50.00,
+                              cache_write_30m_price_per_mtok: 12.50,
+                              cache_write_12h_price_per_mtok: 25.00,
+                              promotional_pricing_through: "2026-12-31",
                               higher_context_pricing_threshold_tokens: 272_000,
                               higher_context_input_multiplier: 2.0,
                               higher_context_output_multiplier: 1.5,
                               cost_currency: "USD",
                               pricing_source_url: @pricing_source_url <> "#life-sciences-models",
-                              pricing_last_checked: "2026-11-12"
+                              pricing_last_checked: "2026-11-19"
                             }
                           })
+
+  @gpt_62_astra_law_profile Profile.new(%{
+                              provider: :openai,
+                              id: "gpt-6.2-astra-law",
+                              name: "GPT-6.2 Astra for Law",
+                              status: :active,
+                              release_date: "2026-11-17",
+                              last_updated: "2026-11-17",
+                              responses_api: true,
+                              reasoning_output: true,
+                              temperature: false,
+                              supported_params: @astra_responses_params,
+                              extra: %{
+                                availability: :trusted_access,
+                                base_model: "gpt-6.2-astra",
+                                input_price_per_mtok: 8.00,
+                                cached_input_price_per_mtok: 0.40,
+                                output_price_per_mtok: 40.00,
+                                cache_write_30m_price_per_mtok: 10.00,
+                                cache_write_12h_price_per_mtok: 20.00,
+                                higher_context_pricing_threshold_tokens: 272_000,
+                                higher_context_input_multiplier: 2.0,
+                                higher_context_output_multiplier: 1.5,
+                                cost_currency: "USD",
+                                promotional_pricing_through: "2026-12-31",
+                                pricing_source_url: @pricing_source_url <> "#legal-model-configurations",
+                                pricing_last_checked: "2026-11-19"
+                              }
+                            })
 
   @image_profiles Map.new(
                     [
@@ -356,7 +434,8 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
       cached: 0.40,
       output: 20.00,
       extra: %{
-        promotional_pricing_through: "2026-11-21",
+        promotional_pricing_through: "2026-11-30",
+        pricing_last_checked: "2026-11-19",
         regular_input_price_per_mtok: 5.00,
         regular_cached_input_price_per_mtok: 0.50,
         regular_output_price_per_mtok: 30.00,
@@ -471,7 +550,12 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
   ]
 
   @openai_frontier_ids MapSet.new(
-                         [@openai_astra_profile.id, @gpt_6_cyber_profile.id, @gpt_6_rosalind_profile.id] ++
+                         [
+                           @openai_astra_profile.id,
+                           @gpt_6_cyber_profile.id,
+                           @gpt_6_rosalind_profile.id,
+                           @gpt_62_astra_law_profile.id
+                         ] ++
                            Enum.map(@gpt_6_specs, & &1.id) ++
                            Enum.map(@openai_5_6_specs, & &1.id) ++
                            Enum.map(@openai_frontier_specs, & &1.id)
@@ -698,7 +782,8 @@ defmodule BeamWeaver.Models.ProfileRegistry.OpenAI do
   @profiles %{
               {:openai, @openai_astra_profile.id} => @openai_astra_profile,
               {:openai, @gpt_6_cyber_profile.id} => @gpt_6_cyber_profile,
-              {:openai, @gpt_6_rosalind_profile.id} => @gpt_6_rosalind_profile
+              {:openai, @gpt_6_rosalind_profile.id} => @gpt_6_rosalind_profile,
+              {:openai, @gpt_62_astra_law_profile.id} => @gpt_62_astra_law_profile
             }
             |> Map.merge(@image_profiles)
             |> Map.merge(@gpt_6_profiles)

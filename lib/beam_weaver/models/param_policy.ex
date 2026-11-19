@@ -18,6 +18,7 @@ defmodule BeamWeaver.Models.ParamPolicy do
   @standard_params MapSet.new([
                      :audio,
                      :background,
+                     :background_options,
                      :betas,
                      :candidate_count,
                      :cache_control,

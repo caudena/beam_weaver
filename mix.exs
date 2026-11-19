@@ -4,7 +4,7 @@ defmodule BeamWeaver.MixProject do
   def project do
     [
       app: :beam_weaver,
-      version: "1.0.1",
+      version: "1.0.2",
       description:
         "Elixir-native LangChain with harness for traceable LLM apps: OTP workflows, tools, memory, human-in-the-loop, streaming, custom clients/adapters, minimal deps, and WeaveScope tracing.",
       source_url: "https://github.com/caudena/beam_weaver",
@@ -37,8 +37,8 @@ defmodule BeamWeaver.MixProject do
       {:postgrex, "~> 0.20"},
       {:ecto_sqlite3, "~> 0.26.0", optional: true},
       {:req, "~> 0.7.2"},
-      {:finch, "~> 0.24.0"},
-      {:idna, "~> 7.1"},
+      {:finch, "~> 0.25"},
+      {:idna, "~> 8.0"},
       {:fastest_tiktoken, "~> 0.1.1"},
       {:telemetry, "~> 1.2"},
       {:yamerl, "~> 0.10.0"}

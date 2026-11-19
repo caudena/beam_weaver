@@ -4,13 +4,16 @@ defmodule BeamWeaver.Google.LongDecode do
   alias BeamWeaver.Core.Error
   alias BeamWeaver.Google.Messages
   alias BeamWeaver.Google.Streaming
+  alias BeamWeaver.Models.ProfileRegistry
   alias BeamWeaver.Provider.StreamValidator
   alias BeamWeaver.Stream, as: BWStream
   alias BeamWeaver.Stream.Envelope
   alias BeamWeaver.Stream.Events
 
   def enabled?(model, opts) do
-    Keyword.get(opts, :automatic_continuation, model in ["gemini-4-argon", "gemini-4-carbon"]) == true
+    Keyword.get_lazy(opts, :automatic_continuation, fn ->
+      match?({:ok, %{extra: %{long_decode: :automatic_continuation}}}, ProfileRegistry.fetch(:google, model))
+    end) == true
   end
 
   # A single outer producer owns all hops. The inner HTTP stream monitors its

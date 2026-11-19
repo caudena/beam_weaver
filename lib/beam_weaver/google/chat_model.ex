@@ -12,7 +12,7 @@ defmodule BeamWeaver.Google.ChatModel do
   consumers must enumerate once and handle terminal errors; display text is not
   a lossless representation of a native provider turn.
 
-  Argon continues automatically and combines its hops into one reply. Set
+  Gemini 4 models continue automatically and combine their hops into one reply. Set
   `max_output_tokens:` for the total generation budget (default 65,536),
   `automatic_continuation: false` to manage checkpoints yourself, or
   `max_continuation_retries:` to change the default two reconnect attempts.

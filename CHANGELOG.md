@@ -1,12 +1,23 @@
 # Changelog
 
+## 1.0.2 - 2026-11-19
+
+- Added GPT-6.2 Astra, Sol, and the Trusted Access Astra for Law configuration
+  with long-context and cache-write rates. GPT-6.2 sends system messages as
+  cacheable developer input in Responses and rejects Flex requests locally.
+  Eligible models support Responses background completion windows.
+  [OpenAI provider guide](docs/providers/openai.md#gpt-62-astra-and-sol)
+- Added Gemini 4 Neon and Hydrogen with `:xhigh` thinking, model-specific
+  pricing, and automatic long-decode continuation.
+  [Google provider guide](docs/providers/google.md#gemini-4)
+
 ## 1.0.1 - 2026-11-12
 
 - Added Claude Fable 5.2 and Mythos 5.2 with adaptive thinking, model-specific
   tool validation, and prompt-cache pricing. Mythos requires Anthropic
   verification. [Anthropic provider guide](docs/providers/anthropic.md)
 - Added Gemini 4 Carbon with automatic long-decode continuation and the
-  December 1 pricing transition. [Google provider guide](docs/providers/google.md#gemini-4-argon-and-carbon)
+  December 1 pricing transition. [Google provider guide](docs/providers/google.md#gemini-4)
 - Added GPT-6.1 Terra, GPT-6-Cyber, and GPT-6 Rosalind with short- and
   long-context pricing. [OpenAI provider guide](docs/providers/openai.md)
 - Added GPT-Image-2.6 Sunburst and Flare to the Images API, with complexity,
@@ -160,7 +171,7 @@ reply. DeepSeek has `Client.search/3` and `Client.fetch/3`. GLM-5.3-Flash
 takes images, video and PDFs. OpenAI Responses messages take
 `configuration_update` and `additional_tools` blocks. Kimi K3, xAI, Gemini,
 Chat Completions and OpenAI Images take more provider options. See
-[Google](docs/providers/google.md#gemini-4-argon) and the [provider
+[Google](docs/providers/google.md#gemini-4) and the [provider
 guides](docs/providers.md).
 
 **One set of error types for every provider.** A failed model call's error

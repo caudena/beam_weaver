@@ -245,12 +245,37 @@ defmodule BeamWeaver.Models.UsageCostTest do
     end
   end
 
-  test "Carbon uses introductory and regular rates on either side of December 1" do
-    assert {:ok, profile} = BeamWeaver.Models.ProfileRegistry.fetch(:google, "gemini-4-carbon")
-
+  test "Argon and Carbon use introductory and regular rates on either side of December 1" do
     usage = %{input_tokens: 1_000_000, output_tokens: 100_000, input_token_details: %{cache_read: 200_000}}
-    assert_in_delta UsageCost.calculate(profile, usage, at: ~U[2026-11-30 23:59:59Z]).total_cost, 2.62, 1.0e-9
-    assert_in_delta UsageCost.calculate(profile, usage, at: ~U[2026-12-01 00:00:00Z]).total_cost, 5.24, 1.0e-9
+
+    for id <- ["gemini-4-argon", "gemini-4-carbon"] do
+      assert {:ok, profile} = BeamWeaver.Models.ProfileRegistry.fetch(:google, id)
+      assert_in_delta UsageCost.calculate(profile, usage, at: ~U[2026-11-30 23:59:59Z]).total_cost, 2.62, 1.0e-9
+      assert_in_delta UsageCost.calculate(profile, usage, at: ~U[2026-12-01 00:00:00Z]).total_cost, 5.24, 1.0e-9
+    end
+  end
+
+  test "Hydrogen and Neon retain their model-specific rates after the Argon and Carbon promotion" do
+    for {id, cost} <- [{"gemini-4-hydrogen", 1.965}, {"gemini-4-neon", 3.93}] do
+      assert {:ok, profile} = BeamWeaver.Models.ProfileRegistry.fetch(:google, id)
+      usage = %{input_tokens: 1_000_000, output_tokens: 100_000, input_token_details: %{cache_read: 200_000}}
+      assert_in_delta UsageCost.calculate(profile, usage, at: ~U[2026-12-01 00:00:00Z]).total_cost, cost, 1.0e-9
+    end
+  end
+
+  test "GPT-6.2 long-context prices cover all input, cache write and output tokens" do
+    for {id, short, long} <- [{"gpt-6.2-astra", 6.244, 10.488016}, {"gpt-6.2-sol", 1.561, 2.622004}] do
+      assert {:ok, profile} = BeamWeaver.Models.ProfileRegistry.fetch(:openai, id)
+
+      usage = %{
+        input_tokens: 272_000,
+        output_tokens: 100_000,
+        input_token_details: %{cache_read: 20_000, cache_write_30m: 50_000, cache_write_12h: 10_000}
+      }
+
+      assert_in_delta UsageCost.calculate(profile, usage).total_cost, short, 1.0e-9
+      assert_in_delta UsageCost.calculate(profile, %{usage | input_tokens: 272_001}).total_cost, long, 1.0e-9
+    end
   end
 
   test "selects UTC peak rates with inclusive starts and exclusive ends" do

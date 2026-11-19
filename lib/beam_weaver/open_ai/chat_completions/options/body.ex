@@ -59,7 +59,7 @@ defmodule BeamWeaver.OpenAI.ChatCompletions.Options.Body do
         |> Options.put_optional("stream", Keyword.get(opts, :stream, false))
         |> Options.merge_extra_body(Options.extra_body(model, opts))
 
-      {:ok, body}
+      with :ok <- ModelPolicy.validate_service_tier(model_name, body["service_tier"]), do: {:ok, body}
     end
   end
 

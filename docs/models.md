@@ -184,7 +184,7 @@ terminal `Error` event carries the failure.
 | `:transport_error`, `:http_error` | Inspect transport/status details |
 
 Add `ModelRetry` to an agent or implement a bounded direct-call policy for
-failed requests. [Gemini 4 Argon and Carbon](providers/google.md#gemini-4-argon-and-carbon) also resume
+failed requests. [Gemini 4 Argon and Carbon](providers/google.md#gemini-4) also resume
 interrupted long-decode hops within a call. `ModelFallback` can choose
 another model after failure. With fallback outside retry, each model gets
 its own retry budget; see [Built-in Middleware](builtin_middleware.md).

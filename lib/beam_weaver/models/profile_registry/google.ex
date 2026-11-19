@@ -220,53 +220,18 @@ defmodule BeamWeaver.Models.ProfileRegistry.Google do
                       max_context_tokens: 1_048_576,
                       max_output_tokens: 1_048_576,
                       temperature: false,
-                      reasoning_effort_levels: [:low, :medium, :high],
-                      reasoning_effort_default: :medium,
                       supported_params: Params.google_gemini_4()
                     })
 
   @gemini_4_extra Map.merge(@gemini_extra, %{
-                    thinking_levels: [:low, :medium, :high],
-                    default_thinking_level: :medium,
                     implicit_caching: true,
                     explicit_caching: false,
                     implicit_cache_min_tokens: 4_096,
-                    non_streaming_output_limit: 32_768,
                     streaming_output_limit: 65_536,
                     long_decode_max_output_tokens: 1_048_576,
                     long_decode: :automatic_continuation,
                     default_max_output_tokens: 65_536,
                     recommended_timeout_ms: 1_200_000,
-                    input_price_per_mtok: 2.00,
-                    cached_input_price_per_mtok: 0.10,
-                    output_price_per_mtok: 10.00,
-                    batch_input_price_per_mtok: 1.00,
-                    batch_cached_input_price_per_mtok: 0.05,
-                    batch_output_price_per_mtok: 5.00,
-                    flex_input_price_per_mtok: 1.00,
-                    flex_cached_input_price_per_mtok: 0.05,
-                    flex_output_price_per_mtok: 5.00,
-                    priority_input_price_per_mtok: 3.60,
-                    priority_cached_input_price_per_mtok: 0.18,
-                    priority_output_price_per_mtok: 18.00,
-                    introductory_pricing_through: "2026-11-30",
-                    regular_input_price_per_mtok: 4.00,
-                    regular_cached_input_price_per_mtok: 0.20,
-                    regular_output_price_per_mtok: 20.00,
-                    pricing_history: [
-                      %{
-                        effective_at: nil,
-                        input_price_per_mtok: 2.00,
-                        cached_input_price_per_mtok: 0.10,
-                        output_price_per_mtok: 10.00
-                      },
-                      %{
-                        effective_at: "2026-12-01T00:00:00Z",
-                        input_price_per_mtok: 4.00,
-                        cached_input_price_per_mtok: 0.20,
-                        output_price_per_mtok: 20.00
-                      }
-                    ],
                     built_in_tools: [
                       :code_execution,
                       :computer_use,
@@ -277,6 +242,78 @@ defmodule BeamWeaver.Models.ProfileRegistry.Google do
                     ],
                     computer_use: :general_availability
                   })
+
+  @gemini_4_intro_pricing %{
+    introductory_pricing_through: "2026-11-30",
+    regular_input_price_per_mtok: 4.00,
+    regular_cached_input_price_per_mtok: 0.20,
+    regular_output_price_per_mtok: 20.00,
+    pricing_history: [
+      %{effective_at: nil, input_price_per_mtok: 2.00, cached_input_price_per_mtok: 0.10, output_price_per_mtok: 10.00},
+      %{
+        effective_at: "2026-12-01T00:00:00Z",
+        input_price_per_mtok: 4.00,
+        cached_input_price_per_mtok: 0.20,
+        output_price_per_mtok: 20.00
+      }
+    ]
+  }
+
+  @gemini_4_specs [
+    {"gemini-4-argon", "Gemini 4 Argon", nil, :medium, 32_768, false, {2.00, 0.10, 10.00}, {3.60, 0.18, 18.00}},
+    {"gemini-4-carbon", "Gemini 4 Carbon", "2026-11-10", :medium, 32_768, false, {2.00, 0.10, 10.00},
+     {3.60, 0.18, 18.00}},
+    {"gemini-4-hydrogen", "Gemini 4 Hydrogen", "2026-11-12", :high, 65_536, true, {1.50, 0.075, 7.50},
+     {2.70, 0.135, 13.50}},
+    {"gemini-4-neon", "Gemini 4 Neon", "2026-11-18", :high, 65_536, false, {3.00, 0.15, 15.00}, {5.40, 0.27, 27.00}}
+  ]
+
+  @gemini_4_profiles Map.new(@gemini_4_specs, fn {id, name, released, thinking, sync_limit, free_tier,
+                                                  {input, cached, output},
+                                                  {priority_input, priority_cached, priority_output}} ->
+                       levels = if thinking == :high, do: [:low, :medium, :high, :xhigh], else: [:low, :medium, :high]
+
+                       promotion =
+                         if id in ["gemini-4-argon", "gemini-4-carbon"], do: @gemini_4_intro_pricing, else: %{}
+
+                       extra =
+                         @gemini_4_extra
+                         |> Map.merge(promotion)
+                         |> Map.merge(%{
+                           model_source_url: "https://aistudio.google.com/docs/models/#{id}",
+                           pricing_source_url: "https://aistudio.google.com/docs/pricing##{id}",
+                           pricing_last_checked: "2026-11-19",
+                           free_tier: free_tier,
+                           thinking_levels: levels,
+                           default_thinking_level: thinking,
+                           non_streaming_output_limit: sync_limit,
+                           input_price_per_mtok: input,
+                           cached_input_price_per_mtok: cached,
+                           output_price_per_mtok: output,
+                           batch_input_price_per_mtok: input / 2,
+                           batch_cached_input_price_per_mtok: cached / 2,
+                           batch_output_price_per_mtok: output / 2,
+                           flex_input_price_per_mtok: input / 2,
+                           flex_cached_input_price_per_mtok: cached / 2,
+                           flex_output_price_per_mtok: output / 2,
+                           priority_input_price_per_mtok: priority_input,
+                           priority_cached_input_price_per_mtok: priority_cached,
+                           priority_output_price_per_mtok: priority_output
+                         })
+
+                       {{:google, id},
+                        Profile.new(
+                          Map.merge(@gemini_4_profile, %{
+                            id: id,
+                            name: name,
+                            release_date: released,
+                            last_updated: released || "2026-10-19",
+                            reasoning_effort_levels: levels,
+                            reasoning_effort_default: thinking,
+                            extra: extra
+                          })
+                        )}
+                     end)
 
   @profiles %{
     {:google, "gemini-decision-1"} =>
@@ -304,31 +341,6 @@ defmodule BeamWeaver.Models.ProfileRegistry.Google do
           pricing_source_url: "https://aistudio.google.com/docs/pricing#gemini-decision"
         }
       }),
-    {:google, "gemini-4-argon"} =>
-      Profile.new(
-        Map.merge(@gemini_4_profile, %{
-          id: "gemini-4-argon",
-          name: "Gemini 4 Argon",
-          last_updated: "2026-10-19",
-          extra:
-            Map.put(@gemini_4_extra, :model_source_url, "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon")
-        })
-      ),
-    {:google, "gemini-4-carbon"} =>
-      Profile.new(
-        Map.merge(@gemini_4_profile, %{
-          id: "gemini-4-carbon",
-          name: "Gemini 4 Carbon",
-          release_date: "2026-11-10",
-          last_updated: "2026-11-10",
-          extra:
-            Map.merge(@gemini_4_extra, %{
-              model_source_url: "https://aistudio.google.com/docs/models/gemini-4-carbon",
-              pricing_source_url: "https://aistudio.google.com/docs/pricing#gemini-4-carbon",
-              pricing_last_checked: "2026-11-12"
-            })
-        })
-      ),
     {:google, "gemini-3.8-flash"} =>
       Profile.new(
         Map.merge(@gemini_profile, %{
@@ -467,6 +479,7 @@ defmodule BeamWeaver.Models.ProfileRegistry.Google do
         })
       )
   }
+  @profiles Map.merge(@profiles, @gemini_4_profiles)
   @profiles Enum.reduce(
               [{"gemini-3.5-flash", "gemini-3.6-flash"}, {"gemini-3.7-flash", "gemini-3.8-flash"}],
               @profiles,

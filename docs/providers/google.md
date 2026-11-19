@@ -25,28 +25,36 @@ Use the same identifier in an agent declaration. Gemini IDs require `google:`.
 Keep complete messages when continuing function calls; native parts can carry
 provider state beyond display text.
 
-<a id="gemini-4-argon"></a>
+## Gemini 4
 
-## Gemini 4 Argon and Carbon
-
-Use `google:gemini-4-argon` or `google:gemini-4-carbon` with
-`thinking_level: :low`, `:medium` (the provider default), or `:high`. Input,
-thinking, and output share a 1,048,576-token window. BeamWeaver follows continuation checkpoints automatically for ordinary
-invocations, collected responses, and text/typed streams. You receive one combined
+Argon and Carbon support `thinking_level: :low`, `:medium`, or `:high` and
+default to `:medium`. Hydrogen (`google:gemini-4-hydrogen`) and Neon
+(`google:gemini-4-neon`) also support `:xhigh` and default to `:high`.
+Input, thinking, and output share a 1,048,576-token window. BeamWeaver follows
+continuation checkpoints automatically for ordinary invocations, collected
+responses, and text or typed streams. You receive one combined
 reply with all content, thought signatures, tool calls, and usage. The default
 output budget is 65,536 tokens. For longer work, set `max_output_tokens:` up
 to the shared context limit minus your input. A `MAX_TOKENS` response ends
 generation at your requested budget. [Carbon model specification](https://aistudio.google.com/docs/models/gemini-4-carbon)
 
-Both models use implicit caching only. Their profiles reject `cached_content:`
-and sampling controls. Standard input, cached input, and output cost $2,
-$0.10, and $10 per million tokens through November 30, 2026. On December 1,
-the rates become $4, $0.20, and $20. Pass the request timestamp as `at:` to
-`UsageCost.calculate/3` to select the applicable rates.
-[Gemini API pricing](https://aistudio.google.com/docs/pricing#gemini-4-carbon)
+All four models use implicit caching only. Their profiles reject
+`cached_content:`, thinking budgets, and sampling controls.
+
+| API model | Standard input | Cached input | Output including thinking |
+| --- | ---: | ---: | ---: |
+| Hydrogen | $1.50 | $0.075 | $7.50 |
+| Neon | $3.00 | $0.15 | $15.00 |
+| Argon and Carbon through November 30, 2026 | $2.00 | $0.10 | $10.00 |
+| Argon and Carbon from December 1, 2026 | $4.00 | $0.20 | $20.00 |
+
+Rates are USD per million tokens. Hydrogen also has a free tier. Batch and
+Flex cost 0.5× the listed paid Standard rates, and Priority costs 1.8×.
+Pass the request timestamp as `at:` to `UsageCost.calculate/3` to select the
+applicable Standard rates. [Gemini API pricing](https://aistudio.google.com/docs/pricing)
 
 The client uses streaming HTTP internally, even when the caller wants one
-final reply. Both model constructors default to a 20-minute timeout per
+final reply. The model constructors default to a 20-minute timeout per
 request. BeamWeaver preserves the original request across hops and sums their
 billed usage. `usage_metadata.initial_input_tokens` is the original prompt size.
 `context_tokens` adds all generated thinking and output to that size. Summarization uses context size instead of cumulative billed
@@ -68,8 +76,13 @@ HTTP response, rather than the ordinary transport's 5 MB limit. Explicit
 Set `automatic_continuation: false` on the model or invocation for manual control.
 Then a `CONTINUATION` response is returned as `provider_pause`, and its
 `response_metadata.continuation_token` can be passed as `continuation_token:`
-with the original messages and generation options. Manual REST calls retain the
-32,768 non-streaming / 65,536 streaming per-request defaults. [Gemini long decode](https://aistudio.google.com/docs/long-decode?generate-content=true)
+with the original messages and generation options. Single-request output limits
+are 65,536 for streaming and for nonstreaming Hydrogen and Neon, and 32,768 for
+nonstreaming Argon and Carbon. [Gemini long decode](https://aistudio.google.com/docs/long-decode?generate-content=true)
+
+Google's November release documents native Office and OpenDocument content and
+page, cell and time-range slicing on the Interactions API. BeamWeaver's chat
+adapter uses GenerateContent. [Gemini document processing](https://aistudio.google.com/docs/document-processing#customize-document-processing)
 
 ## Options and thinking
 
@@ -237,6 +250,8 @@ not an unlimited allowance.
 | `google:gemini-3.8-flash` | 1,048,576 / 65,536 | chat; text, image, PDF, audio, video; tools; structured output; reasoning |
 | `google:gemini-4-argon` | 1,048,576 / 1,048,576 | chat; text, image, PDF, audio, video; tools; structured output; reasoning |
 | `google:gemini-4-carbon` | 1,048,576 / 1,048,576 | chat; text, image, PDF, audio, video; tools; structured output; reasoning |
+| `google:gemini-4-hydrogen` | 1,048,576 / 1,048,576 | chat; text, image, PDF, audio, video; tools; structured output; reasoning |
+| `google:gemini-4-neon` | 1,048,576 / 1,048,576 | chat; text, image, PDF, audio, video; tools; structured output; reasoning |
 | `google:gemini-decision-1` | 262,144 / 0 | decision; text, image, PDF, audio, video |
 
 

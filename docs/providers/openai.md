@@ -38,12 +38,54 @@ Use Chat Completions when your target endpoint requires that contract:
 true = byte_size(Message.text(reply)) > 0
 ```
 
-GPT-6 Astra, GPT-6.1 Sol and GPT-6.1 Terra require Responses for tool calls.
+GPT-6.2 Astra, GPT-6.2 Sol, GPT-6 Astra, GPT-6.1 Sol and GPT-6.1 Terra require
+Responses for tool calls.
 GPT-5.6, GPT-6 Sol and GPT-6 Luna require nonreasoning mode for
 that endpoint's tools. Local profiles validate these combinations. Hosted
 tools and reasoning summaries use Responses. Tool-returned media on Chat
 Completions is carried in a following user message rather than a text-only
 tool result.
+
+## GPT-6.2 Astra and Sol
+
+`openai:gpt-6.2-astra` and `openai:gpt-6.2-sol` support a 1,050,000-token
+context with up to 922,000 input and 128,000 output tokens. Use reasoning effort
+`:low` through `:max`. The profiles reject `:none`, `:minimal` and sampling
+controls such as `temperature:`. Both endpoints reject Flex.
+
+BeamWeaver sends system messages as `developer` messages in GPT-6.2 Responses
+input. Put reusable instructions in the first system message. The
+`instructions:` option applies to the current request and OpenAI appends it
+after input. Preserve the order and content of earlier messages, tools and
+reasoning items when continuing a conversation. Editing an earlier item can
+cause OpenAI to drop subsequent reasoning items.
+[GPT-6.2 migration guide](https://developers.openai.com/api/docs/guides/latest-model)
+
+Standard rates are in USD per million tokens. OpenAI applies the long-context
+rates to the entire request above 272,000 input tokens.
+
+| API model | Input | Cached input | Output | 30m / 12h cache writes | Long-context input / cached input / output |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| GPT-6.2 Astra | $8.00 | $0.40 | $40.00 | $10.00 / $20.00 | $16.00 / $0.80 / $60.00 |
+| GPT-6.2 Sol | $2.00 | $0.10 | $10.00 | $2.50 / $5.00 | $4.00 / $0.20 / $15.00 |
+
+Long-context cache writes cost twice the short-context rate. Batch costs 0.5×
+Standard, Fast costs 2×, and Ultrafast costs 3× through February 28, 2027 and
+6× starting March 1, Pacific time. [OpenAI API pricing](https://developers.openai.com/api/docs/pricing)
+
+`openai:gpt-6.2-astra-law` is a separate Responses configuration that requires
+Trusted Access approval. Its published Standard token rates match Astra
+through at least December 31, 2026.
+[Astra for Law release](https://openai.com/index/astra-law-6-2/), [Legal configuration pricing](https://developers.openai.com/api/docs/pricing#legal-model-configurations)
+
+For asynchronous jobs on GPT-6.2 Astra, GPT-6.2 Sol, GPT-6.1 Terra or GPT-6 Luna,
+build the request with `OpenAI.ChatModel.request_body/3` using
+`background: true`, `service_tier: :default`, and
+`background_options: %{completion_window: "2h"}` or `"8h"` for the window.
+Submit it with `OpenAI.Client.responses/3` and use
+`OpenAI.Client.retrieve_response/3` to poll the returned response ID. These
+nonstreaming windows discount eligible Standard token rates by 30% and 40%.
+[Background completion windows](https://developers.openai.com/api/docs/guides/background#use-discounted-completion-windows)
 
 ## GPT-6.1 Terra, Cyber, and Rosalind
 
@@ -65,7 +107,7 @@ Standard rates in USD per million tokens are listed below. Prompts over
 | --- | ---: | ---: | ---: | ---: |
 | GPT-6.1 Terra | $1.00 | $0.05 | $5.00 | $2.00 / $0.10 / $7.50 |
 | GPT-6-Cyber | $20.00 | $2.00 | $100.00 | $40.00 / $4.00 / $150.00 |
-| GPT-6 Rosalind | $15.00 | $1.50 | $75.00 | $30.00 / $3.00 / $112.50 |
+| GPT-6 Rosalind | $10.00 | $1.00 | $50.00 | $20.00 / $2.00 / $75.00 |
 
 [OpenAI API pricing](https://developers.openai.com/api/docs/pricing)
 
@@ -346,6 +388,9 @@ not an unlimited allowance.
 | `openai:gpt-6-sol` | 1,050,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
 | `openai:gpt-6.1-sol` | 922,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
 | `openai:gpt-6.1-terra` | 922,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
+| `openai:gpt-6.2-astra` | 922,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
+| `openai:gpt-6.2-astra-law` | — / — | chat; text; reasoning |
+| `openai:gpt-6.2-sol` | 922,000 / 128,000 | chat; text, image, PDF; tools; structured output; reasoning |
 | `openai:gpt-image-2.6-flare` | — / — | image; text, image |
 | `openai:gpt-image-2.6-sunburst` | — / — | image; text, image |
 | `openai:text-embedding-3-large` | 8,191 / — | embedding; text |

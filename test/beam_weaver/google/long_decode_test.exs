@@ -47,7 +47,7 @@ defmodule BeamWeaver.Google.LongDecodeTest do
     end
   end
 
-  for model_id <- ["gemini-4-argon", "gemini-4-carbon"] do
+  for model_id <- ["gemini-4-argon", "gemini-4-carbon", "gemini-4-hydrogen", "gemini-4-neon"] do
     test "#{model_id} combines thinking-only and text hops, original requests, usage and signed parts" do
       thinking = %{"text" => "Reasoning", "thought" => true, "thoughtSignature" => "signed-1"}
 

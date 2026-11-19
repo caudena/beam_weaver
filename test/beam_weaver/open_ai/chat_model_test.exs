@@ -748,8 +748,8 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
     assert body["safety_identifier"] == "test-user"
   end
 
-  test "GPT-6 Astra and GPT-6.1 Sol Responses enforce reasoning and parameter constraints" do
-    for model_id <- ["gpt-6-astra", "gpt-6.1-sol"] do
+  test "reasoning-required GPT-6 models enforce Responses parameter constraints" do
+    for model_id <- ["gpt-6-astra", "gpt-6.1-sol", "gpt-6.2-astra", "gpt-6.2-sol"] do
       model = ChatModel.new(model: model_id)
 
       assert {:ok, body} =
@@ -790,6 +790,64 @@ defmodule BeamWeaver.OpenAI.ChatModelTest do
 
       assert include_error.type == :invalid_model_option
     end
+  end
+
+  test "GPT-6.2 Responses keep reusable instructions in the developer prefix" do
+    model = Models.init_chat_model!("openai:gpt-6.2-sol")
+    messages = [Message.system("stable policy"), Message.user("question")]
+
+    assert {:ok, body} =
+             ChatModel.request_body(model, messages,
+               instructions: "turn-only guidance",
+               background: true,
+               background_options: %{completion_window: "2h", continuation_id: "run-42"},
+               service_tier: :default
+             )
+
+    assert [%{"role" => "developer", "content" => "stable policy"}, %{"role" => "user"}] = body["input"]
+    assert body["instructions"] == "turn-only guidance"
+    assert body["background"] == true
+    assert body["background_options"] == %{"completion_window" => "2h", "continuation_id" => "run-42"}
+    assert body["service_tier"] == "default"
+
+    assert {:ok, %{"input" => [%{"role" => "system"} | _]}} =
+             ChatModel.request_body(model, messages, model: "gpt-6.1-sol")
+  end
+
+  test "GPT-6.2 rejects Flex on both endpoints and native tools on Chat Completions" do
+    completions = BeamWeaver.OpenAI.ChatCompletionsModel
+    messages = [Message.user("Hello")]
+
+    for id <- ["gpt-6.2-astra", "gpt-6.2-sol"] do
+      for adapter <- [ChatModel, completions] do
+        assert {:error, %{details: %{service_tier: "flex"}}} =
+                 adapter.request_body(adapter.new(model: id), messages, service_tier: :flex)
+      end
+
+      model = completions.new(model: id)
+
+      assert {:ok, %{"max_completion_tokens" => 256}} =
+               completions.request_body(model, messages, max_tokens: 256)
+
+      assert {:error, %{details: %{alternative_api: :responses}}} =
+               completions.request_body(model, messages, tools: [%{"type" => "web_search"}])
+    end
+  end
+
+  test "GPT-6.2 Astra for Law resolves as a Trusted Access Responses configuration" do
+    id = "gpt-6.2-astra-law"
+    model = Models.init_chat_model!("openai:#{id}")
+    messages = [Message.system("stable policy"), Message.user("question")]
+
+    assert model.profile.extra.availability == :trusted_access
+
+    assert {:ok, %{"model" => ^id, "input" => [%{"role" => "developer"} | _]}} =
+             ChatModel.request_body(model, messages)
+
+    completions = BeamWeaver.OpenAI.ChatCompletionsModel.new(model: id)
+
+    assert {:error, %{details: %{alternative_api: :responses}}} =
+             BeamWeaver.OpenAI.ChatCompletionsModel.request_body(completions, messages)
   end
 
   test "reasoning-required Responses requests combine tools with structured output" do
